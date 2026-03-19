@@ -1,0 +1,3 @@
+# AutoVisionLab
+
+Initial project scaffold.
