@@ -14,6 +14,17 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+.env
+.env.local
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Python packaging
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
 
 # Node.js
 node_modules/
@@ -21,3 +32,10 @@ node_modules/
 # Build outputs
 dist/
 build/
+
+# Local data
+*.db
+*.sqlite
+*.sqlite3
+artifacts/
+data/

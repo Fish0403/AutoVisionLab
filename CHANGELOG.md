@@ -1,0 +1,59 @@
+# Changelog
+
+## 2026-03-20
+
+- 初始化 `backend/` 和 `frontend/` 目录骨架，保持第一版只覆盖分类任务。
+- 后端预留 `experiment config`、`editable parameter space`、`proposal`、`result`、`reflection` 的严格结构化 schema。
+- 后端增加最小 API 路由占位：`/runs`、`/runs/{run_id}`、`/runs/{run_id}/metrics`、`/experiments/{experiment_id}`、`/models/{model_name}/parameter-space`。
+- 为 `mobilenet_v2` 和 `googlenet` 建立静态参数空间白名单，未开放任何模型结构改动入口。
+- 前端预留 Run 列表、Run 详情、Experiment 详情和趋势图页面，趋势图已支持点选点位并展示参数快照。
+- 默认数据库方案明确收敛为 `SQLite` demo 模式，并补充根目录 `requirements.txt` 方便安装依赖。
+- 新增最小数据库初始化脚本和 `runs`、`experiments`、`results` 三张基础表定义。
+- `POST /runs` 和 `POST /experiments` 已接入 SQLite 持久化，不再只是返回静态占位数据。
+- 新增 `POST /experiments/{experiment_id}/result`，训练结果可写回数据库，趋势图接口可以开始读取真实 metrics。
+- 展示层方案从 `Next.js` 切换为 `Streamlit`，删除原前端骨架，新增单文件 demo UI。
+- 新增 `scripts/run_backend.sh` 和 `scripts/run_frontend.sh`，统一本地启动方式。
+- Streamlit 首页改为创建流程，支持先选模型、数据集和结构化训练参数，再创建 run 并排入首个 experiment。
+- Streamlit 布局调整为“侧边栏创建 + 主区两列详情”，并明确当前仅支持 queued，不代表真实训练已启动。
+- 训练改为后台执行；训练期间创建按钮禁用，主界面保持可用，并在训练结束后自动刷新状态。
+- `Run Detail` 改为以实验对比为主，新增 comparison 表，将多次训练的状态、指标和关键参数并排展示。
+- `Run Detail` 新增 experiment 多选比较，默认全选当前 run 下所有实验，也可手动筛选部分实验做趋势和参数对比。
+- 去掉单独的 `Selected Experiment` 下拉，改为在 comparison 表内直接用 `Compare` / `Inspect` 列控制对比和右侧详情。
+- 手工入口语义已调整为：`Manual New Run` 新建 run，`Append Experiment` 在已有 run 下追加参数实验；为后续 LLM proposal 追加实验预留了流程入口。
+- 新增最小假的 `LLM proposal` 入口：可基于当前选中 run 的最新实验生成结构化 proposal，并自动带入追加实验表单。
+- 新增根目录 `.env` / `.env.example`，将 AI provider 本地配置落盘，并把 `.env` 加入 `.gitignore`。
+- 真实 proposal provider 从 `OpenRouter` 切换为 `AIHubMix`，默认通过 `https://aihubmix.com/v1` 的 OpenAI-compatible 接口生成 proposal。
+- Streamlit 主页面重构为左右双栏：左侧专注 run 选择与训练记录筛选，右侧专注参数编辑与动作区，不再使用侧边栏训练表单。
+- 右侧训练动作收敛为两个主按钮：`按当前参数训练` 与 `以当前页面为参考通过AI多次训练测试`；AI 多轮测试会先创建基线 run，再在同一 run 下连续追加实验。
+- 同步更新 `tasks.md` 与 `plan.md` 中的过时描述，统一前端方案为 `Streamlit`，修正分类指标示例、仓库内文档链接和当前阶段状态。
+- Streamlit 主界面调整为“左侧训练，右侧结果”，训练区只保留 `Train` 和 `Auto Train` 两个主按钮，并将训练日志固定放在训练区下方。
+- 移除训练表单中的 `Notes`、`Proposal Hypothesis`、`Proposal Reason` 输入项，参数编辑区改为多列排版，降低表单噪音。
+- `Train` 完成后会自动生成单次实验建议；`Auto Train` 完成后会展示本轮自动调优过程、每轮结果和下一步建议，中间不再需要人工确认。
+- 修复训练状态管理：按钮点击后先锁定 UI 再排队执行，去掉整页自动刷新，避免重复触发 `Auto Train` 和日志区域闪烁丢失。
+- 自动调优链路禁止 AI 修改 `epochs`：后端 proposal prompt 与校验同时收紧，前端自动执行时也会过滤 `epochs` 变更，手动训练仍可单独调整训练轮数。
+- proposal 服务改为自动清洗 AI 返回的被禁字段；当 AIHubMix 仍返回 `epochs` 时，后端会忽略该字段继续执行，而不是直接报错中断自动调优。
+- 修复 proposal 清洗过程中的类型错误，避免 `changes` 在后端被错误降级成普通 `dict` 后触发 `'dict' object has no attribute 'model_dump'`。
+- 新增 `POST /runs/reset` 和前端 `Clear Database` 按钮，可一键清空 `runs`、`experiments`、`results`，并同步重置前端会话状态。
+- 修复清空数据库后的空页面问题：当没有任何 run 记录时，左侧训练表单仍保持可用，只清空右侧结果与记录展示。
+- 优化根目录 `.gitignore`，补充 SQLite、本地产物目录 `artifacts/`、测试缓存和 Python 打包缓存等开发期噪音忽略规则。
+- 调整前端训练完成后的刷新逻辑：训练或自动调优结束后会主动刷新页面状态，新建 run 可立即出现在 `Run Selector` 中，不再出现训练完成后选择器暂时空白的问题。
+- `Auto Train` 的 AI 总结区增加调优趋势图，用图表展示 baseline 到各轮实验的 `top1_acc`、`val_loss`、`train_loss` 变化，而不只保留文字摘要。
+- 简化训练记录区交互：移除名称、状态、优化器、模型等过滤器；当用户已选定 run 时，默认直接展示全部实验，只通过勾选决定哪些实验参与趋势图比较。
+- 调整训练动作语义：当 `Run Selector` 选中已有 run 时，`Train` 和 `Auto Train` 都会把新的 experiment 追加到该 run 下；只有在 `All Runs` 状态下才新建 run。
+- 训练按钮文案改为随上下文动态变化：在已有 run 下显示 `Append Train` / `Append Auto Train`，减少“是否会新建 run”的歧义。
+- `Run Selector` 区域的清理动作改为针对当前选中 run：新增 `POST /runs/{run_id}/reset`，按钮样式改为更轻的行内小按钮，不再使用整行的全局清库按钮。
+- 自动调优总结图的横轴统一为整数 `round_index`，明确表示 baseline 和各轮实验的离散轮次序号。
+- `Auto Train Rounds` 默认值调整为 `10`，上限提升到 `20`，便于连续调优。
+- 调整前端渲染顺序并为 `AI Suggestion` 区增加实时占位；自动训练过程中每完成一轮，右侧趋势图都会立即更新，无需等整轮结束。
+- 新增 `Stop Training` 终止链路：后端为当前 running experiment 注册可中断 stop event，前端可一键停止并将当前实验标记为 `discarded`，同时丢弃部分日志、checkpoint 和结果，不再继续生成 AI suggestion。
+- `Auto Train` 从前端同步循环迁移为后端后台任务：新增启动、轮询、停止接口，前端改为轮询任务状态更新日志与右侧趋势图，从而使 `Stop Training` 在自动调优过程中可见且可点击。
+- 日志区与 AI 建议区改为固定占位式展示：训练开始前也保留稳定高度，不再因为空内容或增量内容频繁跳动；训练进行中按钮区会直接切换为 `Stop Training`，而不是额外再增加一个停止按钮。
+- 进一步修正训练按钮状态机：始终保留左右两个控件，当前被触发的动作按钮切换为 `Stop Training`，另一个按钮保持原位但禁用，避免训练开始后按钮布局突变。
+- 去掉训练启动后的多余主动刷新，并增加按钮状态恢复兜底；当后台 auto task 或 running experiment 已存在时，训练区会稳定回到对应的 `Stop Training` 态，不再错误回落为 `Append ...`。
+- 进一步收敛训练启动时的刷新节奏：手动训练恢复为点击后立即切换状态，自动训练在启动后的第一帧跳过轮询刷新，减少“没反应”与“连续多刷一次”的体感问题。
+- 前端训练完成收尾逻辑统一改为单一清理函数：后台任务结束、手动 stop、实验完成三种路径都会同步解除锁定、清空当前训练态并触发结果刷新，减少“训练已结束但界面还停在旧状态”的问题。
+- 日志区改为可直接选中复制的文本区域，同时补充 AI / 网络错误的详细日志落盘；当 AIHubMix 或网络请求失败时，前端与后台 auto-train 日志都会记录更具体的错误信息。
+- 修复后台 `auto_train_service` 的轮次执行缩进错误，并补充 baseline / 各轮 proposal 生成、训练启动的阶段日志，避免自动训练状态推进异常时前端长期看不到新日志。
+- 前端自动训练监视逻辑改为基于 Streamlit `fragment` 的 2 秒轮询更新，不再依赖浏览器整页刷新；自动训练进行中会持续刷新日志区和右侧 AI 趋势图，任务完成或停止后再统一触发一次应用级刷新收尾。
+- 为兼容 Streamlit `fragment` 约束，日志区和 AI 占位区改用非 widget 的代码块渲染，避免 `Fragments cannot write widgets to outside containers` 异常，同时保留文本可复制能力。
+- 自动训练摘要区补充实时进度文案，明确区分“已完成轮数”和“当前正在执行的轮次”，避免第 10 轮训练尚未结束时界面只显示 9 个已完成 round 而被误判为卡住。
