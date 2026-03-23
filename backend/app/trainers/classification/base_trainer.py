@@ -86,7 +86,6 @@ class BaseClassificationTrainer(ABC):
                         f"val_loss={val_loss:.4f} top1_acc={top1_acc:.4f}"
                     ),
                 )
-
         training_seconds = int(time.time() - started_at)
         gpu_memory_mb = int(torch.cuda.max_memory_allocated() / 1024 / 1024) if torch.cuda.is_available() else 0
 

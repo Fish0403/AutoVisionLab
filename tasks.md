@@ -8,7 +8,7 @@
 
 - 第一版先做图像分类
 - 第一版先支持 `MobileNet` 和 `GoogLeNet`
-- 第一版所有实验都存档，不做回滚和 discard/keep 机制
+- 第一版所有实验都存档，但下一阶段应补齐结构化 `keep` / `discard` / `crash` / `timeout` 决策层
 - 第一版固定模型实现，只允许调整训练参数
 - 所有可调参数必须结构化管理
 - 先把“能跑、能看、能分析”做通，再增加自治程度
@@ -161,6 +161,7 @@ MVP 不包含模型结构搜索，只做参数实验。
 - 定义 editable parameter space schema
 - 实现 LLM 调用封装
 - 设计 proposal prompt
+- proposal prompt 结合完整 run 历史、`baseline` / `best` / `frontier` 锚点生成，而不是只参考最新实验
 - 做 proposal schema 校验
 - 将 proposal 转换为 experiment 配置
 
@@ -168,6 +169,12 @@ MVP 不包含模型结构搜索，只做参数实验。
 
 - 给定历史实验后，系统能生成合法 proposal
 - proposal 能被后端转换成可执行 experiment
+
+当前补充说明：
+
+- 已将 proposal 上下文从“只看最新实验”调整为“看完整 run 历史 + 关键锚点”。
+- auto-train 已开始优先遵循 proposal 的 `based_on_experiment_ids`，并在缺失时回退到 `frontier` / `best` / 最新实验。
+- 后续仍需要继续细化 `frontier` 的定义与更新规则，避免它长期退化成 `best` 的别名。
 
 ### Phase 6: AI Reflection
 
@@ -209,6 +216,36 @@ MVP 不包含模型结构搜索，只做参数实验。
 - 在开启自动模式时，run 能自动创建新 experiment
 - 用户可以随时暂停
 
+### Phase 8: 研究决策与可比性增强
+
+状态：`待做`
+
+目标：
+
+- 让自动调优有明确的比较基线、最优结果锚点和结构化保留策略
+
+任务：
+
+- 为 `runs` 增加 `baseline_experiment_id`
+- 为 `runs` 增加 `best_experiment_id`
+- 为 `runs` 增加 `frontier_experiment_id`
+- 定义 run 指针更新规则
+- 为 `experiments` 增加 `decision`
+- 为 `experiments` 增加 `decision_reason`
+- 为 `experiments` 增加 `is_best_so_far`
+- 增加 `crash` 与 `timeout` 的结构化落盘
+- 为训练入口增加 `participates_in_ranking` 开关
+- 定义 best 排名规则，至少综合 `top1_acc`、`val_loss`、训练耗时
+- 前端训练记录区标出 `baseline`、`best`、`frontier`
+- 前端结果区默认展示 `best`，并能查看其比较基线和决策原因
+
+完成标准：
+
+- 每个 run 都能明确看到 baseline、best、frontier
+- 每个 experiment 都能区分“执行状态”和“研究决策状态”
+- 自动调优可以基于统一比较规则做 keep / discard
+- 前端不会再把“最新实验”误当成“最佳实验”
+
 ## 4. 数据库任务
 
 第一版建议至少建这些表：
@@ -233,6 +270,8 @@ MVP 不包含模型结构搜索，只做参数实验。
 - 创建时间和更新时间
 - 状态字段
 - 索引设计
+- run 级锚点字段设计：`baseline_experiment_id`、`best_experiment_id`、`frontier_experiment_id`
+- experiment 级决策字段设计：`decision`、`decision_reason`、`is_best_so_far`
 
 优先级：
 
@@ -252,12 +291,16 @@ MVP 不包含模型结构搜索，只做参数实验。
 - `POST /runs`
 - `GET /runs/{run_id}`
 - `GET /runs/{run_id}/metrics`
+- `GET /runs/{run_id}/summary`
+  返回 baseline / best / frontier 与统一排名结果
 - `POST /runs/{run_id}/proposal`
 - `POST /runs/proposal/test`
 - `POST /experiments`
 - `GET /experiments/{experiment_id}`
 - `POST /experiments/{experiment_id}/train`
 - `POST /experiments/{experiment_id}/result`
+- `POST /experiments/{experiment_id}/decision`
+  写入 keep / discard / crash / timeout 与原因
 - `GET /models/{model_name}/parameter-space`
 - `POST /experiments/{experiment_id}/retry`
   当前尚未实现，可在 `train` 语义稳定后补齐
@@ -437,3 +480,6 @@ AI reflection 可用：
 12. `进行中` 接通真实 proposal 到追加实验流程
 13. `待做` 落地 reflection 生成与展示
 14. `待做` 增加 pause / resume 与半自治调度
+15. `待做` 增加 run 级 `baseline` / `best` / `frontier` 锚点
+16. `待做` 增加 experiment 级 keep / discard / crash / timeout 决策层
+17. `待做` 增加统一 best 排名规则与参与排名开关

@@ -113,11 +113,39 @@ def _build_followup_config(latest_experiment: dict, proposal_changes: dict) -> d
         "model_family": latest_experiment["config"]["model_family"],
         "model_name": latest_experiment["config"]["model_name"],
         "parameter_space_version": latest_experiment["config"]["parameter_space_version"],
+        "participates_in_ranking": latest_experiment["config"].get("participates_in_ranking", True),
         "params": {
             **latest_experiment["config"]["params"],
             **{key: value for key, value in proposal_changes.items() if value is not None},
         },
     }
+
+
+def _resolve_followup_source_experiment(db: SessionLocal, run_id: str, proposal_payload: dict) -> dict:
+    """Pick the experiment that the next round should branch from."""
+    run_detail = get_run_detail(db, run_id)
+    if run_detail is None:
+        raise ValueError("Run not found during auto train")
+
+    experiment_ids_in_run = {experiment.id for experiment in run_detail.experiments}
+    candidate_ids: list[str] = []
+    candidate_ids.extend(proposal_payload.get("based_on_experiment_ids") or [])
+    if run_detail.frontier_experiment_id:
+        candidate_ids.append(run_detail.frontier_experiment_id)
+    if run_detail.best_experiment_id:
+        candidate_ids.append(run_detail.best_experiment_id)
+    if run_detail.experiments:
+        candidate_ids.append(run_detail.experiments[-1].id)
+
+    for experiment_id in candidate_ids:
+        if experiment_id not in experiment_ids_in_run:
+            continue
+        experiment_detail = get_experiment_detail(db, experiment_id)
+        if experiment_detail is None:
+            continue
+        return experiment_detail.model_dump()
+
+    raise ValueError("No valid source experiment found for the next auto-train round")
 
 
 def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
@@ -201,7 +229,6 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
         _update_task(task_id, summary=summary)
         _append_task_log(task_id, f"Baseline finished: {summary['baseline']['summary']}")
 
-        current_experiment_detail = baseline_detail
         for round_index in range(1, request.rounds + 1):
             task = _snapshot_task(task_id)
             if task is None or task.stop_requested:
@@ -218,7 +245,17 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
             proposal_payload = proposal.model_dump()
             _append_task_log(task_id, f"Round {round_index}: AI suggested {proposal.hypothesis}")
 
-            followup_config = _build_followup_config(current_experiment_detail, proposal_payload["changes"])
+            db = SessionLocal()
+            try:
+                source_experiment_detail = _resolve_followup_source_experiment(db, run_id, proposal_payload)
+            finally:
+                db.close()
+            _append_task_log(
+                task_id,
+                f"Round {round_index}: branching from {source_experiment_detail['id']} for the next experiment",
+            )
+
+            followup_config = _build_followup_config(source_experiment_detail, proposal_payload["changes"])
             db = SessionLocal()
             try:
                 next_experiment = create_experiment(

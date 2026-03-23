@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.models.experiment import ExperimentModel
@@ -16,6 +17,15 @@ from app.workers.experiment_worker import execute_experiment
 
 TRAINING_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="autovisionlab-train")
 STOP_EVENTS: dict[str, Event] = {}
+
+
+def cleanup_stale_running_experiments(db: Session) -> int:
+    """Discard experiments left in running state after an unclean shutdown."""
+    stale_experiments = db.scalars(select(ExperimentModel).where(ExperimentModel.status == "running")).all()
+    for experiment in stale_experiments:
+        discard_experiment(db, experiment.id)
+    STOP_EVENTS.clear()
+    return len(stale_experiments)
 
 
 def _run_experiment_job(experiment_id: str) -> None:
@@ -37,8 +47,13 @@ def _run_experiment_job(experiment_id: str) -> None:
         save_experiment_result(db, experiment_id=experiment_id, result=result)
     except TrainingInterruptedError:
         discard_experiment(db, experiment_id)
-    except Exception:
+    except Exception as error:
         update_experiment_status(db, experiment_id, "failed")
+        experiment = db.get(ExperimentModel, experiment_id)
+        if experiment is not None:
+            experiment.decision = "crash"
+            experiment.decision_reason = str(error)
+            db.commit()
     finally:
         STOP_EVENTS.pop(experiment_id, None)
         db.close()

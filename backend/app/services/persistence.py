@@ -12,10 +12,79 @@ from app.models.experiment import ExperimentModel
 from app.models.result import ResultModel
 from app.models.run import RunModel
 from app.schemas.ai import ProposalSchema, ReflectionSchema, ResultSchema
-from app.schemas.common import PointMetric
-from app.schemas.experiment import ExperimentCreateRequest, ExperimentDetailResponse, ExperimentSummary
+from app.schemas.common import ExperimentDecision, PointMetric
+from app.schemas.experiment import ExperimentCreateRequest, ExperimentDecisionRequest, ExperimentDetailResponse, ExperimentSummary
 from app.schemas.parameter_space import EditableParameterSpace, ExperimentConfig
-from app.schemas.run import RunCreateRequest, RunDetailResponse, RunListItem, RunMetricsResponse
+from app.schemas.run import RunCreateRequest, RunDetailResponse, RunListItem, RunMetricsResponse, RunSummaryResponse
+
+
+def _experiment_ranking_key(experiment: ExperimentModel) -> tuple[float, float, float, float]:
+    result = experiment.result or {}
+    metrics = result.get("metrics") or {}
+    resource = result.get("resource") or {}
+    top1_acc = metrics.get("top1_acc")
+    val_loss = metrics.get("val_loss")
+    training_seconds = resource.get("training_seconds")
+    created_at_ts = experiment.created_at.timestamp()
+    return (
+        float(top1_acc) if top1_acc is not None else float("-inf"),
+        -float(val_loss) if val_loss is not None else float("-inf"),
+        -float(training_seconds) if training_seconds is not None else float("-inf"),
+        created_at_ts,
+    )
+
+
+def _refresh_run_summary(db: Session, run_id: str) -> RunModel | None:
+    run = db.get(RunModel, run_id)
+    if run is None:
+        return None
+
+    experiments = db.scalars(
+        select(ExperimentModel).where(ExperimentModel.run_id == run_id).order_by(ExperimentModel.created_at.asc())
+    ).all()
+    if not experiments:
+        run.baseline_experiment_id = None
+        run.best_experiment_id = None
+        run.frontier_experiment_id = None
+        run.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(run)
+        return run
+
+    baseline_experiment = experiments[0]
+    ranked_candidates = [
+        experiment
+        for experiment in experiments
+        if experiment.status == "success" and experiment.experiment_config.get("participates_in_ranking", True)
+    ]
+    best_experiment = max(ranked_candidates, key=_experiment_ranking_key, default=None)
+    frontier_experiment = best_experiment or experiments[-1]
+
+    for experiment in experiments:
+        experiment.is_best_so_far = best_experiment is not None and experiment.id == best_experiment.id
+        if experiment.status == "failed" and experiment.decision is None:
+            experiment.decision = "crash"
+            experiment.decision_reason = experiment.decision_reason or "Training failed before producing a valid result."
+        if experiment.status == "discarded" and experiment.decision is None:
+            experiment.decision = "discard"
+            experiment.decision_reason = experiment.decision_reason or "Experiment was stopped or discarded before completion."
+        if experiment.status == "success":
+            if best_experiment is not None and experiment.id == best_experiment.id:
+                experiment.decision = "keep"
+                experiment.decision_reason = "Current best experiment under the run ranking."
+            elif experiment.decision is None:
+                experiment.decision = "discard"
+                experiment.decision_reason = "Completed successfully but did not beat the current best experiment."
+        experiment.updated_at = datetime.utcnow()
+
+    run.baseline_experiment_id = baseline_experiment.id
+    run.best_experiment_id = best_experiment.id if best_experiment is not None else None
+    run.frontier_experiment_id = frontier_experiment.id if frontier_experiment is not None else None
+    run.status = "active"
+    run.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(run)
+    return run
 
 
 def _to_experiment_summary(experiment: ExperimentModel) -> ExperimentSummary:
@@ -24,6 +93,8 @@ def _to_experiment_summary(experiment: ExperimentModel) -> ExperimentSummary:
         run_id=experiment.run_id,
         status=experiment.status,
         model_name=experiment.experiment_config["model_name"],
+        decision=experiment.decision,
+        is_best_so_far=bool(experiment.is_best_so_far),
     )
 
 
@@ -38,6 +109,9 @@ def _to_run_detail(db: Session, run: RunModel) -> RunDetailResponse:
         model_name=run.model_name,
         status=run.status,
         notes=run.notes,
+        baseline_experiment_id=run.baseline_experiment_id,
+        best_experiment_id=run.best_experiment_id,
+        frontier_experiment_id=run.frontier_experiment_id,
         experiments=[_to_experiment_summary(experiment) for experiment in experiments],
     )
 
@@ -74,7 +148,7 @@ def create_run(db: Session, request: RunCreateRequest) -> RunDetailResponse:
         task_type=request.base_config.task_type,
         dataset=request.dataset,
         model_name=request.model_name,
-        status="draft",
+        status="active",
         notes=request.notes,
     )
     db.add(run)
@@ -107,6 +181,10 @@ def create_experiment(db: Session, request: ExperimentCreateRequest) -> Experime
         id=f"exp_{uuid4().hex[:8]}",
         run_id=request.run_id,
         status="queued",
+        decision=None,
+        decision_reason=None,
+        baseline_experiment_id=run.baseline_experiment_id,
+        is_best_so_far=False,
         experiment_config=request.config.model_dump(),
         editable_parameter_space=request.parameter_space.model_dump(),
         proposal=request.proposal.model_dump() if request.proposal else None,
@@ -115,6 +193,8 @@ def create_experiment(db: Session, request: ExperimentCreateRequest) -> Experime
     )
     db.add(experiment)
     db.commit()
+    db.refresh(experiment)
+    _refresh_run_summary(db, request.run_id)
     db.refresh(experiment)
     return _to_experiment_detail(experiment)
 
@@ -125,8 +205,13 @@ def update_experiment_status(db: Session, experiment_id: str, status: str) -> Ex
     if experiment is None:
         return None
     experiment.status = status
+    if status == "failed" and experiment.decision is None:
+        experiment.decision = "crash"
+        experiment.decision_reason = "Training failed before producing a valid result."
     experiment.updated_at = datetime.utcnow()
     db.commit()
+    db.refresh(experiment)
+    _refresh_run_summary(db, experiment.run_id)
     db.refresh(experiment)
     return _to_experiment_detail(experiment)
 
@@ -144,6 +229,10 @@ def _to_experiment_detail(experiment: ExperimentModel) -> ExperimentDetailRespon
         id=experiment.id,
         run_id=experiment.run_id,
         status=experiment.status,
+        decision=experiment.decision,
+        decision_reason=experiment.decision_reason,
+        baseline_experiment_id=experiment.baseline_experiment_id,
+        is_best_so_far=bool(experiment.is_best_so_far),
         config=ExperimentConfig.model_validate(experiment.experiment_config),
         parameter_space=EditableParameterSpace.model_validate(experiment.editable_parameter_space),
         proposal=ProposalSchema.model_validate(experiment.proposal) if experiment.proposal else None,
@@ -191,8 +280,49 @@ def save_experiment_result(db: Session, experiment_id: str, result: ResultSchema
     experiment.status = result.status
     experiment.updated_at = datetime.utcnow()
     db.commit()
+    _refresh_run_summary(db, experiment.run_id)
     db.refresh(experiment)
     return _to_experiment_detail(experiment)
+
+
+def update_experiment_decision(
+    db: Session,
+    experiment_id: str,
+    request: ExperimentDecisionRequest,
+) -> ExperimentDetailResponse | None:
+    """Persist one experiment research decision."""
+    experiment = db.get(ExperimentModel, experiment_id)
+    if experiment is None:
+        return None
+    experiment.decision = request.decision
+    experiment.decision_reason = request.decision_reason
+    experiment.updated_at = datetime.utcnow()
+    db.commit()
+    _refresh_run_summary(db, experiment.run_id)
+    db.refresh(experiment)
+    return _to_experiment_detail(experiment)
+
+
+def get_run_summary(db: Session, run_id: str) -> RunSummaryResponse | None:
+    """Return run-level research anchors and decision counts."""
+    run = _refresh_run_summary(db, run_id)
+    if run is None:
+        return None
+    experiments = db.scalars(select(ExperimentModel).where(ExperimentModel.run_id == run_id)).all()
+    counts = {"keep": 0, "discard": 0, "crash": 0, "timeout": 0}
+    for experiment in experiments:
+        if experiment.decision in counts:
+            counts[experiment.decision] += 1
+    return RunSummaryResponse(
+        run_id=run_id,
+        baseline_experiment_id=run.baseline_experiment_id,
+        best_experiment_id=run.best_experiment_id,
+        frontier_experiment_id=run.frontier_experiment_id,
+        keep_count=counts["keep"],
+        discard_count=counts["discard"],
+        crash_count=counts["crash"],
+        timeout_count=counts["timeout"],
+    )
 
 
 def get_run_metrics(db: Session, run_id: str, metric_name: str) -> RunMetricsResponse | None:
@@ -294,9 +424,12 @@ def discard_experiment(db: Session, experiment_id: str) -> ExperimentDetailRespo
             artifact_path.unlink()
 
     experiment.status = "discarded"
+    experiment.decision = "discard"
+    experiment.decision_reason = "Experiment was stopped or discarded before completion."
     experiment.result = None
     experiment.reflection = None
     experiment.updated_at = datetime.utcnow()
     db.commit()
+    _refresh_run_summary(db, experiment.run_id)
     db.refresh(experiment)
     return _to_experiment_detail(experiment)

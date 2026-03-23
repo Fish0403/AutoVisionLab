@@ -6,9 +6,9 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db_session
 from app.schemas.ai import ProposalSchema
-from app.schemas.run import AutoTrainStartRequest, AutoTrainTaskResponse, RunCreateRequest, RunDetailResponse, RunListItem, RunMetricsResponse
+from app.schemas.run import AutoTrainStartRequest, AutoTrainTaskResponse, RunCreateRequest, RunDetailResponse, RunListItem, RunMetricsResponse, RunSummaryResponse
 from app.services.auto_train_service import get_auto_train_task, start_auto_train_task, stop_auto_train_task
-from app.services.persistence import clear_all_records, clear_run_records, create_run, get_run_detail, get_run_metrics, list_runs
+from app.services.persistence import clear_all_records, clear_run_records, create_run, get_run_detail, get_run_metrics, get_run_summary, list_runs
 from app.services.proposal_service import generate_aihubmix_proposal, test_aihubmix_connection
 
 
@@ -46,6 +46,15 @@ def get_metrics(run_id: str, metric_name: str = "top1_acc", db: Session = Depend
     if metrics is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return metrics
+
+
+@router.get("/{run_id}/summary", response_model=RunSummaryResponse)
+def get_run_summary_endpoint(run_id: str, db: Session = Depends(get_db_session)) -> RunSummaryResponse:
+    """Return run-level anchors and decision counts."""
+    summary = get_run_summary(db, run_id)
+    if summary is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return summary
 
 
 @router.post("/{run_id}/proposal", response_model=ProposalSchema)

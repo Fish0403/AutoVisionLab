@@ -196,11 +196,31 @@ def load_run_detail(run_id: str) -> dict[str, Any]:
             "model_name": "mobilenet_v2",
             "status": "active",
             "notes": "Using Streamlit fallback demo data because backend is not reachable.",
+            "baseline_experiment_id": "exp_demo_001",
+            "best_experiment_id": "exp_demo_002",
+            "frontier_experiment_id": "exp_demo_002",
             "experiments": [
-                {"id": "exp_demo_001", "run_id": run_id, "status": "success", "model_name": "mobilenet_v2"},
-                {"id": "exp_demo_002", "run_id": run_id, "status": "success", "model_name": "mobilenet_v2"},
-                {"id": "exp_demo_003", "run_id": run_id, "status": "running", "model_name": "mobilenet_v2"},
+                {"id": "exp_demo_001", "run_id": run_id, "status": "success", "model_name": "mobilenet_v2", "decision": "keep", "is_best_so_far": False},
+                {"id": "exp_demo_002", "run_id": run_id, "status": "success", "model_name": "mobilenet_v2", "decision": "keep", "is_best_so_far": True},
+                {"id": "exp_demo_003", "run_id": run_id, "status": "success", "model_name": "mobilenet_v2", "decision": "discard", "is_best_so_far": False},
             ],
+        },
+    )
+
+
+def load_run_summary(run_id: str) -> dict[str, Any]:
+    """Return one run-level summary."""
+    return request_json(
+        f"/runs/{run_id}/summary",
+        {
+            "run_id": run_id,
+            "baseline_experiment_id": "exp_demo_001",
+            "best_experiment_id": "exp_demo_002",
+            "frontier_experiment_id": "exp_demo_002",
+            "keep_count": 2,
+            "discard_count": 1,
+            "crash_count": 0,
+            "timeout_count": 0,
         },
     )
 
@@ -230,12 +250,17 @@ def load_experiment_detail(experiment_id: str) -> dict[str, Any]:
             "id": experiment_id,
             "run_id": "run_demo_001",
             "status": "success",
+            "decision": "keep",
+            "decision_reason": "当前 run 下的最佳实验。",
+            "baseline_experiment_id": "exp_demo_001",
+            "is_best_so_far": experiment_id == "exp_demo_002",
             "config": {
                 "task_type": "classification",
                 "dataset": "cifar10",
                 "model_family": "mobilenet",
                 "model_name": "mobilenet_v2",
                 "parameter_space_version": "mobilenet_v2@v1",
+                "participates_in_ranking": True,
                 "params": {
                     "optimizer": "adamw",
                     "learning_rate": 0.004,
@@ -339,7 +364,15 @@ def format_proposal_changes(changes: dict[str, Any]) -> str:
         for key, value in changes.items()
         if key not in AI_BLOCKED_CHANGE_FIELDS and value is not None
     ]
-    return ", ".join(visible_changes) if visible_changes else "no parameter changes"
+    return ", ".join(visible_changes) if visible_changes else "无参数变更"
+
+
+def get_best_experiment_id(run_id: str) -> str | None:
+    """Return the best experiment id for one run."""
+    best_experiment = get_best_experiment_detail(run_id)
+    if best_experiment is None:
+        return None
+    return best_experiment.get("id")
 
 
 def sanitize_ai_changes(changes: dict[str, Any]) -> dict[str, Any]:
@@ -476,26 +509,26 @@ def refresh_ai_panel_view() -> None:
     with LIVE_AI_PANEL_CONTAINER.container():
         with st.container(border=True):
             if not suggestion_payload:
-                st.caption("AI suggestions and tuning trends will appear here during or after training.")
-                st.code("Waiting for training output...", language=None, wrap_lines=True, height=180)
+                st.caption("AI 建议和调优趋势会在训练过程中或结束后显示在这里。")
+                st.code("等待训练输出...", language=None, wrap_lines=True, height=180)
                 return
             if suggestion_payload.get("mode") == "auto":
                 final_proposal = suggestion_payload.get("final_proposal")
                 baseline = suggestion_payload.get("baseline", {})
                 rounds = suggestion_payload.get("rounds", [])
                 progress = st.session_state.get("auto_task_progress") or {}
-                st.markdown("**Auto Train Summary**")
+                st.markdown("**自动训练总结**")
                 if progress and progress.get("status") in {"queued", "running", "stopping"}:
                     completed_rounds = len(rounds)
                     current_round = progress.get("current_round", 0)
                     total_rounds = progress.get("total_rounds", 0)
                     current_experiment_id = progress.get("current_experiment_id") or "-"
                     st.caption(
-                        f"Progress: completed {completed_rounds}/{total_rounds} rounds. "
-                        f"Current round: {current_round}/{total_rounds}. "
-                        f"Experiment: {current_experiment_id}."
+                        f"进度：已完成 {completed_rounds}/{total_rounds} 轮，"
+                        f"当前轮次 {current_round}/{total_rounds}，"
+                        f"实验 {current_experiment_id}。"
                     )
-                st.markdown(f"Baseline: `{baseline.get('experiment_id', '-')}`  ")
+                st.markdown(f"基线实验：`{baseline.get('experiment_id', '-')}`  ")
                 st.caption(baseline.get("summary", ""))
                 trend_rows = []
                 baseline_metrics = baseline.get("metrics", {})
@@ -510,7 +543,7 @@ def refresh_ai_panel_view() -> None:
                 for round_info in rounds:
                     round_metrics = round_info["result"].get("metrics", {})
                     st.markdown(
-                        f"Round {round_info['round_index']}: "
+                        f"第 {round_info['round_index']} 轮："
                         f"{format_proposal_changes(round_info['proposal']['changes'])}"
                     )
                     st.caption(
@@ -525,7 +558,7 @@ def refresh_ai_panel_view() -> None:
                         }
                     )
                 if len(trend_rows) > 0:
-                    st.markdown("**Tuning Trend**")
+                    st.markdown("**调优趋势**")
                     st.line_chart(
                         trend_rows,
                         x="round_index",
@@ -533,21 +566,21 @@ def refresh_ai_panel_view() -> None:
                         use_container_width=True,
                     )
                 if final_proposal:
-                    st.markdown("**Next Suggestion**")
+                    st.markdown("**下一步建议**")
                     st.markdown(final_proposal["hypothesis"])
                     st.caption(final_proposal["reason"])
                     st.markdown(f"`{format_proposal_changes(final_proposal['changes'])}`")
                 else:
-                    st.caption("Auto Train is running. The trend will update after each completed round.")
+                    st.caption("自动训练进行中。每完成一轮后，这里的趋势会自动更新。")
                 return
 
             proposal = suggestion_payload["proposal"]
             result = suggestion_payload["result"]
-            st.markdown("**Post-Train Suggestion**")
-            st.caption(f"Experiment {result['experiment_id']} | {result['summary']}")
-            st.markdown(f"**Suggestion**  \n{proposal['hypothesis']}")
+            st.markdown("**单次训练建议**")
+            st.caption(f"实验 {result['experiment_id']} | {result['summary']}")
+            st.markdown(f"**建议**  \n{proposal['hypothesis']}")
             st.caption(proposal["reason"])
-            st.markdown(f"**Suggested Changes**  \n{format_proposal_changes(proposal['changes'])}")
+            st.markdown(f"**建议修改**  \n{format_proposal_changes(proposal['changes'])}")
 
 
 def generate_and_store_ai_suggestion(
@@ -831,6 +864,8 @@ def build_experiment_comparison_rows(experiments: list[dict[str, Any]]) -> list[
             {
                 "selected": True,
                 "experiment_id": experiment["id"],
+                "decision": detail.get("decision"),
+                "anchor": "",
                 "status": experiment["status"],
                 "top1_acc": metrics.get("top1_acc"),
                 "val_loss": metrics.get("val_loss"),
@@ -853,17 +888,27 @@ def build_all_training_records(runs: list[dict[str, Any]], selected_run_id: str)
     candidate_runs = runs if selected_run_id == "__all__" else [run for run in runs if run["id"] == selected_run_id]
     for run in candidate_runs:
         run_detail = load_run_detail(run["id"])
+        run_summary = load_run_summary(run["id"])
         for experiment in run_detail.get("experiments", []):
             detail = load_experiment_detail(experiment["id"])
             result = detail.get("result") or {}
             metrics = result.get("metrics") or {}
             params = detail.get("config", {}).get("params", {})
+            anchor_labels = []
+            if experiment["id"] == run_summary.get("baseline_experiment_id"):
+                anchor_labels.append("baseline")
+            if experiment["id"] == run_summary.get("best_experiment_id"):
+                anchor_labels.append("best")
+            if experiment["id"] == run_summary.get("frontier_experiment_id"):
+                anchor_labels.append("frontier")
             records.append(
                 {
                     "selected": True,
                     "run_id": run["id"],
                     "run_name": run["name"],
                     "experiment_id": experiment["id"],
+                    "anchor": "/".join(anchor_labels),
+                    "decision": detail.get("decision"),
                     "status": experiment["status"],
                     "model_name": run["model_name"],
                     "dataset": run["dataset"],
@@ -892,6 +937,39 @@ def get_latest_experiment_detail(run_id: str) -> dict[str, Any] | None:
     return load_experiment_detail(latest_experiment["id"])
 
 
+def get_best_experiment_detail(run_id: str) -> dict[str, Any] | None:
+    """Return the best finished experiment detail for one run."""
+    run_summary = load_run_summary(run_id)
+    best_experiment_id = run_summary.get("best_experiment_id")
+    if best_experiment_id:
+        return load_experiment_detail(best_experiment_id)
+
+    run_detail = load_run_detail(run_id)
+    experiments = run_detail.get("experiments", [])
+    if not experiments:
+        return None
+
+    best_detail: dict[str, Any] | None = None
+    best_key: tuple[float, float, int] | None = None
+    for index, experiment in enumerate(experiments):
+        detail = load_experiment_detail(experiment["id"])
+        if detail.get("status") != "success":
+            continue
+        metrics = (detail.get("result") or {}).get("metrics") or {}
+        top1_acc = metrics.get("top1_acc")
+        val_loss = metrics.get("val_loss")
+        ranking_key = (
+            float(top1_acc) if top1_acc is not None else float("-inf"),
+            -float(val_loss) if val_loss is not None else float("-inf"),
+            float(index),
+        )
+        if best_key is None or ranking_key > best_key:
+            best_key = ranking_key
+            best_detail = detail
+
+    return best_detail or get_latest_experiment_detail(run_id)
+
+
 def generate_fake_llm_proposal(run_id: str) -> dict[str, Any] | None:
     """Generate a deterministic fake proposal from the latest experiment."""
     latest_experiment = get_latest_experiment_detail(run_id)
@@ -915,12 +993,12 @@ def generate_fake_llm_proposal(run_id: str) -> dict[str, Any] | None:
         "task_type": "classification",
         "model_name": config["model_name"],
         "based_on_experiment_ids": [latest_experiment_id],
-        "hypothesis": "A slightly higher learning rate and label smoothing may improve convergence.",
+        "hypothesis": "适度提高学习率并增加标签平滑，可能改善早期收敛。",
         "changes": {
             "learning_rate": next_learning_rate,
             "label_smoothing": next_label_smoothing,
         },
-        "reason": "The previous experiment is used as the baseline for the next parameter trial.",
+        "reason": "基于上一轮实验结果，继续围绕收敛速度和泛化能力做小步调整。",
         "risk": "low",
         "config": {
             "task_type": config["task_type"],
@@ -928,6 +1006,7 @@ def generate_fake_llm_proposal(run_id: str) -> dict[str, Any] | None:
             "model_family": config["model_family"],
             "model_name": config["model_name"],
             "parameter_space_version": config["parameter_space_version"],
+            "participates_in_ranking": config.get("participates_in_ranking", True),
             "params": updated_params,
         },
     }
@@ -949,6 +1028,7 @@ def apply_generated_proposal(run_id: str, proposal: dict[str, Any]) -> None:
     st.session_state["augmentation_level"] = generated_params["augmentation_level"]
     st.session_state["label_smoothing"] = generated_params["label_smoothing"]
     st.session_state["aux_logits"] = generated_params["aux_logits"] if generated_params["aux_logits"] is not None else False
+    st.session_state["participates_in_ranking"] = proposal["config"].get("participates_in_ranking", True)
     st.session_state["proposal_hypothesis"] = proposal["hypothesis"]
     st.session_state["proposal_reason"] = proposal["reason"]
     st.session_state["proposal_changes"] = proposal["changes"]
@@ -962,6 +1042,7 @@ def load_reference_config(selected_run_id: str) -> dict[str, Any]:
         "run_name": "CIFAR-10 baseline study",
         "dataset": "cifar10",
         "model_name": "mobilenet_v2",
+        "participates_in_ranking": True,
         "params": {
             "optimizer": "adamw",
             "learning_rate": 0.003,
@@ -985,6 +1066,7 @@ def load_reference_config(selected_run_id: str) -> dict[str, Any]:
         "run_name": run_detail["name"],
         "dataset": latest_experiment["config"]["dataset"],
         "model_name": latest_experiment["config"]["model_name"],
+        "participates_in_ranking": latest_experiment["config"].get("participates_in_ranking", True),
         "params": latest_experiment["config"]["params"],
     }
 
@@ -1020,6 +1102,7 @@ def build_payload_from_form(form_values: dict[str, Any]) -> dict[str, Any]:
             "model_family": model_config["model_family"],
             "model_name": model_name,
             "parameter_space_version": model_config["parameter_space_version"],
+            "participates_in_ranking": bool(form_values.get("participates_in_ranking", True)),
             "params": params,
         },
         "parameter_space": model_config["parameter_space"],
@@ -1119,6 +1202,7 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
         st.session_state["augmentation_level"] = reference_config["params"]["augmentation_level"]
         st.session_state["label_smoothing"] = reference_config["params"]["label_smoothing"]
         st.session_state["aux_logits"] = bool(reference_config["params"].get("aux_logits") or False)
+        st.session_state["participates_in_ranking"] = reference_config.get("participates_in_ranking", True)
         st.session_state["based_on_experiment_ids"] = []
         st.session_state["form_reference_run"] = selected_run_id
 
@@ -1162,6 +1246,7 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
             st.checkbox("Enable aux_logits", disabled=model_name != "googlenet", key="aux_logits")
         with footer_right:
             ai_rounds = st.number_input("Auto Train Rounds", min_value=1, max_value=20, value=10, step=1, key="ai_test_rounds")
+        st.checkbox("Rank This Experiment", key="participates_in_ranking")
 
     payload = build_payload_from_form(
         {
@@ -1178,6 +1263,7 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
             "augmentation_level": st.session_state["augmentation_level"],
             "label_smoothing": st.session_state["label_smoothing"],
             "aux_logits": st.session_state["aux_logits"],
+            "participates_in_ranking": st.session_state["participates_in_ranking"],
             "based_on_experiment_ids": st.session_state.get("based_on_experiment_ids", []),
         }
     )
@@ -1242,7 +1328,7 @@ def render_activity_log() -> None:
 def render_ai_suggestion_panel() -> None:
     """Render the latest AI suggestion card."""
     global LIVE_AI_PANEL_CONTAINER
-    st.subheader("AI Suggestion")
+    st.subheader("AI 建议")
     LIVE_AI_PANEL_CONTAINER = st.empty()
     refresh_ai_panel_view()
 
@@ -1308,12 +1394,38 @@ def render_training_records_workspace(runs: list[dict[str, Any]], selected_run_i
         st.info("No training records yet.")
         return
 
+    best_experiment_ids: set[str] = set()
+    baseline_experiment_ids: set[str] = set()
+    frontier_experiment_ids: set[str] = set()
+    if selected_run_id == "__all__":
+        for run in runs:
+            summary = load_run_summary(run["id"])
+            if summary.get("best_experiment_id"):
+                best_experiment_ids.add(summary["best_experiment_id"])
+            if summary.get("baseline_experiment_id"):
+                baseline_experiment_ids.add(summary["baseline_experiment_id"])
+            if summary.get("frontier_experiment_id"):
+                frontier_experiment_ids.add(summary["frontier_experiment_id"])
+    else:
+        summary = load_run_summary(selected_run_id)
+        if summary.get("best_experiment_id"):
+            best_experiment_ids.add(summary["best_experiment_id"])
+        if summary.get("baseline_experiment_id"):
+            baseline_experiment_ids.add(summary["baseline_experiment_id"])
+        if summary.get("frontier_experiment_id"):
+            frontier_experiment_ids.add(summary["frontier_experiment_id"])
+
     selection_key = "training_records_selected_experiments"
     selected_experiment_ids = st.session_state.get(selection_key, [row["experiment_id"] for row in all_rows])
     editor_rows = []
     for row in all_rows:
         editor_row = dict(row)
         editor_row["selected"] = row["experiment_id"] in selected_experiment_ids
+        editor_row["best"] = "最佳" if row["experiment_id"] in best_experiment_ids else ""
+        if row["experiment_id"] in baseline_experiment_ids:
+            editor_row["anchor"] = f"{editor_row.get('anchor', '')}/baseline".strip("/")
+        if row["experiment_id"] in frontier_experiment_ids:
+            editor_row["anchor"] = f"{editor_row.get('anchor', '')}/frontier".strip("/")
         editor_rows.append(editor_row)
 
     edited_rows = st.data_editor(
@@ -1323,8 +1435,14 @@ def render_training_records_workspace(runs: list[dict[str, Any]], selected_run_i
         key="training_records_editor",
         column_config={
             "selected": st.column_config.CheckboxColumn("Compare", help="Include this experiment in the chart comparison"),
+            "best": st.column_config.TextColumn("最佳"),
+            "anchor": st.column_config.TextColumn("锚点"),
+            "decision": st.column_config.TextColumn("决策"),
         },
         disabled=[
+            "best",
+            "anchor",
+            "decision",
             "run_id",
             "run_name",
             "experiment_id",
@@ -1381,31 +1499,51 @@ def render_result_workspace(runs: list[dict[str, Any]], selected_run_id: str) ->
     """Render the right-side result workspace."""
     st.subheader("Results")
     selected_experiment_id = st.session_state.get("selected_experiment_id")
-    if not selected_experiment_id and selected_run_id not in {"", "__all__"}:
-        latest_experiment = get_latest_experiment_detail(selected_run_id)
-        if latest_experiment is not None:
-            selected_experiment_id = latest_experiment["id"]
+    best_experiment_detail = None
+    run_summary = None
+    if selected_run_id not in {"", "__all__"}:
+        run_summary = load_run_summary(selected_run_id)
+        best_experiment_detail = get_best_experiment_detail(selected_run_id)
+        if not selected_experiment_id and best_experiment_detail is not None:
+            selected_experiment_id = best_experiment_detail["id"]
             st.session_state["selected_experiment_id"] = selected_experiment_id
 
-    if selected_experiment_id:
-        experiment_detail = load_experiment_detail(selected_experiment_id)
-        result = experiment_detail.get("result") or {}
+    inspected_experiment_detail = load_experiment_detail(selected_experiment_id) if selected_experiment_id else None
+    summary_experiment_detail = best_experiment_detail or inspected_experiment_detail
+
+    if summary_experiment_detail:
+        result = summary_experiment_detail.get("result") or {}
         metrics = result.get("metrics") or {}
         metric_columns = st.columns(4)
-        metric_columns[0].metric("Status", experiment_detail.get("status", "-"))
+        metric_columns[0].metric("Status", summary_experiment_detail.get("status", "-"))
         metric_columns[1].metric("Top1 Acc", metrics.get("top1_acc", "-"))
         metric_columns[2].metric("Val Loss", metrics.get("val_loss", "-"))
         metric_columns[3].metric("Train Loss", metrics.get("train_loss", "-"))
+        if run_summary is not None:
+            st.caption(
+                " / ".join(
+                    [
+                        f"baseline={run_summary.get('baseline_experiment_id') or '-'}",
+                        f"best={run_summary.get('best_experiment_id') or '-'}",
+                        f"frontier={run_summary.get('frontier_experiment_id') or '-'}",
+                    ]
+                )
+            )
 
         with st.container(border=True):
-            st.markdown("**Latest Experiment Detail**")
+            title = "最佳实验详情" if best_experiment_detail is not None else "实验详情"
+            st.markdown(f"**{title}**")
             st.json(
                 {
-                    "experiment_id": experiment_detail.get("id"),
-                    "run_id": experiment_detail.get("run_id"),
-                    "config": experiment_detail.get("config"),
-                    "result": experiment_detail.get("result"),
-                    "reflection": experiment_detail.get("reflection"),
+                    "experiment_id": summary_experiment_detail.get("id"),
+                    "run_id": summary_experiment_detail.get("run_id"),
+                    "decision": summary_experiment_detail.get("decision"),
+                    "decision_reason": summary_experiment_detail.get("decision_reason"),
+                    "baseline_experiment_id": summary_experiment_detail.get("baseline_experiment_id"),
+                    "is_best_so_far": summary_experiment_detail.get("is_best_so_far"),
+                    "config": summary_experiment_detail.get("config"),
+                    "result": summary_experiment_detail.get("result"),
+                    "reflection": summary_experiment_detail.get("reflection"),
                 },
                 expanded=False,
             )

@@ -4,7 +4,9 @@ from fastapi import FastAPI
 
 from app.api.router import api_router
 from app.core.settings import get_settings
+from app.db.session import SessionLocal
 from app.db.init_db import init_database
+from app.services.training_runner import cleanup_stale_running_experiments
 
 
 settings = get_settings()
@@ -20,6 +22,11 @@ app.include_router(api_router)
 def initialize_database() -> None:
     """Create demo tables on application startup."""
     init_database()
+    db = SessionLocal()
+    try:
+        cleanup_stale_running_experiments(db)
+    finally:
+        db.close()
 
 
 @app.get("/health", tags=["system"])

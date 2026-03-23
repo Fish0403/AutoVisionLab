@@ -61,5 +61,5 @@ class ExperimentConfig(BaseModel):
     model_family: Literal["mobilenet", "googlenet"]
     model_name: Literal["mobilenet_v2", "googlenet"]
     parameter_space_version: str
+    participates_in_ranking: bool = True
     params: ExperimentParams
-

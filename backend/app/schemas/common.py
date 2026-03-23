@@ -13,6 +13,7 @@ ExperimentStatus = Literal["draft", "queued", "running", "success", "failed", "d
 RunStatus = Literal["draft", "active", "paused", "completed", "failed"]
 ReflectionOutcome = Literal["improved", "neutral", "degraded", "failed"]
 ResultStatus = Literal["success", "failed"]
+ExperimentDecision = Literal["keep", "discard", "crash", "timeout"]
 
 
 class ArtifactPaths(BaseModel):

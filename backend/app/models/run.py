@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, Text
+from sqlalchemy import DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -20,6 +20,8 @@ class RunModel(Base):
     model_name: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    baseline_experiment_id: Mapped[str | None] = mapped_column(ForeignKey("experiments.id"), nullable=True)
+    best_experiment_id: Mapped[str | None] = mapped_column(ForeignKey("experiments.id"), nullable=True)
+    frontier_experiment_id: Mapped[str | None] = mapped_column(ForeignKey("experiments.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-

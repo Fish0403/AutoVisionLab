@@ -5,13 +5,14 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db_session
 from app.schemas.ai import ResultSchema
-from app.schemas.experiment import ExperimentCreateRequest, ExperimentDetailResponse
+from app.schemas.experiment import ExperimentCreateRequest, ExperimentDecisionRequest, ExperimentDetailResponse
 from app.services.persistence import (
     create_experiment,
     discard_experiment,
     get_experiment_config,
     get_experiment_detail,
     save_experiment_result,
+    update_experiment_decision,
     update_experiment_status,
 )
 from app.services.training_runner import start_experiment_training, stop_experiment_training
@@ -52,6 +53,19 @@ def save_result_endpoint(
 ) -> ExperimentDetailResponse:
     """Create or replace the structured result for one experiment."""
     experiment = save_experiment_result(db, experiment_id=experiment_id, result=request)
+    if experiment is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    return experiment
+
+
+@router.post("/{experiment_id}/decision", response_model=ExperimentDetailResponse)
+def save_decision_endpoint(
+    experiment_id: str,
+    request: ExperimentDecisionRequest,
+    db: Session = Depends(get_db_session),
+) -> ExperimentDetailResponse:
+    """Create or replace the research decision for one experiment."""
+    experiment = update_experiment_decision(db, experiment_id=experiment_id, request=request)
     if experiment is None:
         raise HTTPException(status_code=404, detail="Experiment not found")
     return experiment

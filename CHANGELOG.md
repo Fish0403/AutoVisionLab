@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-03-23
+
+- 调整 [`backend/app/services/proposal_service.py`](/home/fish/AutoVisionLab/backend/app/services/proposal_service.py) 的 proposal prompt 构造逻辑，不再只向 AI 发送 latest experiment。
+- proposal 上下文改为包含完整 run 历史摘要，按时间顺序提供每轮实验的状态、decision、指标、训练耗时、参数快照和 proposal 摘要。
+- proposal prompt 现在显式提供 run 的 `baseline_experiment_id`、`best_experiment_id`、`frontier_experiment_id`，要求 AI 结合整体历史而不是只盯最后一轮。
+- prompt 中新增约束：`based_on_experiment_ids` 必须填写实际参考的实验 id，可包含多个，以便后续回溯 proposal 的依据。
+- 调整 [`backend/app/services/auto_train_service.py`](/home/fish/AutoVisionLab/backend/app/services/auto_train_service.py) 的 follow-up 分支选择策略，auto-train 追加实验时优先遵循 proposal 的 `based_on_experiment_ids`。
+- 当 proposal 未给出可用来源时，auto-train 现在按 `frontier_experiment_id` -> `best_experiment_id` -> 当前 run 最新实验的顺序回退，而不再默认沿着刚完成的上一轮继续追加。
+- 后台 auto-train 日志会显式记录每一轮是从哪个 experiment 分支出去，便于排查 proposal 依据与执行路径是否一致。
+
+## 2026-03-21
+
+- 在 [`plan.md`](/home/fish/AutoVisionLab/plan.md) 中补充下一阶段优先增强方案，明确 `baseline_experiment_id`、`best_experiment_id`、`frontier_experiment_id` 三类 run 级锚点。
+- 在 [`plan.md`](/home/fish/AutoVisionLab/plan.md) 中补充 experiment 决策层设计，区分训练状态与研究决策状态，新增 `keep` / `discard` / `crash` / `timeout` 的结构化语义。
+- 在 [`plan.md`](/home/fish/AutoVisionLab/plan.md) 中补充统一排名与保留策略设计，并明确当前阶段继续以固定 `epochs` 为主，不额外引入固定时长预算。
+- 在 [`tasks.md`](/home/fish/AutoVisionLab/tasks.md) 中新增 `Phase 8: 研究决策与可比性增强`，拆分 run 指针、experiment 决策层、排序规则与前端展示任务。
+- 在 [`tasks.md`](/home/fish/AutoVisionLab/tasks.md) 中同步修正“暂不做 discard/keep 机制”的旧表述，改为下一阶段应补齐结构化决策层，避免规划与当前方向冲突。
+- 本次更新属于设计记录与任务规划收敛，尚未实现对应后端 schema、API、数据库迁移和前端交互。
+
 ## 2026-03-20
 
 - 初始化 `backend/` 和 `frontend/` 目录骨架，保持第一版只覆盖分类任务。
