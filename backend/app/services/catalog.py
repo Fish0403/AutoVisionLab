@@ -3,7 +3,7 @@
 from app.schemas.ai import ProposalSchema, ReflectionSchema, ResultSchema
 from app.schemas.common import ArtifactPaths, MetricsSnapshot, PointMetric, ResourceUsage
 from app.schemas.experiment import ExperimentDetailResponse, ExperimentSummary
-from app.schemas.parameter_space import ExperimentConfig, ExperimentParams
+from app.schemas.parameter_space import ExperimentConfig, ExperimentParams, SearchPolicy
 from app.schemas.run import RunDetailResponse, RunListItem, RunMetricsResponse
 from app.services.parameter_space import get_parameter_space
 
@@ -15,6 +15,7 @@ def _sample_config() -> ExperimentConfig:
         model_family="mobilenet",
         model_name="mobilenet_v2",
         parameter_space_version="mobilenet_v2@v1",
+        search_policy=SearchPolicy(),
         params=ExperimentParams(
             optimizer="adamw",
             learning_rate=0.003,
@@ -23,7 +24,8 @@ def _sample_config() -> ExperimentConfig:
             epochs=30,
             weight_decay=0.0001,
             scheduler="cosine",
-            augmentation_level="medium",
+            augmentation_policy="basic",
+            loss_name="cross_entropy_with_label_smoothing",
             label_smoothing=0.1,
         ),
     )

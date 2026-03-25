@@ -11,6 +11,7 @@ from app.core.settings import get_settings
 from app.models.experiment import ExperimentModel
 from app.models.result import ResultModel
 from app.models.run import RunModel
+from app.services.run_logging import append_run_log
 from app.schemas.ai import ProposalSchema, ReflectionSchema, ResultSchema
 from app.schemas.common import ExperimentDecision, PointMetric
 from app.schemas.experiment import ExperimentCreateRequest, ExperimentDecisionRequest, ExperimentDetailResponse, ExperimentSummary
@@ -194,6 +195,15 @@ def create_experiment(db: Session, request: ExperimentCreateRequest) -> Experime
     db.add(experiment)
     db.commit()
     db.refresh(experiment)
+    append_run_log(
+        request.run_id,
+        f"[{experiment.id}] experiment created"
+        + (
+            f" | based_on={','.join(request.proposal.based_on_experiment_ids)}"
+            if request.proposal and request.proposal.based_on_experiment_ids
+            else ""
+        ),
+    )
     _refresh_run_summary(db, request.run_id)
     db.refresh(experiment)
     return _to_experiment_detail(experiment)
@@ -282,6 +292,17 @@ def save_experiment_result(db: Session, experiment_id: str, result: ResultSchema
     db.commit()
     _refresh_run_summary(db, experiment.run_id)
     db.refresh(experiment)
+    metrics = result_payload.get("metrics") or {}
+    append_run_log(
+        experiment.run_id,
+        (
+            f"[{experiment.id}] result saved | "
+            f"top1_acc={metrics.get('top1_acc')} | "
+            f"val_loss={metrics.get('val_loss')} | "
+            f"train_loss={metrics.get('train_loss')} | "
+            f"best_epoch={metrics.get('best_epoch')}"
+        ),
+    )
     return _to_experiment_detail(experiment)
 
 

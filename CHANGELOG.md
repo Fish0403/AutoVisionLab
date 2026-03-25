@@ -1,5 +1,51 @@
 # Changelog
 
+## 2026-03-25
+
+- 统一 `runs` 相关 FastAPI 接口的 JSON 成功响应外层，新增通用 `ApiResponse` 信封与异常处理器，让 `list/create/get run`、`run summary/metrics`、`proposal`、`auto-train`、`reset` 等接口都返回稳定的 `ok / code / message / data / errors / meta` 结构；同时调整 [`frontend/streamlit_app.py`](/home/fish/AutoVisionLab/frontend/streamlit_app.py) 的请求封装层，自动解包成功响应并归一化错误响应，避免页面逻辑直接依赖裸 JSON 形状。
+
+## 2026-03-24
+
+- 重写现行文档 [`README.md`](/home/fish/AutoVisionLab/README.md)、[`plan.md`](/home/fish/AutoVisionLab/plan.md)、[`tasks.md`](/home/fish/AutoVisionLab/tasks.md)、[`schemas.md`](/home/fish/AutoVisionLab/schemas.md) 与 [`docs/experiment_policy.md`](/home/fish/AutoVisionLab/docs/experiment_policy.md)，清理过时的“第一阶段 / 第一版 / Phase / MVP”叙事，统一为当前实现、当前规则和当前任务状态的口径；历史演进继续保留在 `CHANGELOG` 中。
+- 调整本地产物日志组织方式：分类训练日志改为按 `run` 聚合，统一写入 `artifacts/runs/<run_id>.log`，并在其中追加实验创建、AI proposal、训练开始、epoch 摘要和最终结果；checkpoint 继续保留为 `artifacts/checkpoints/<experiment_id>.pt`。对应更新见 [`backend/app/services/run_logging.py`](/home/fish/AutoVisionLab/backend/app/services/run_logging.py)、[`backend/app/trainers/classification/base_trainer.py`](/home/fish/AutoVisionLab/backend/app/trainers/classification/base_trainer.py)、[`backend/app/services/training_runner.py`](/home/fish/AutoVisionLab/backend/app/services/training_runner.py)、[`backend/app/services/proposal_service.py`](/home/fish/AutoVisionLab/backend/app/services/proposal_service.py) 与 [`backend/app/services/persistence.py`](/home/fish/AutoVisionLab/backend/app/services/persistence.py)。
+- 调整 [`backend/app/services/auto_train_service.py`](/home/fish/AutoVisionLab/backend/app/services/auto_train_service.py) 与 [`backend/app/services/proposal_service.py`](/home/fish/AutoVisionLab/backend/app/services/proposal_service.py)，为 `Auto Train` 增加按总轮数比例切换的阶段策略：前 `50%` 轮允许基础超参数主导，后 `50%` 轮 proposal 必须包含至少一个 augmentation / loss / strategy 字段变化，避免自动调优后半程一直重复搜索同一组基础超参数。
+- 调整 [`backend/app/services/proposal_service.py`](/home/fish/AutoVisionLab/backend/app/services/proposal_service.py)，补全 proposal prompt 中可搜索的 augmentation / loss 字段 schema，并增加“至少一个有效参数变更”“禁止文本引用未开放选项”的校验与一次自动重试，避免出现“建议里写了未开放策略但 changes 为空”的无效 proposal。
+- 更新 [`docs/experiment_policy.md`](/home/fish/AutoVisionLab/docs/experiment_policy.md)，补充 `Auto Train` 的阶段式搜索规则，明确总轮数前后两段的搜索边界。
+- 调整数据增强参数设计：移除前后端运行路径中的 `augmentation_level`，将基础增强统一收敛到 `augmentation_policy=none|basic`，额外增强继续保留 `mixup_alpha`、`cutmix_alpha`、`random_erasing_prob`。对应更新见 [`backend/app/schemas/parameter_space.py`](/home/fish/AutoVisionLab/backend/app/schemas/parameter_space.py)、[`backend/app/trainers/classification/components/augmentations.py`](/home/fish/AutoVisionLab/backend/app/trainers/classification/components/augmentations.py)、[`backend/app/config_spaces/classification.py`](/home/fish/AutoVisionLab/backend/app/config_spaces/classification.py)、[`backend/app/services/proposal_service.py`](/home/fish/AutoVisionLab/backend/app/services/proposal_service.py) 与 [`frontend/streamlit_app.py`](/home/fish/AutoVisionLab/frontend/streamlit_app.py)。
+- 调整 [`data/cifar10/prepare_classification_split.py`](/home/fish/AutoVisionLab/data/cifar10/prepare_classification_split.py)，默认按类别平衡抽样导出 `CIFAR-10`，当前默认 `train=500/class`、`val=100/class`，同时支持 `--full` 导出全量数据，避免开发期生成过大的图片目录。
+- 调整 [`backend/app/trainers/classification/base_trainer.py`](/home/fish/AutoVisionLab/backend/app/trainers/classification/base_trainer.py)，分类训练器改为统一只读取 `data/<dataset>/classification/train|val` 目录，不再内置 `CIFAR-10` 特判下载逻辑，简化数据读取层。
+- 新增 [`data/cifar10/prepare_classification_split.py`](/home/fish/AutoVisionLab/data/cifar10/prepare_classification_split.py)，用于把 `CIFAR-10` 整理成统一的 `classification/train/<class>` 与 `classification/val/<class>` 结构，使其与 `NEU-CLS` 一样走同一套训练入口。
+- 更新 [`README.md`](/home/fish/AutoVisionLab/README.md) 与 [`docs/experiment_policy.md`](/home/fish/AutoVisionLab/docs/experiment_policy.md)，将统一数据目录规则进一步收敛为按任务类型分层，当前分类任务使用 `data/<dataset>/classification/train|val/<class>`，原始下载内容保留在 `raw/`，为后续 `detection/`、`segmentation/` 扩展预留空间。
+- 新增 [`data/neu-cls/prepare_classification_split.py`](/home/fish/AutoVisionLab/data/neu-cls/prepare_classification_split.py)，用于把当前 `NEU-CLS` 解压后的 `images/` 目录按文件名前缀整理成 `classification/train/<class>` 与 `classification/val/<class>` 结构，便于后续按分类任务接入。
+- 更新 [`README.md`](/home/fish/AutoVisionLab/README.md)，新增“项目结构”章节，说明根目录及 `backend/`、`frontend/`、`data/`、`artifacts/`、`scripts/`、`docs/` 等目录的职责，方便后续维护和新人阅读。
+- 新增 [`docs/experiment_policy.md`](/home/fish/AutoVisionLab/docs/experiment_policy.md)，集中整理实验运行规则，明确模型与 run 的关系、AI 搜索参数白名单、`image_size` 搜索逻辑、前端显示边界，以及数据库 / 本地文件的落盘职责。
+- 新增根目录 [`README.md`](/home/fish/AutoVisionLab/README.md)，补充项目简介、环境安装、前后端启动方式、当前 `CIFAR-10` 数据准备说明，以及推荐工业分类数据集 `NEU-CLS` 的下载链接、目录规划和接入前准备建议。
+- 扩展分类模型白名单：新增 [`resnet18`](/home/fish/AutoVisionLab/backend/app/trainers/classification/resnet_trainer.py)、[`resnet34`](/home/fish/AutoVisionLab/backend/app/trainers/classification/resnet_trainer.py) 和 [`densenet121`](/home/fish/AutoVisionLab/backend/app/trainers/classification/densenet_trainer.py) 三个常用预设网络，作为可选模型接入平台，不开放网络结构搜索。
+- 调整 [`backend/app/config_spaces/classification.py`](/home/fish/AutoVisionLab/backend/app/config_spaces/classification.py)、[`backend/app/services/parameter_space.py`](/home/fish/AutoVisionLab/backend/app/services/parameter_space.py)、[`backend/app/workers/experiment_worker.py`](/home/fish/AutoVisionLab/backend/app/workers/experiment_worker.py) 与 [`frontend/streamlit_app.py`](/home/fish/AutoVisionLab/frontend/streamlit_app.py)，同步补齐新模型的参数空间、执行入口和前端下拉选项。
+- 调整 [`frontend/streamlit_app.py`](/home/fish/AutoVisionLab/frontend/streamlit_app.py) 的 `Image Size` 交互：默认显示数据集原图大小；当用户手动改成非原图大小时，AI 只允许在“原图大小到当前设置值之间”的离散范围内搜索，而不是在全量 `image_size` 候选上搜索。
+- 调整 [`backend/app/schemas/parameter_space.py`](/home/fish/AutoVisionLab/backend/app/schemas/parameter_space.py) 与 [`backend/app/services/parameter_space.py`](/home/fish/AutoVisionLab/backend/app/services/parameter_space.py)，将 `search_policy` 从粗粒度开关细化为“开关 + 字段白名单”组合；当前默认允许 AI 搜索 `learning_rate`、`batch_size`、`optimizer`、`weight_decay`、`scheduler`、`augmentation_level`、`label_smoothing`，继续默认禁止 `epochs` 与 `image_size`。
+- 调整 [`backend/app/services/proposal_service.py`](/home/fish/AutoVisionLab/backend/app/services/proposal_service.py)，proposal prompt 会显式告诉 AI 当前 run 允许修改的字段以及当前 run 保存下来的 `image_size` 可选范围，并在返回后按该白名单和最新实验参数空间清洗、校验 proposal，避免 UI 已收窄但后端仍放行未授权字段。
+- 在 [`tasks.md`](/home/fish/AutoVisionLab/tasks.md) 中补充 `Training Setup` 参数收敛方向，明确主表单应继续减少低价值手动参数，把 `optimizer`、`weight_decay`、`scheduler`、`augmentation_level`、`label_smoothing` 默认下沉到 AI 搜索策略层。
+- 在 [`tasks.md`](/home/fish/AutoVisionLab/tasks.md) 中补充 `learning_rate` 与 `batch_size` 的搜索定位：`learning_rate` 作为默认开放的第一优先级搜索项，`batch_size` 允许在有限离散值内搜索，但优先级低于 `learning_rate`。
+- 在 [`tasks.md`](/home/fish/AutoVisionLab/tasks.md) 中补充 `image_size` 的阶段性策略：不把它当作普通超参数默认开放搜索；当前以 `CIFAR-10` 默认固定 `32` 为主，若后续开放，也应先限制在小范围离散值内，并按模型算力成本区别对待。
+
+## 2026-03-23
+
+- 调整 [`frontend/streamlit_app.py`](/home/fish/AutoVisionLab/frontend/streamlit_app.py) 的训练面板，主表单继续只保留高频训练参数，不直接展开 loss / augmentation 细项。
+- 前端新增 `AI Search Policy` 折叠区，用于控制是否允许 AI 自动搜索普通超参数、训练策略、loss 与 augmentation，以及高影响改动是否需要人工审批。
+- 在 [`backend/app/schemas/parameter_space.py`](/home/fish/AutoVisionLab/backend/app/schemas/parameter_space.py) 中新增 `SearchPolicy`，并将其纳入 `ExperimentConfig`，使搜索权限可以随实验配置一起持久化。
+- 结果区会显示当前实验记录的 AI 搜索权限摘要，便于回溯自动调优时允许 AI 探索到什么范围。
+
+- 新增 [`backend/app/trainers/classification/components/losses.py`](/home/fish/AutoVisionLab/backend/app/trainers/classification/components/losses.py)，实现结构化 loss registry，当前提供 `cross_entropy`、`cross_entropy_with_label_smoothing`、`focal_loss`。
+- 新增 [`backend/app/trainers/classification/components/augmentations.py`](/home/fish/AutoVisionLab/backend/app/trainers/classification/components/augmentations.py)，实现结构化 augmentation registry，当前提供 `basic`、`strong`、`autoaugment_cifar`，并支持 `mixup`、`cutmix`、`random erasing`。
+- 调整 [`backend/app/trainers/classification/base_trainer.py`](/home/fish/AutoVisionLab/backend/app/trainers/classification/base_trainer.py)，训练主循环改为通过固定组件层构建 loss 与 augmentation，而不是把策略硬编码在 trainer 内部。
+- 扩展 [`backend/app/schemas/parameter_space.py`](/home/fish/AutoVisionLab/backend/app/schemas/parameter_space.py) 与 [`backend/app/config_spaces/classification.py`](/home/fish/AutoVisionLab/backend/app/config_spaces/classification.py)，为 `loss_name`、`augmentation_policy`、`mixup_alpha`、`cutmix_alpha`、`random_erasing_prob`、`focal_gamma` 预留结构化配置入口。
+- 本次更新只完成后端算法组件和结构化参数入口，尚未接入前端表单、proposal 审批流和 `manual approval` 执行链路。
+
+- 在 [`plan.md`](/home/fish/AutoVisionLab/plan.md) 中补充“结构化训练策略与分级审批”设计，明确 loss、augmentation、sampler 等能力应通过白名单 registry 接入，而不是让 AI 直接改训练代码。
+- 在 [`tasks.md`](/home/fish/AutoVisionLab/tasks.md) 中新增 `Phase 9: 结构化训练策略与审批流`，拆分 schema、registry、proposal 审批状态和前端审批入口等任务。
+- 在 [`schemas.md`](/home/fish/AutoVisionLab/schemas.md) 中补充下一阶段策略型参数设计，增加 `approval_level` / `component_group` 概念，并补充 `loss_name`、`augmentation_policy` 等结构化字段示例。
+
 ## 2026-03-23
 
 - 调整 [`backend/app/services/proposal_service.py`](/home/fish/AutoVisionLab/backend/app/services/proposal_service.py) 的 proposal prompt 构造逻辑，不再只向 AI 发送 latest experiment。

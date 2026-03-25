@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import time
 from typing import Any
 
@@ -25,7 +26,12 @@ SUPPORTED_MODELS = {
                 "epochs": {"type": "discrete_values", "choices": [10, 20, 30, 50]},
                 "weight_decay": {"type": "number_range", "min": 0.0, "max": 0.01},
                 "scheduler": {"type": "enum", "choices": ["none", "step", "cosine"]},
-                "augmentation_level": {"type": "enum", "choices": ["low", "medium", "high"]},
+                "augmentation_policy": {"type": "enum", "choices": ["none", "basic"]},
+                "mixup_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
+                "cutmix_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
+                "random_erasing_prob": {"type": "number_range", "min": 0.0, "max": 0.5},
+                "loss_name": {"type": "enum", "choices": ["cross_entropy", "cross_entropy_with_label_smoothing", "focal_loss"]},
+                "focal_gamma": {"type": "number_range", "min": 0.5, "max": 5.0},
                 "label_smoothing": {"type": "number_range", "min": 0.0, "max": 0.2},
             },
         },
@@ -44,12 +50,101 @@ SUPPORTED_MODELS = {
                 "epochs": {"type": "discrete_values", "choices": [10, 20, 30, 50]},
                 "weight_decay": {"type": "number_range", "min": 0.0, "max": 0.01},
                 "scheduler": {"type": "enum", "choices": ["none", "step", "cosine"]},
-                "augmentation_level": {"type": "enum", "choices": ["low", "medium", "high"]},
+                "augmentation_policy": {"type": "enum", "choices": ["none", "basic"]},
+                "mixup_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
+                "cutmix_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
+                "random_erasing_prob": {"type": "number_range", "min": 0.0, "max": 0.5},
+                "loss_name": {"type": "enum", "choices": ["cross_entropy", "cross_entropy_with_label_smoothing", "focal_loss"]},
+                "focal_gamma": {"type": "number_range", "min": 0.5, "max": 5.0},
                 "label_smoothing": {"type": "number_range", "min": 0.0, "max": 0.2},
                 "aux_logits": {"type": "enum", "choices": [True, False]},
             },
         },
     },
+    "resnet18": {
+        "model_family": "resnet",
+        "parameter_space_version": "resnet18@v1",
+        "parameter_space": {
+            "model_name": "resnet18",
+            "version": "resnet18@v1",
+            "editable_params": {
+                "optimizer": {"type": "enum", "choices": ["sgd", "adam", "adamw"]},
+                "learning_rate": {"type": "number_range", "min": 0.0001, "max": 0.01},
+                "batch_size": {"type": "discrete_values", "choices": [32, 64, 128, 256]},
+                "image_size": {"type": "discrete_values", "choices": [32, 64, 96]},
+                "epochs": {"type": "discrete_values", "choices": [10, 20, 30, 50]},
+                "weight_decay": {"type": "number_range", "min": 0.0, "max": 0.01},
+                "scheduler": {"type": "enum", "choices": ["none", "step", "cosine"]},
+                "augmentation_policy": {"type": "enum", "choices": ["none", "basic"]},
+                "mixup_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
+                "cutmix_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
+                "random_erasing_prob": {"type": "number_range", "min": 0.0, "max": 0.5},
+                "loss_name": {"type": "enum", "choices": ["cross_entropy", "cross_entropy_with_label_smoothing", "focal_loss"]},
+                "focal_gamma": {"type": "number_range", "min": 0.5, "max": 5.0},
+                "label_smoothing": {"type": "number_range", "min": 0.0, "max": 0.2},
+            },
+        },
+    },
+    "resnet34": {
+        "model_family": "resnet",
+        "parameter_space_version": "resnet34@v1",
+        "parameter_space": {
+            "model_name": "resnet34",
+            "version": "resnet34@v1",
+            "editable_params": {
+                "optimizer": {"type": "enum", "choices": ["sgd", "adam", "adamw"]},
+                "learning_rate": {"type": "number_range", "min": 0.0001, "max": 0.01},
+                "batch_size": {"type": "discrete_values", "choices": [32, 64, 128, 256]},
+                "image_size": {"type": "discrete_values", "choices": [32, 64, 96]},
+                "epochs": {"type": "discrete_values", "choices": [10, 20, 30, 50]},
+                "weight_decay": {"type": "number_range", "min": 0.0, "max": 0.01},
+                "scheduler": {"type": "enum", "choices": ["none", "step", "cosine"]},
+                "augmentation_policy": {"type": "enum", "choices": ["none", "basic"]},
+                "mixup_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
+                "cutmix_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
+                "random_erasing_prob": {"type": "number_range", "min": 0.0, "max": 0.5},
+                "loss_name": {"type": "enum", "choices": ["cross_entropy", "cross_entropy_with_label_smoothing", "focal_loss"]},
+                "focal_gamma": {"type": "number_range", "min": 0.5, "max": 5.0},
+                "label_smoothing": {"type": "number_range", "min": 0.0, "max": 0.2},
+            },
+        },
+    },
+    "densenet121": {
+        "model_family": "densenet",
+        "parameter_space_version": "densenet121@v1",
+        "parameter_space": {
+            "model_name": "densenet121",
+            "version": "densenet121@v1",
+            "editable_params": {
+                "optimizer": {"type": "enum", "choices": ["sgd", "adam", "adamw"]},
+                "learning_rate": {"type": "number_range", "min": 0.0001, "max": 0.01},
+                "batch_size": {"type": "discrete_values", "choices": [32, 64, 128, 256]},
+                "image_size": {"type": "discrete_values", "choices": [32, 64, 96]},
+                "epochs": {"type": "discrete_values", "choices": [10, 20, 30, 50]},
+                "weight_decay": {"type": "number_range", "min": 0.0, "max": 0.01},
+                "scheduler": {"type": "enum", "choices": ["none", "step", "cosine"]},
+                "augmentation_policy": {"type": "enum", "choices": ["none", "basic"]},
+                "mixup_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
+                "cutmix_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
+                "random_erasing_prob": {"type": "number_range", "min": 0.0, "max": 0.5},
+                "loss_name": {"type": "enum", "choices": ["cross_entropy", "cross_entropy_with_label_smoothing", "focal_loss"]},
+                "focal_gamma": {"type": "number_range", "min": 0.5, "max": 5.0},
+                "label_smoothing": {"type": "number_range", "min": 0.0, "max": 0.2},
+            },
+        },
+    },
+}
+MODEL_LABELS = {
+    "mobilenet_v2": "MobileNetV2",
+    "googlenet": "GoogLeNet",
+    "resnet18": "ResNet18",
+    "resnet34": "ResNet34",
+    "densenet121": "DenseNet121",
+}
+SUPPORTED_DATASETS = ["cifar10", "neu-cls"]
+DATASET_IMAGE_SIZE_OPTIONS = {
+    "cifar10": [32, 64, 96],
+    "neu-cls": [200, 224, 256],
 }
 
 LOG_LIMIT = 60
@@ -58,14 +153,151 @@ LIVE_AI_PANEL_CONTAINER: Any | None = None
 AI_BLOCKED_CHANGE_FIELDS = {"epochs"}
 
 
+def default_search_policy() -> dict[str, bool]:
+    """Return the default AI search policy for the UI."""
+    return {
+        "allow_basic_hparam_search": True,
+        "allowed_basic_hparam_fields": [
+            "optimizer",
+            "learning_rate",
+            "batch_size",
+            "weight_decay",
+            "scheduler",
+            "label_smoothing",
+        ],
+        "allow_strategy_search": False,
+        "allow_loss_search": False,
+        "allow_augmentation_search": False,
+        "require_manual_approval_for_high_impact_changes": True,
+    }
+
+
+def get_original_image_size(dataset: str, model_name: str) -> int:
+    """Return the dataset-native image size used as the UI default."""
+    if dataset == "cifar10":
+        return 32
+    if dataset == "neu-cls":
+        return 200
+    return 64
+
+
+def get_dataset_image_size_options(dataset: str) -> list[int]:
+    """Return allowed image size options for one dataset."""
+    return DATASET_IMAGE_SIZE_OPTIONS.get(dataset, [get_original_image_size(dataset, "")])
+
+
+def get_model_label(model_name: str) -> str:
+    """Return a user-facing model label."""
+    return MODEL_LABELS.get(model_name, model_name)
+
+
+def get_short_experiment_id(experiment_id: str | None) -> str:
+    """Return a short display id for one experiment."""
+    if not experiment_id:
+        return "-"
+    if experiment_id.startswith("exp_"):
+        return experiment_id.removeprefix("exp_")[:4]
+    return experiment_id[:4]
+
+
+def get_allowed_basic_hparam_fields(dataset: str, model_name: str, image_size: int) -> list[str]:
+    """Return the effective basic hyperparameter fields allowed for AI search."""
+    fields = [
+        "optimizer",
+        "learning_rate",
+        "batch_size",
+        "weight_decay",
+        "scheduler",
+        "label_smoothing",
+    ]
+    if image_size != get_original_image_size(dataset, model_name):
+        fields.append("image_size")
+    return fields
+
+
+def get_image_size_search_choices(dataset: str, model_name: str, image_size: int) -> list[int]:
+    """Return the image_size choices allowed for AI search in the current form state."""
+    original_size = get_original_image_size(dataset, model_name)
+    lower_bound = min(original_size, image_size)
+    upper_bound = max(original_size, image_size)
+    all_choices = get_dataset_image_size_options(dataset)
+    return [choice for choice in all_choices if lower_bound <= choice <= upper_bound]
+
+
+def summarize_ai_managed_params(form_values: dict[str, Any]) -> str:
+    """Build a compact summary of parameters now managed outside the main form."""
+    return ", ".join(
+        [
+            f"optimizer={form_values['optimizer']}",
+            f"weight_decay={form_values['weight_decay']:.4f}",
+            f"scheduler={form_values['scheduler']}",
+            f"augmentation={form_values['augmentation_policy']}",
+            f"label_smoothing={form_values['label_smoothing']:.2f}",
+        ]
+    )
+
+
+def summarize_effective_ai_search_fields(
+    allow_basic_hparam_search: bool,
+    allowed_basic_hparam_fields: list[str],
+    allow_strategy_search: bool,
+    allow_loss_search: bool,
+    allow_augmentation_search: bool,
+) -> str:
+    """Build a user-facing summary of the current AI search scope."""
+    field_labels: list[str] = []
+    if allow_basic_hparam_search:
+        field_labels.extend(allowed_basic_hparam_fields)
+    if allow_strategy_search:
+        field_labels.append("aux_logits")
+    if allow_loss_search:
+        field_labels.extend(["loss_name", "focal_gamma"])
+    if allow_augmentation_search:
+        field_labels.extend(["augmentation_policy", "mixup_alpha", "cutmix_alpha", "random_erasing_prob"])
+
+    deduped_labels = list(dict.fromkeys(field_labels))
+    if not deduped_labels:
+        return "当前 AI 不会自动搜索任何参数。"
+    return "当前 AI 会搜索： " + ", ".join(deduped_labels)
+
+
 def request_json(path: str, fallback: Any) -> Any:
     """Fetch JSON from the backend and fall back to local demo data."""
     try:
         response = requests.get(f"{API_BASE_URL}{path}", timeout=0.8)
         response.raise_for_status()
-        return response.json()
+        return unwrap_api_response(response.json())
     except requests.RequestException:
         return fallback
+
+
+def unwrap_api_response(payload: Any) -> Any:
+    """Unwrap the shared API envelope when the backend returns one."""
+    if isinstance(payload, dict) and payload.get("ok") is True and "data" in payload:
+        return payload["data"]
+    return payload
+
+
+def normalize_error_payload(payload: Any) -> dict[str, Any]:
+    """Normalize backend errors into a shape that existing UI code can consume."""
+    if isinstance(payload, dict) and payload.get("ok") is False:
+        message = payload.get("message")
+        if not message:
+            first_error = next(
+                (
+                    error
+                    for error in payload.get("errors", [])
+                    if isinstance(error, dict) and error.get("message")
+                ),
+                None,
+            )
+            message = first_error.get("message") if first_error else None
+        normalized_payload = dict(payload)
+        normalized_payload["detail"] = message or payload.get("detail") or "Request failed."
+        return normalized_payload
+    if isinstance(payload, dict):
+        return payload if "detail" in payload else {**payload, "detail": str(payload)}
+    return {"detail": str(payload)}
 
 
 def post_json(path: str, payload: dict[str, Any]) -> tuple[bool, Any]:
@@ -73,11 +305,11 @@ def post_json(path: str, payload: dict[str, Any]) -> tuple[bool, Any]:
     try:
         response = requests.post(f"{API_BASE_URL}{path}", json=payload, timeout=5)
         response.raise_for_status()
-        return True, response.json()
+        return True, unwrap_api_response(response.json())
     except requests.RequestException as error:
         if getattr(error, "response", None) is not None:
             try:
-                return False, error.response.json()
+                return False, normalize_error_payload(error.response.json())
             except ValueError:
                 return False, {"detail": error.response.text}
         return False, {"detail": str(error)}
@@ -88,11 +320,11 @@ def post_without_body(path: str) -> tuple[bool, Any]:
     try:
         response = requests.post(f"{API_BASE_URL}{path}", timeout=3600)
         response.raise_for_status()
-        return True, response.json()
+        return True, unwrap_api_response(response.json())
     except requests.RequestException as error:
         if getattr(error, "response", None) is not None:
             try:
-                return False, error.response.json()
+                return False, normalize_error_payload(error.response.json())
             except ValueError:
                 return False, {"detail": error.response.text}
         return False, {"detail": str(error)}
@@ -113,11 +345,11 @@ def generate_aihubmix_proposal_request(run_id: str) -> tuple[bool, Any]:
     try:
         response = requests.post(f"{API_BASE_URL}/runs/{run_id}/proposal", timeout=60)
         response.raise_for_status()
-        return True, response.json()
+        return True, unwrap_api_response(response.json())
     except requests.RequestException as error:
         if getattr(error, "response", None) is not None:
             try:
-                return False, error.response.json()
+                return False, normalize_error_payload(error.response.json())
             except ValueError:
                 return False, {"detail": error.response.text}
         return False, {"detail": str(error)}
@@ -269,7 +501,7 @@ def load_experiment_detail(experiment_id: str) -> dict[str, Any]:
                     "epochs": 30,
                     "weight_decay": 0.0001,
                     "scheduler": "cosine",
-                    "augmentation_level": "medium",
+                    "augmentation_policy": "basic",
                     "label_smoothing": 0.08,
                     "aux_logits": None,
                 },
@@ -300,7 +532,7 @@ def load_experiment_detail(experiment_id: str) -> dict[str, Any]:
                     "epochs": 30,
                     "weight_decay": 0.0001,
                     "scheduler": "cosine",
-                    "augmentation_level": "medium",
+                    "augmentation_policy": "basic",
                     "label_smoothing": 0.08,
                     "aux_logits": None,
                 },
@@ -412,7 +644,7 @@ def reset_frontend_state_after_clear() -> None:
         "epochs",
         "weight_decay",
         "scheduler",
-        "augmentation_level",
+        "augmentation_policy",
         "label_smoothing",
         "aux_logits",
         "ai_test_rounds",
@@ -427,7 +659,8 @@ def reset_frontend_state_after_clear() -> None:
 
 def store_ai_panel(payload: dict[str, Any]) -> None:
     """Store the latest AI panel payload."""
-    st.session_state["ai_panel"] = payload
+    st.session_state["manual_ai_panel"] = payload
+    st.session_state["active_ai_panel_mode"] = "manual"
     refresh_ai_panel_view()
 
 
@@ -468,6 +701,7 @@ def start_auto_train_summary(run_id: str, experiment_id: str, experiment_detail:
         "baseline": build_result_snapshot(experiment_id, experiment_detail),
         "rounds": [],
     }
+    st.session_state["active_ai_panel_mode"] = "auto"
     refresh_ai_panel_view()
 
 
@@ -487,6 +721,7 @@ def record_auto_train_round(
         }
     )
     st.session_state["auto_train_summary"] = summary
+    st.session_state["active_ai_panel_mode"] = "auto"
     refresh_ai_panel_view()
 
 
@@ -495,9 +730,10 @@ def finalize_auto_train_summary(final_proposal: dict[str, Any]) -> None:
     summary = st.session_state.get("auto_train_summary")
     if not summary:
         return
-    panel_payload = dict(summary)
-    panel_payload["final_proposal"] = final_proposal
-    store_ai_panel(panel_payload)
+    summary["final_proposal"] = final_proposal
+    st.session_state["auto_train_summary"] = summary
+    st.session_state["active_ai_panel_mode"] = "auto"
+    refresh_ai_panel_view()
 
 
 def refresh_ai_panel_view() -> None:
@@ -505,19 +741,25 @@ def refresh_ai_panel_view() -> None:
     global LIVE_AI_PANEL_CONTAINER
     if LIVE_AI_PANEL_CONTAINER is None:
         return
-    suggestion_payload = st.session_state.get("ai_panel") or st.session_state.get("auto_train_summary")
+    active_mode = st.session_state.get("active_ai_panel_mode")
+    if active_mode == "auto":
+        suggestion_payload = st.session_state.get("auto_train_summary")
+    elif active_mode == "manual":
+        suggestion_payload = st.session_state.get("manual_ai_panel")
+    else:
+        suggestion_payload = st.session_state.get("auto_train_summary") or st.session_state.get("manual_ai_panel")
     with LIVE_AI_PANEL_CONTAINER.container():
         with st.container(border=True):
             if not suggestion_payload:
-                st.caption("AI 建议和调优趋势会在训练过程中或结束后显示在这里。")
-                st.code("等待训练输出...", language=None, wrap_lines=True, height=180)
+                st.caption("AI suggestions and tuning trends will appear here during or after training.")
+                st.code("Waiting for training output...", language=None, wrap_lines=True, height=180)
                 return
             if suggestion_payload.get("mode") == "auto":
                 final_proposal = suggestion_payload.get("final_proposal")
                 baseline = suggestion_payload.get("baseline", {})
                 rounds = suggestion_payload.get("rounds", [])
                 progress = st.session_state.get("auto_task_progress") or {}
-                st.markdown("**自动训练总结**")
+                st.markdown("**Auto Train Summary**")
                 if progress and progress.get("status") in {"queued", "running", "stopping"}:
                     completed_rounds = len(rounds)
                     current_round = progress.get("current_round", 0)
@@ -526,9 +768,9 @@ def refresh_ai_panel_view() -> None:
                     st.caption(
                         f"进度：已完成 {completed_rounds}/{total_rounds} 轮，"
                         f"当前轮次 {current_round}/{total_rounds}，"
-                        f"实验 {current_experiment_id}。"
+                        f"实验 {get_short_experiment_id(current_experiment_id)}。"
                     )
-                st.markdown(f"基线实验：`{baseline.get('experiment_id', '-')}`  ")
+                st.markdown(f"基线实验：`{get_short_experiment_id(baseline.get('experiment_id'))}`  ")
                 st.caption(baseline.get("summary", ""))
                 trend_rows = []
                 baseline_metrics = baseline.get("metrics", {})
@@ -547,7 +789,8 @@ def refresh_ai_panel_view() -> None:
                         f"{format_proposal_changes(round_info['proposal']['changes'])}"
                     )
                     st.caption(
-                        f"{round_info['result']['experiment_id']} | {round_info['result']['summary']}"
+                        f"{get_short_experiment_id(round_info['result']['experiment_id'])} | "
+                        f"{round_info['result']['summary']}"
                     )
                     trend_rows.append(
                         {
@@ -558,7 +801,7 @@ def refresh_ai_panel_view() -> None:
                         }
                     )
                 if len(trend_rows) > 0:
-                    st.markdown("**调优趋势**")
+                    st.markdown("**Tuning Trend**")
                     st.line_chart(
                         trend_rows,
                         x="round_index",
@@ -566,7 +809,7 @@ def refresh_ai_panel_view() -> None:
                         use_container_width=True,
                     )
                 if final_proposal:
-                    st.markdown("**下一步建议**")
+                    st.markdown("**Next Suggestion**")
                     st.markdown(final_proposal["hypothesis"])
                     st.caption(final_proposal["reason"])
                     st.markdown(f"`{format_proposal_changes(final_proposal['changes'])}`")
@@ -576,11 +819,11 @@ def refresh_ai_panel_view() -> None:
 
             proposal = suggestion_payload["proposal"]
             result = suggestion_payload["result"]
-            st.markdown("**单次训练建议**")
-            st.caption(f"实验 {result['experiment_id']} | {result['summary']}")
-            st.markdown(f"**建议**  \n{proposal['hypothesis']}")
+            st.markdown("**Single-Run Suggestion**")
+            st.caption(f"实验 {get_short_experiment_id(result['experiment_id'])} | {result['summary']}")
+            st.markdown(f"**Suggestion**  \n{proposal['hypothesis']}")
             st.caption(proposal["reason"])
-            st.markdown(f"**建议修改**  \n{format_proposal_changes(proposal['changes'])}")
+            st.markdown(f"**Suggested Changes**  \n{format_proposal_changes(proposal['changes'])}")
 
 
 def generate_and_store_ai_suggestion(
@@ -636,9 +879,15 @@ def sync_auto_train_task_state() -> str | None:
     st.session_state["activity_logs"] = auto_task_response.get("logs", [])
     summary = auto_task_response.get("summary")
     if summary is not None:
-        st.session_state["ai_panel"] = summary
-    if auto_task_response.get("run_id"):
-        st.session_state["selected_run_id"] = auto_task_response["run_id"]
+        st.session_state["auto_train_summary"] = summary
+        st.session_state["active_ai_panel_mode"] = "auto"
+        completed_rounds = len(summary.get("rounds", [])) if summary.get("mode") == "auto" else 0
+        if completed_rounds != st.session_state.get("last_auto_completed_rounds", -1):
+            st.session_state["last_auto_completed_rounds"] = completed_rounds
+            st.session_state["auto_result_refresh_needed"] = True
+    run_id = auto_task_response.get("run_id")
+    if run_id:
+        st.session_state["selected_run_id"] = run_id
     st.session_state["training_experiment_id"] = auto_task_response.get("current_experiment_id")
     st.session_state["auto_task_progress"] = {
         "status": auto_task_response.get("status"),
@@ -646,6 +895,12 @@ def sync_auto_train_task_state() -> str | None:
         "total_rounds": auto_task_response.get("total_rounds", 0),
         "current_experiment_id": auto_task_response.get("current_experiment_id"),
     }
+    if run_id:
+        run_summary = load_run_summary(run_id)
+        best_experiment_id = run_summary.get("best_experiment_id")
+        if best_experiment_id and best_experiment_id != st.session_state.get("selected_experiment_id"):
+            st.session_state["selected_experiment_id"] = best_experiment_id
+            st.session_state["auto_result_refresh_needed"] = True
 
     auto_status = auto_task_response.get("status")
     if auto_status in {"queued", "running", "stopping"}:
@@ -665,6 +920,8 @@ def render_live_training_monitor() -> None:
         auto_status = sync_auto_train_task_state()
         refresh_activity_log_view()
         refresh_ai_panel_view()
+        if st.session_state.pop("auto_result_refresh_needed", False):
+            st.rerun()
         if auto_status in {"completed", "stopped", "failed"}:
             if auto_status == "completed":
                 set_post_action_notice(
@@ -863,6 +1120,7 @@ def build_experiment_comparison_rows(experiments: list[dict[str, Any]]) -> list[
         rows.append(
             {
                 "selected": True,
+                "exp": get_short_experiment_id(experiment["id"]),
                 "experiment_id": experiment["id"],
                 "decision": detail.get("decision"),
                 "anchor": "",
@@ -906,6 +1164,7 @@ def build_all_training_records(runs: list[dict[str, Any]], selected_run_id: str)
                     "selected": True,
                     "run_id": run["id"],
                     "run_name": run["name"],
+                    "exp": get_short_experiment_id(experiment["id"]),
                     "experiment_id": experiment["id"],
                     "anchor": "/".join(anchor_labels),
                     "decision": detail.get("decision"),
@@ -1025,7 +1284,7 @@ def apply_generated_proposal(run_id: str, proposal: dict[str, Any]) -> None:
     st.session_state["epochs"] = generated_params["epochs"]
     st.session_state["weight_decay"] = generated_params["weight_decay"]
     st.session_state["scheduler"] = generated_params["scheduler"]
-    st.session_state["augmentation_level"] = generated_params["augmentation_level"]
+    st.session_state["augmentation_policy"] = generated_params["augmentation_policy"]
     st.session_state["label_smoothing"] = generated_params["label_smoothing"]
     st.session_state["aux_logits"] = generated_params["aux_logits"] if generated_params["aux_logits"] is not None else False
     st.session_state["participates_in_ranking"] = proposal["config"].get("participates_in_ranking", True)
@@ -1043,15 +1302,23 @@ def load_reference_config(selected_run_id: str) -> dict[str, Any]:
         "dataset": "cifar10",
         "model_name": "mobilenet_v2",
         "participates_in_ranking": True,
+        "search_policy": default_search_policy(),
         "params": {
             "optimizer": "adamw",
             "learning_rate": 0.003,
             "batch_size": 128,
-            "image_size": 64,
+            "image_size": get_original_image_size("cifar10", "mobilenet_v2"),
             "epochs": 10,
             "weight_decay": 0.0001,
             "scheduler": "cosine",
-            "augmentation_level": "medium",
+            "augmentation_policy": "basic",
+            "augmentation_params": {
+                "mixup_alpha": 0.0,
+                "cutmix_alpha": 0.0,
+                "random_erasing_prob": 0.0,
+            },
+            "loss_name": "cross_entropy_with_label_smoothing",
+            "loss_params": {"focal_gamma": 2.0},
             "label_smoothing": 0.1,
             "aux_logits": False,
         },
@@ -1067,6 +1334,7 @@ def load_reference_config(selected_run_id: str) -> dict[str, Any]:
         "dataset": latest_experiment["config"]["dataset"],
         "model_name": latest_experiment["config"]["model_name"],
         "participates_in_ranking": latest_experiment["config"].get("participates_in_ranking", True),
+        "search_policy": latest_experiment["config"].get("search_policy") or default_search_policy(),
         "params": latest_experiment["config"]["params"],
     }
 
@@ -1075,6 +1343,13 @@ def build_payload_from_form(form_values: dict[str, Any]) -> dict[str, Any]:
     """Build backend payload from current form values."""
     model_name = form_values["model_name"]
     model_config = SUPPORTED_MODELS[model_name]
+    parameter_space = deepcopy(model_config["parameter_space"])
+    parameter_space["editable_params"]["image_size"]["choices"] = get_dataset_image_size_options(form_values["dataset"])
+    parameter_space["editable_params"]["image_size"]["choices"] = get_image_size_search_choices(
+        form_values["dataset"],
+        model_name,
+        int(form_values["image_size"]),
+    )
     params = {
         "optimizer": form_values["optimizer"],
         "learning_rate": float(form_values["learning_rate"]),
@@ -1083,7 +1358,16 @@ def build_payload_from_form(form_values: dict[str, Any]) -> dict[str, Any]:
         "epochs": int(form_values["epochs"]),
         "weight_decay": float(form_values["weight_decay"]),
         "scheduler": form_values["scheduler"],
-        "augmentation_level": form_values["augmentation_level"],
+        "augmentation_policy": form_values["augmentation_policy"],
+        "augmentation_params": {
+            "mixup_alpha": 0.0,
+            "cutmix_alpha": 0.0,
+            "random_erasing_prob": 0.0,
+        },
+        "loss_name": "cross_entropy_with_label_smoothing",
+        "loss_params": {
+            "focal_gamma": 2.0,
+        },
         "label_smoothing": float(form_values["label_smoothing"]),
         "aux_logits": bool(form_values["aux_logits"]) if model_name == "googlenet" else None,
     }
@@ -1103,9 +1387,10 @@ def build_payload_from_form(form_values: dict[str, Any]) -> dict[str, Any]:
             "model_name": model_name,
             "parameter_space_version": model_config["parameter_space_version"],
             "participates_in_ranking": bool(form_values.get("participates_in_ranking", True)),
+            "search_policy": form_values["search_policy"],
             "params": params,
         },
-        "parameter_space": model_config["parameter_space"],
+        "parameter_space": parameter_space,
     }
 
 
@@ -1183,7 +1468,7 @@ def append_experiment_to_run(run_id: str, payload: dict[str, Any]) -> tuple[bool
 def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_training_active: bool) -> None:
     """Render the left-side parameter and action panel."""
     st.subheader("Train")
-    st.caption("左侧用于训练。`Train` 会按当前参数启动一次实验并在结束后自动生成建议；`Auto Train` 会自动连续训练、自动采纳 AI 建议，不再人工确认。")
+    st.caption("这里用于发起单次训练或自动连续调优。选中已有 run 时，新实验会追加到当前 run。")
     if is_training_active:
         st.warning("A training job is running. Actions are temporarily locked.")
 
@@ -1199,54 +1484,106 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
         st.session_state["epochs"] = reference_config["params"]["epochs"]
         st.session_state["weight_decay"] = reference_config["params"]["weight_decay"]
         st.session_state["scheduler"] = reference_config["params"]["scheduler"]
-        st.session_state["augmentation_level"] = reference_config["params"]["augmentation_level"]
+        st.session_state["augmentation_policy"] = reference_config["params"]["augmentation_policy"]
         st.session_state["label_smoothing"] = reference_config["params"]["label_smoothing"]
         st.session_state["aux_logits"] = bool(reference_config["params"].get("aux_logits") or False)
-        st.session_state["participates_in_ranking"] = reference_config.get("participates_in_ranking", True)
+        search_policy = reference_config.get("search_policy") or default_search_policy()
+        st.session_state["allow_basic_hparam_search"] = search_policy["allow_basic_hparam_search"]
+        st.session_state["allowed_basic_hparam_fields"] = search_policy.get(
+            "allowed_basic_hparam_fields",
+            get_allowed_basic_hparam_fields(
+                reference_config["dataset"],
+                reference_config["model_name"],
+                int(reference_config["params"]["image_size"]),
+            ),
+        )
+        st.session_state["allow_strategy_search"] = search_policy["allow_strategy_search"]
+        st.session_state["allow_loss_search"] = search_policy["allow_loss_search"]
+        st.session_state["allow_augmentation_search"] = search_policy["allow_augmentation_search"]
+        st.session_state["require_manual_approval_for_high_impact_changes"] = search_policy[
+            "require_manual_approval_for_high_impact_changes"
+        ]
         st.session_state["based_on_experiment_ids"] = []
         st.session_state["form_reference_run"] = selected_run_id
 
+    original_image_size = get_original_image_size(st.session_state["dataset"], st.session_state["model_name"])
+    if selected_run_id == "__all__":
+        st.session_state["image_size"] = original_image_size
+    if "ai_test_rounds" not in st.session_state:
+        st.session_state["ai_test_rounds"] = 10
+
     with st.container(border=True):
         st.markdown("**Training Setup**")
-        st.caption("选择 run 后，这里的参数会自动带入该 run 最新一次实验，便于继续迭代。")
+        st.caption("这里配置本轮训练的基线参数。切换到已有 run 时，会自动带入该 run 最近一次实验的配置。")
         top_left, top_mid, top_right = st.columns(3)
         with top_left:
             st.text_input("Run Name", key="run_name")
         with top_mid:
-            st.selectbox("Dataset", options=["cifar10"], index=0, key="dataset")
+            st.selectbox("Dataset", options=SUPPORTED_DATASETS, key="dataset")
         with top_right:
-            model_name = st.selectbox("Model", options=["mobilenet_v2", "googlenet"], key="model_name")
+            model_name = st.selectbox(
+                "Model",
+                options=["mobilenet_v2", "googlenet", "resnet18", "resnet34", "densenet121"],
+                format_func=get_model_label,
+                key="model_name",
+            )
 
         row_one = st.columns(3)
         with row_one[0]:
-            st.selectbox("Optimizer", options=["sgd", "adam", "adamw"], key="optimizer")
-        with row_one[1]:
             st.number_input("Learning Rate", min_value=0.0001, max_value=0.01, step=0.0001, format="%.4f", key="learning_rate")
-        with row_one[2]:
+        with row_one[1]:
             st.selectbox("Batch Size", options=[32, 64, 128, 256], key="batch_size")
+        with row_one[2]:
+            st.selectbox("Epochs", options=[10, 20, 30, 50], key="epochs")
 
         row_two = st.columns(3)
         with row_two[0]:
-            st.selectbox("Image Size", options=[32, 64, 96], key="image_size")
+            st.selectbox("Image Size", options=get_dataset_image_size_options(st.session_state["dataset"]), key="image_size")
         with row_two[1]:
-            st.selectbox("Epochs", options=[10, 20, 30, 50], key="epochs")
+            ai_rounds = st.number_input("Auto Train Rounds", min_value=1, max_value=20, step=1, key="ai_test_rounds")
         with row_two[2]:
-            st.number_input("Weight Decay", min_value=0.0, max_value=0.01, step=0.0001, format="%.4f", key="weight_decay")
+            pass
 
-        row_three = st.columns(3)
-        with row_three[0]:
-            st.selectbox("Scheduler", options=["none", "step", "cosine"], key="scheduler")
-        with row_three[1]:
-            st.selectbox("Augmentation Level", options=["low", "medium", "high"], key="augmentation_level")
-        with row_three[2]:
-            st.number_input("Label Smoothing", min_value=0.0, max_value=0.2, step=0.01, format="%.2f", key="label_smoothing")
+        st.caption("Current Managed Params: " + summarize_ai_managed_params(st.session_state))
 
-        footer_left, footer_right = st.columns([1, 1])
-        with footer_left:
-            st.checkbox("Enable aux_logits", disabled=model_name != "googlenet", key="aux_logits")
-        with footer_right:
-            ai_rounds = st.number_input("Auto Train Rounds", min_value=1, max_value=20, value=10, step=1, key="ai_test_rounds")
-        st.checkbox("Rank This Experiment", key="participates_in_ranking")
+        with st.expander("AI Search Policy", expanded=False):
+            image_size_choices = get_image_size_search_choices(
+                st.session_state["dataset"],
+                model_name,
+                int(st.session_state["image_size"]),
+            )
+            allowed_basic_hparam_fields = get_allowed_basic_hparam_fields(
+                st.session_state["dataset"],
+                st.session_state["model_name"],
+                int(st.session_state["image_size"]),
+            )
+            st.caption(
+                summarize_effective_ai_search_fields(
+                    st.session_state["allow_basic_hparam_search"],
+                    allowed_basic_hparam_fields,
+                    st.session_state["allow_strategy_search"],
+                    st.session_state["allow_loss_search"],
+                    st.session_state["allow_augmentation_search"],
+                )
+            )
+            st.caption(
+                f"补充说明：image_size 保持原图大小时不搜索；当你手动改成非原图大小时，只在原图大小和当前设置之间搜索。"
+                f"当前原图大小：{original_image_size}；当前 image_size 搜索范围："
+                + ", ".join(str(choice) for choice in image_size_choices)
+            )
+            st.checkbox(
+                "Allow basic hyperparameter search",
+                key="allow_basic_hparam_search",
+                disabled=is_training_active,
+            )
+            st.checkbox("Allow strategy search", key="allow_strategy_search", disabled=is_training_active)
+            st.checkbox("Allow loss search", key="allow_loss_search", disabled=is_training_active)
+            st.checkbox("Allow augmentation search", key="allow_augmentation_search", disabled=is_training_active)
+            st.checkbox(
+                "Require manual approval for high-impact changes",
+                key="require_manual_approval_for_high_impact_changes",
+                disabled=is_training_active,
+            )
 
     payload = build_payload_from_form(
         {
@@ -1260,10 +1597,23 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
             "epochs": st.session_state["epochs"],
             "weight_decay": st.session_state["weight_decay"],
             "scheduler": st.session_state["scheduler"],
-            "augmentation_level": st.session_state["augmentation_level"],
+            "augmentation_policy": st.session_state["augmentation_policy"],
             "label_smoothing": st.session_state["label_smoothing"],
             "aux_logits": st.session_state["aux_logits"],
-            "participates_in_ranking": st.session_state["participates_in_ranking"],
+            "search_policy": {
+                "allow_basic_hparam_search": st.session_state["allow_basic_hparam_search"],
+                "allowed_basic_hparam_fields": get_allowed_basic_hparam_fields(
+                    st.session_state["dataset"],
+                    st.session_state["model_name"],
+                    int(st.session_state["image_size"]),
+                ),
+                "allow_strategy_search": st.session_state["allow_strategy_search"],
+                "allow_loss_search": st.session_state["allow_loss_search"],
+                "allow_augmentation_search": st.session_state["allow_augmentation_search"],
+                "require_manual_approval_for_high_impact_changes": st.session_state[
+                    "require_manual_approval_for_high_impact_changes"
+                ],
+            },
             "based_on_experiment_ids": st.session_state.get("based_on_experiment_ids", []),
         }
     )
@@ -1328,7 +1678,8 @@ def render_activity_log() -> None:
 def render_ai_suggestion_panel() -> None:
     """Render the latest AI suggestion card."""
     global LIVE_AI_PANEL_CONTAINER
-    st.subheader("AI 建议")
+    st.subheader("AI Suggestions")
+    st.caption("这里展示单次训练建议、自动调优总结和下一步推荐动作。")
     LIVE_AI_PANEL_CONTAINER = st.empty()
     refresh_ai_panel_view()
 
@@ -1336,6 +1687,7 @@ def render_ai_suggestion_panel() -> None:
 def render_run_list(runs: list[dict[str, Any]]) -> str:
     """Render run list and return selected run id."""
     st.subheader("Run Selector")
+    st.caption("这里用于切换当前查看和追加实验的 run。选择 `All Runs` 时会回到新建 run 视角。")
     clear_disabled = bool(st.session_state.get("ui_locked"))
     if not runs:
         if st.button("Clear All", type="secondary", disabled=clear_disabled):
@@ -1389,6 +1741,7 @@ def render_run_list(runs: list[dict[str, Any]]) -> str:
 def render_training_records_workspace(runs: list[dict[str, Any]], selected_run_id: str) -> None:
     """Render a single-table training records workspace."""
     st.subheader("Training Records")
+    st.caption("这里汇总当前范围内的实验记录。勾选记录后可以参与趋势图对比，并在右侧查看详情。")
     all_rows = build_all_training_records(runs, selected_run_id)
     if not all_rows:
         st.info("No training records yet.")
@@ -1435,11 +1788,14 @@ def render_training_records_workspace(runs: list[dict[str, Any]], selected_run_i
         key="training_records_editor",
         column_config={
             "selected": st.column_config.CheckboxColumn("Compare", help="Include this experiment in the chart comparison"),
+            "exp": st.column_config.TextColumn("Exp"),
+            "experiment_id": None,
             "best": st.column_config.TextColumn("最佳"),
             "anchor": st.column_config.TextColumn("锚点"),
             "decision": st.column_config.TextColumn("决策"),
         },
         disabled=[
+            "exp",
             "best",
             "anchor",
             "decision",
@@ -1498,6 +1854,7 @@ def render_training_records_workspace(runs: list[dict[str, Any]], selected_run_i
 def render_result_workspace(runs: list[dict[str, Any]], selected_run_id: str) -> None:
     """Render the right-side result workspace."""
     st.subheader("Results")
+    st.caption("这里展示当前选中 run 或实验的结果、指标、参数快照和搜索策略。")
     selected_experiment_id = st.session_state.get("selected_experiment_id")
     best_experiment_detail = None
     run_summary = None
@@ -1523,15 +1880,31 @@ def render_result_workspace(runs: list[dict[str, Any]], selected_run_id: str) ->
             st.caption(
                 " / ".join(
                     [
-                        f"baseline={run_summary.get('baseline_experiment_id') or '-'}",
-                        f"best={run_summary.get('best_experiment_id') or '-'}",
-                        f"frontier={run_summary.get('frontier_experiment_id') or '-'}",
+                        f"baseline={get_short_experiment_id(run_summary.get('baseline_experiment_id'))}",
+                        f"best={get_short_experiment_id(run_summary.get('best_experiment_id'))}",
+                        f"frontier={get_short_experiment_id(run_summary.get('frontier_experiment_id'))}",
+                    ]
+                )
+            )
+
+        config = summary_experiment_detail.get("config") or {}
+        search_policy = config.get("search_policy") or {}
+        if search_policy:
+            st.caption(
+                "AI search: "
+                + ", ".join(
+                    [
+                        f"basic_hparams={search_policy.get('allow_basic_hparam_search')}",
+                        f"strategy={search_policy.get('allow_strategy_search')}",
+                        f"loss={search_policy.get('allow_loss_search')}",
+                        f"augmentation={search_policy.get('allow_augmentation_search')}",
+                        f"manual_approval={search_policy.get('require_manual_approval_for_high_impact_changes')}",
                     ]
                 )
             )
 
         with st.container(border=True):
-            title = "最佳实验详情" if best_experiment_detail is not None else "实验详情"
+            title = "Best Experiment Detail" if best_experiment_detail is not None else "Experiment Detail"
             st.markdown(f"**{title}**")
             st.json(
                 {
@@ -1586,7 +1959,9 @@ def main() -> None:
     process_pending_train_request()
 
     training_experiment_id = st.session_state.get("training_experiment_id")
-    if training_experiment_id:
+    current_auto_task_id = st.session_state.get("current_auto_task_id")
+    active_train_control = st.session_state.get("active_train_control")
+    if training_experiment_id and not current_auto_task_id and active_train_control != "auto":
         training_experiment_detail = load_experiment_detail(training_experiment_id)
         training_status = training_experiment_detail.get("status")
         if training_status == "running":

@@ -27,6 +27,13 @@ class AutoTrainStoppedError(RuntimeError):
     """Raised when auto train is stopped by user request."""
 
 
+def _require_non_basic_change_for_round(round_index: int, total_rounds: int) -> bool:
+    """Return whether the current round must include augmentation/loss/strategy changes."""
+    if total_rounds <= 1:
+        return False
+    return round_index > (total_rounds / 2)
+
+
 def _append_task_log(task_id: str, message: str) -> None:
     with AUTO_TRAIN_LOCK:
         task = AUTO_TRAIN_TASKS.get(task_id)
@@ -234,11 +241,21 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
             if task is None or task.stop_requested:
                 raise AutoTrainStoppedError("Auto train stopped by user request")
             _update_task(task_id, current_round=round_index)
+            require_non_basic_change = _require_non_basic_change_for_round(round_index, request.rounds)
+            if require_non_basic_change:
+                _append_task_log(
+                    task_id,
+                    f"Round {round_index}: stage policy requires at least one augmentation/loss/strategy change",
+                )
             _append_task_log(task_id, f"Round {round_index}: generating AI proposal")
 
             db = SessionLocal()
             try:
-                proposal = generate_aihubmix_proposal(db, run_id)
+                proposal = generate_aihubmix_proposal(
+                    db,
+                    run_id,
+                    require_non_basic_change=require_non_basic_change,
+                )
             finally:
                 db.close()
 

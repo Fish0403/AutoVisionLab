@@ -12,12 +12,18 @@ from torch import nn
 from torch.optim import Adam, AdamW, SGD
 from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR
 from torch.utils.data import DataLoader, Subset
-from torchvision import datasets, transforms
+from torchvision import datasets
 
 from app.core.settings import get_settings
 from app.schemas.ai import ResultSchema
 from app.schemas.common import ArtifactPaths, MetricsSnapshot, ResourceUsage
 from app.schemas.parameter_space import ExperimentConfig
+from app.trainers.classification.components import (
+    apply_batch_augmentations,
+    build_eval_transform,
+    build_loss,
+    build_train_transform,
+)
 
 
 class TrainingInterruptedError(RuntimeError):
@@ -31,15 +37,17 @@ class BaseClassificationTrainer(ABC):
         self,
         config: ExperimentConfig,
         experiment_id: str,
+        run_id: str,
         should_stop: Callable[[], bool] | None = None,
     ) -> None:
         self.config = config
         self.experiment_id = experiment_id
+        self.run_id = run_id
         self.should_stop = should_stop or (lambda: False)
         self.settings = get_settings()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.artifact_root = Path(self.settings.artifact_root)
-        self.log_path = self.artifact_root / "logs" / f"{self.experiment_id}.log"
+        self.log_path = self.artifact_root / "runs" / f"{self.run_id}.log"
         self.checkpoint_path = self.artifact_root / "checkpoints" / f"{self.experiment_id}.pt"
         self.data_root = Path(self.settings.data_root)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -54,7 +62,7 @@ class BaseClassificationTrainer(ABC):
         """Execute training and return a structured result."""
         train_loader, val_loader = self.build_dataloaders()
         model = self.create_model().to(self.device)
-        criterion = nn.CrossEntropyLoss(label_smoothing=self.config.params.label_smoothing)
+        criterion = build_loss(self.config.params)
         optimizer = self.build_optimizer(model)
         scheduler = self.build_scheduler(optimizer)
 
@@ -64,7 +72,7 @@ class BaseClassificationTrainer(ABC):
         final_train_loss = 0.0
         started_at = time.time()
 
-        with self.log_path.open("w", encoding="utf-8") as log_file:
+        with self.log_path.open("a", encoding="utf-8") as log_file:
             self.write_log(log_file, f"Starting training on device={self.device}")
             for epoch in range(1, self.config.params.epochs + 1):
                 self.raise_if_stopped(log_file)
@@ -106,29 +114,17 @@ class BaseClassificationTrainer(ABC):
         )
 
     def build_dataloaders(self) -> tuple[DataLoader, DataLoader]:
-        """Build CIFAR-10 dataloaders."""
+        """Build dataloaders for the configured classification dataset."""
         image_size = self.config.params.image_size
-        augmentation_steps: list[nn.Module | transforms.Compose | object] = [transforms.Resize((image_size, image_size))]
-        if self.config.params.augmentation_level != "low":
-            augmentation_steps.append(transforms.RandomHorizontalFlip())
-        if self.config.params.augmentation_level == "high":
-            augmentation_steps.append(transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2))
-        augmentation_steps.extend(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
-            ]
+        train_transform = build_train_transform(
+            image_size=image_size,
+            augmentation_policy=self.config.params.augmentation_policy,
+            augmentation_params=self.config.params.augmentation_params,
         )
-        train_transform = transforms.Compose(augmentation_steps)
-        eval_transform = transforms.Compose(
-            [
-                transforms.Resize((image_size, image_size)),
-                transforms.ToTensor(),
-                transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
-            ]
-        )
-        train_dataset = datasets.CIFAR10(root=str(self.data_root), train=True, download=True, transform=train_transform)
-        val_dataset = datasets.CIFAR10(root=str(self.data_root), train=False, download=True, transform=eval_transform)
+        eval_transform = build_eval_transform(image_size)
+        train_dir, val_dir = self.resolve_classification_dataset_dirs(self.config.dataset.strip().lower())
+        train_dataset = datasets.ImageFolder(root=str(train_dir), transform=train_transform)
+        val_dataset = datasets.ImageFolder(root=str(val_dir), transform=eval_transform)
         if self.settings.is_demo_mode:
             train_dataset = Subset(train_dataset, range(min(len(train_dataset), self.settings.demo_train_samples)))
             val_dataset = Subset(val_dataset, range(min(len(val_dataset), self.settings.demo_val_samples)))
@@ -137,6 +133,18 @@ class BaseClassificationTrainer(ABC):
             DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0),
             DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0),
         )
+
+    def resolve_classification_dataset_dirs(self, dataset_name: str) -> tuple[Path, Path]:
+        """Resolve ImageFolder train/val directories for one dataset."""
+        dataset_root = self.data_root / dataset_name / "classification"
+        train_dir = dataset_root / "train"
+        val_dir = dataset_root / "val"
+        if not train_dir.exists() or not val_dir.exists():
+            raise FileNotFoundError(
+                "Classification dataset directory not found. Expected: "
+                f"{train_dir} and {val_dir}"
+            )
+        return train_dir, val_dir
 
     def build_optimizer(self, model: nn.Module) -> torch.optim.Optimizer:
         """Build the optimizer from structured params."""
@@ -170,12 +178,13 @@ class BaseClassificationTrainer(ABC):
             self.raise_if_stopped()
             images = images.to(self.device)
             labels = labels.to(self.device)
+            images, labels = apply_batch_augmentations(images, labels, self.config.params.augmentation_params)
             optimizer.zero_grad()
             outputs = self.forward_train(model, images)
             loss = self.compute_loss(outputs, labels, criterion)
             loss.backward()
             optimizer.step()
-            batch_size = labels.size(0)
+            batch_size = images.size(0)
             total_loss += loss.item() * batch_size
             sample_count += batch_size
         return total_loss / max(sample_count, 1)
@@ -223,7 +232,7 @@ class BaseClassificationTrainer(ABC):
 
     def write_log(self, log_file, message: str) -> None:
         """Write one log line."""
-        log_file.write(f"{message}\n")
+        log_file.write(f"[{self.experiment_id}] {message}\n")
         log_file.flush()
 
     def raise_if_stopped(self, log_file=None) -> None:

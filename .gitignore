@@ -38,4 +38,11 @@ build/
 *.sqlite
 *.sqlite3
 artifacts/
-data/
+data/*
+!data/cifar10/
+!data/cifar10/prepare_classification_split.py
+!data/neu-cls/
+!data/neu-cls/prepare_classification_split.py
+data/*/raw/
+data/*/classification/
+data/*/__pycache__/

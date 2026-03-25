@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 
 from app.api.router import api_router
+from app.api.responses import register_exception_handlers
 from app.core.settings import get_settings
 from app.db.session import SessionLocal
 from app.db.init_db import init_database
@@ -15,6 +16,7 @@ app = FastAPI(
     version=settings.app_version,
     description="MVP backend for structured autonomous classification experiments.",
 )
+register_exception_handlers(app)
 app.include_router(api_router)
 
 

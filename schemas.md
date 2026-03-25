@@ -1,49 +1,33 @@
-# 参数 Schema 设计
+# Schema Notes
 
-## 1. 目标
+这份文档只描述当前仍然有效的结构化对象与字段方向，不再记录已经废弃的参数设计。
 
-这份文档定义第一版自主训练平台里最关键的几类结构化数据：
+## 1. 核心对象
+
+当前平台围绕五类结构化对象工作：
 
 - `experiment config`
 - `editable parameter space`
+- `search policy`
 - `proposal`
 - `result`
-- `reflection`
 
-第一版约束：
+## 2. Experiment Config
 
-- 固定模型实现
-- 不允许修改模型结构
-- AI 只能在参数白名单内提案
+`experiment config` 表示一次实验真正执行的配置快照。
 
-## 2. 设计原则
-
-- 所有实验都必须有完整参数快照
-- 参数空间和实验参数分开存
-- proposal 必须能被 schema 校验
-- trainer 只能读取结构化 config，不读取自由文本
-- 前端点选图表后，必须能直接展示该 experiment 的参数
-
-## 3. Experiment Config
-
-`experiment config` 表示一次实验最终实际执行的参数。
-
-### 字段说明
+关键字段：
 
 - `task_type`
-  固定为 `classification`
 - `dataset`
-  数据集名称
 - `model_family`
-  模型族
 - `model_name`
-  具体模型名
-- `params`
-  本次实验真正生效的参数
 - `parameter_space_version`
-  当前参数空间版本号
+- `participates_in_ranking`
+- `search_policy`
+- `params`
 
-### 示例
+示例：
 
 ```json
 {
@@ -52,78 +36,57 @@
   "model_family": "mobilenet",
   "model_name": "mobilenet_v2",
   "parameter_space_version": "mobilenet_v2@v1",
+  "participates_in_ranking": true,
+  "search_policy": {
+    "allow_basic_hparam_search": true,
+    "allowed_basic_hparam_fields": [
+      "optimizer",
+      "learning_rate",
+      "batch_size",
+      "weight_decay",
+      "scheduler",
+      "label_smoothing"
+    ],
+    "allow_strategy_search": false,
+    "allow_loss_search": false,
+    "allow_augmentation_search": false,
+    "require_manual_approval_for_high_impact_changes": true
+  },
   "params": {
     "optimizer": "adamw",
     "learning_rate": 0.003,
     "batch_size": 128,
-    "image_size": 64,
-    "epochs": 30,
+    "image_size": 32,
+    "epochs": 10,
     "weight_decay": 0.0001,
     "scheduler": "cosine",
-    "augmentation_level": "medium",
-    "label_smoothing": 0.1
+    "augmentation_policy": "basic",
+    "augmentation_params": {
+      "mixup_alpha": 0.0,
+      "cutmix_alpha": 0.0,
+      "random_erasing_prob": 0.0
+    },
+    "loss_name": "cross_entropy_with_label_smoothing",
+    "loss_params": {
+      "focal_gamma": 2.0
+    },
+    "label_smoothing": 0.1,
+    "aux_logits": false
   }
 }
 ```
 
-## 4. Editable Parameter Space
+## 3. Editable Parameter Space
 
-`editable parameter space` 定义某个模型允许 AI 修改哪些参数，以及参数的合法范围。
+`editable parameter space` 定义某个模型允许 AI 修改哪些字段，以及每个字段的合法范围。
 
-### 字段说明
-
-- `model_name`
-  适用模型
-- `version`
-  参数空间版本
-- `editable_params`
-  可调参数定义
-
-每个参数建议支持 3 种类型：
+当前参数定义类型：
 
 - `enum`
 - `number_range`
 - `discrete_values`
 
-### 通用定义示例
-
-```json
-{
-  "model_name": "mobilenet_v2",
-  "version": "mobilenet_v2@v1",
-  "editable_params": {
-    "optimizer": {
-      "type": "enum",
-      "choices": ["sgd", "adam", "adamw"]
-    },
-    "learning_rate": {
-      "type": "number_range",
-      "min": 0.0001,
-      "max": 0.01
-    },
-    "batch_size": {
-      "type": "discrete_values",
-      "choices": [32, 64, 128, 256]
-    }
-  }
-}
-```
-
-## 5. MobileNetV2 Parameter Space
-
-第一版 `mobilenet_v2` 建议开放这些参数：
-
-- `optimizer`
-- `learning_rate`
-- `batch_size`
-- `image_size`
-- `epochs`
-- `weight_decay`
-- `scheduler`
-- `augmentation_level`
-- `label_smoothing`
-
-### 示例
+示例：
 
 ```json
 {
@@ -147,22 +110,37 @@
       "type": "discrete_values",
       "choices": [32, 64, 96]
     },
-    "epochs": {
-      "type": "discrete_values",
-      "choices": [10, 20, 30, 50]
-    },
-    "weight_decay": {
-      "type": "number_range",
-      "min": 0.0,
-      "max": 0.01
-    },
     "scheduler": {
       "type": "enum",
       "choices": ["none", "step", "cosine"]
     },
-    "augmentation_level": {
+    "augmentation_policy": {
       "type": "enum",
-      "choices": ["low", "medium", "high"]
+      "choices": ["none", "basic"]
+    },
+    "mixup_alpha": {
+      "type": "number_range",
+      "min": 0.0,
+      "max": 1.0
+    },
+    "cutmix_alpha": {
+      "type": "number_range",
+      "min": 0.0,
+      "max": 1.0
+    },
+    "random_erasing_prob": {
+      "type": "number_range",
+      "min": 0.0,
+      "max": 0.5
+    },
+    "loss_name": {
+      "type": "enum",
+      "choices": ["cross_entropy", "cross_entropy_with_label_smoothing", "focal_loss"]
+    },
+    "focal_gamma": {
+      "type": "number_range",
+      "min": 0.5,
+      "max": 5.0
     },
     "label_smoothing": {
       "type": "number_range",
@@ -173,219 +151,140 @@
 }
 ```
 
-## 6. GoogLeNet Parameter Space
+## 4. Search Policy
 
-第一版 `googlenet` 建议开放这些参数：
+`search policy` 决定当前 run 中 AI 到底能动哪些字段。
 
-- `optimizer`
-- `learning_rate`
-- `batch_size`
-- `image_size`
-- `epochs`
-- `weight_decay`
-- `scheduler`
-- `augmentation_level`
-- `label_smoothing`
-- `aux_logits`
-
-### 示例
+示例：
 
 ```json
 {
-  "model_name": "googlenet",
-  "version": "googlenet@v1",
-  "editable_params": {
-    "optimizer": {
-      "type": "enum",
-      "choices": ["sgd", "adam", "adamw"]
-    },
-    "learning_rate": {
-      "type": "number_range",
-      "min": 0.0001,
-      "max": 0.01
-    },
-    "batch_size": {
-      "type": "discrete_values",
-      "choices": [32, 64, 128, 256]
-    },
-    "image_size": {
-      "type": "discrete_values",
-      "choices": [32, 64, 96]
-    },
-    "epochs": {
-      "type": "discrete_values",
-      "choices": [10, 20, 30, 50]
-    },
-    "weight_decay": {
-      "type": "number_range",
-      "min": 0.0,
-      "max": 0.01
-    },
-    "scheduler": {
-      "type": "enum",
-      "choices": ["none", "step", "cosine"]
-    },
-    "augmentation_level": {
-      "type": "enum",
-      "choices": ["low", "medium", "high"]
-    },
-    "label_smoothing": {
-      "type": "number_range",
-      "min": 0.0,
-      "max": 0.2
-    },
-    "aux_logits": {
-      "type": "enum",
-      "choices": [true, false]
-    }
-  }
+  "allow_basic_hparam_search": true,
+  "allowed_basic_hparam_fields": [
+    "optimizer",
+    "learning_rate",
+    "batch_size",
+    "weight_decay",
+    "scheduler",
+    "label_smoothing"
+  ],
+  "allow_strategy_search": false,
+  "allow_loss_search": true,
+  "allow_augmentation_search": true,
+  "require_manual_approval_for_high_impact_changes": true
 }
 ```
 
-## 7. Proposal
+搜索类别含义：
 
-`proposal` 表示 AI 给出的下一轮参数调整建议。
+- basic
+  - `optimizer`
+  - `learning_rate`
+  - `batch_size`
+  - `weight_decay`
+  - `scheduler`
+  - `label_smoothing`
+  - `image_size`（仅在满足特殊规则时）
+- loss
+  - `loss_name`
+  - `focal_gamma`
+- augmentation
+  - `augmentation_policy`
+  - `mixup_alpha`
+  - `cutmix_alpha`
+  - `random_erasing_prob`
+- strategy
+  - `aux_logits`
 
-它不直接等于最终执行配置，只是候选提案。后端要先校验，再生成 `experiment config`。
+## 5. Proposal
 
-### 字段说明
+proposal 是 AI 输出的结构化参数变更建议。
 
-- `task_type`
-- `model_name`
-- `based_on_experiment_ids`
-  参考了哪些历史实验
-- `hypothesis`
-  这轮调整的假设
-- `changes`
-  打算修改哪些参数
-- `reason`
-  为什么这样改
-- `risk`
-  风险等级
+关键约束：
 
-### 示例
+- `task_type` 固定为 `classification`
+- `model_name` 必须与 run 保持一致
+- `based_on_experiment_ids` 必须可追溯
+- `changes` 至少一个字段非空
+- 只能修改 `search_policy` 放开的字段
+
+示例：
 
 ```json
 {
   "task_type": "classification",
-  "model_name": "googlenet",
-  "based_on_experiment_ids": ["exp_0012", "exp_0015", "exp_0018"],
-  "hypothesis": "slightly higher learning rate may improve early convergence",
+  "model_name": "mobilenet_v2",
+  "based_on_experiment_ids": ["exp_8c9e7467"],
+  "hypothesis": "当前基础超参数已接近稳定，可尝试增加少量 mixup 缓解过拟合。",
   "changes": {
-    "learning_rate": 0.004,
-    "scheduler": "cosine",
-    "label_smoothing": 0.05
+    "mixup_alpha": 0.2,
+    "random_erasing_prob": 0.1
   },
-  "reason": "recent experiments show underfitting in early epochs",
+  "reason": "最近几轮学习率和权重衰减微调没有刷新 best，适合切换到增强维度。",
   "risk": "low"
 }
 ```
 
-## 8. Result
+## 6. Result
 
-`result` 表示训练执行后的结构化输出。
+result 表示一次训练完成后的结构化输出。
 
-### 字段说明
+关键字段：
 
 - `status`
-  `success` 或 `failed`
 - `metrics`
-  当前任务指标
 - `resource`
-  时间和显存等资源信息
 - `params`
-  实际使用参数
 - `artifacts`
-  日志和 checkpoint 地址
 
-### 示例
+示例：
 
 ```json
 {
   "status": "success",
   "metrics": {
-    "train_loss": 0.42,
-    "val_loss": 0.51,
-    "top1_acc": 0.84
+    "train_loss": 0.576,
+    "val_loss": 0.6173,
+    "top1_acc": 0.9667,
+    "best_epoch": 7
   },
   "resource": {
-    "gpu_memory_mb": 2100,
-    "training_seconds": 320
+    "gpu_memory_mb": 0,
+    "training_seconds": 22
   },
   "params": {
     "optimizer": "adamw",
-    "learning_rate": 0.004,
+    "learning_rate": 0.003,
     "batch_size": 128,
-    "image_size": 64,
-    "epochs": 30,
+    "image_size": 32,
+    "epochs": 10,
     "weight_decay": 0.0001,
     "scheduler": "cosine",
-    "augmentation_level": "medium",
-    "label_smoothing": 0.05,
-    "aux_logits": true
+    "augmentation_policy": "basic",
+    "augmentation_params": {
+      "mixup_alpha": 0.0,
+      "cutmix_alpha": 0.0,
+      "random_erasing_prob": 0.0
+    },
+    "loss_name": "cross_entropy_with_label_smoothing",
+    "loss_params": {
+      "focal_gamma": 2.0
+    },
+    "label_smoothing": 0.1,
+    "aux_logits": false
   },
   "artifacts": {
-    "log_path": "artifacts/logs/exp_0019.log",
-    "checkpoint_path": "artifacts/checkpoints/exp_0019.pt"
+    "log_path": "artifacts/runs/run_ab12cd34.log",
+    "checkpoint_path": "artifacts/checkpoints/exp_9019a748.pt"
   }
 }
 ```
 
-## 9. Reflection
+## 7. 运行时边界
 
-`reflection` 表示 AI 对实验结果的分析。
+- trainer 不读取自由文本
+- proposal 不能越过 parameter space
+- 数据库存结构化记录与路径索引
+- 本地文件存 run log 与 checkpoint
 
-### 字段说明
-
-- `outcome`
-  `improved`、`neutral`、`degraded`、`failed`
-- `analysis`
-  对这轮结果的简短分析
-- `confidence`
-  0 到 1
-- `next_action`
-  下一步建议
-- `recommended_changes`
-  建议继续尝试的参数方向
-
-### 示例
-
-```json
-{
-  "outcome": "improved",
-  "analysis": "higher learning rate improved convergence without obvious instability",
-  "confidence": 0.78,
-  "next_action": "explore nearby learning rates and keep cosine scheduler",
-  "recommended_changes": {
-    "learning_rate": 0.005,
-    "label_smoothing": 0.08
-  }
-}
-```
-
-## 10. 校验流程
-
-后端执行时建议严格走这条链路：
-
-1. 读取模型对应的 `editable parameter space`
-2. 校验 proposal 里的 `changes` 是否都在白名单中
-3. 校验 proposal 的值是否合法
-4. 将 proposal 合并到基础 `experiment config`
-5. 生成最终执行 config
-6. trainer 用最终 config 启动训练
-7. 训练结束后保存 `result`
-8. AI 读取 `result` 生成 `reflection`
-
-## 11. 前端展示建议
-
-前端至少要能展示这些字段：
-
-- model name
-- dataset
-- experiment id
-- 所有实际执行参数
-- 核心指标
-- proposal
-- reflection
-
-图表点选后，建议把 `params` 原样展示，而不是只展示 diff。第一版先保证信息完整，后续再加参数对比视图。
+更具体的运行规则见 [docs/experiment_policy.md](/home/fish/AutoVisionLab/docs/experiment_policy.md)。

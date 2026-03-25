@@ -18,7 +18,12 @@ class ProposalChanges(BaseModel):
     epochs: int | None = Field(default=None, gt=0)
     weight_decay: float | None = Field(default=None, ge=0)
     scheduler: str | None = None
-    augmentation_level: str | None = None
+    augmentation_policy: str | None = None
+    mixup_alpha: float | None = Field(default=None, ge=0)
+    cutmix_alpha: float | None = Field(default=None, ge=0)
+    random_erasing_prob: float | None = Field(default=None, ge=0, le=1)
+    loss_name: str | None = None
+    focal_gamma: float | None = Field(default=None, gt=0)
     label_smoothing: float | None = Field(default=None, ge=0, le=0.2)
     aux_logits: bool | None = None
 
