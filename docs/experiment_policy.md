@@ -74,6 +74,8 @@ data/
 
 - [docs/run_promotion_policy.md](/home/fish/AutoVisionLab/docs/run_promotion_policy.md)
   - run 晋级与回退规则
+- [docs/ranking_policy.md](/home/fish/AutoVisionLab/docs/ranking_policy.md)
+  - run 内实验的可配置评价体系
 - [docs/auto_train_search_policy.md](/home/fish/AutoVisionLab/docs/auto_train_search_policy.md)
   - Auto Train 搜索策略
 - [docs/auto_train_stop_policy.md](/home/fish/AutoVisionLab/docs/auto_train_stop_policy.md)

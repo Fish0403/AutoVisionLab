@@ -95,7 +95,12 @@ AutoVisionLab 是一个面向图像分类实验的自主训练 Web 平台。
 
 - 给 AI proposal 提供稳定参考
 - 给前端结果区提供默认展示对象
-- 把“当前最好”和“当前继续探索的分支”区分开
+- 为后续把“当前最好”和“当前继续探索的分支”分开保留独立锚点
+
+当前实现补充说明：
+
+- `frontier_experiment_id` 当前默认与最新晋级的 `keep` 实验同步
+- 独立的 `frontier` 分支语义仍保留在数据结构中，但尚未扩展出与 `best` 长期分离的推进逻辑
 
 ### 4.2 Experiment
 
@@ -112,7 +117,8 @@ AutoVisionLab 是一个面向图像分类实验的自主训练 Web 平台。
 执行状态和研究决策分开：
 
 - 执行状态：`queued`、`running`、`success`、`failed`、`discarded`
-- 决策状态：`keep`、`discard`、`crash`、`timeout`
+- 当前执行链路稳定写入的研究决策：`keep`、`discard`、`crash`
+- `timeout` 仍保留在 schema 中，但当前后端执行链路尚未自动写入该决策
 
 ### 4.3 Proposal
 
@@ -170,12 +176,13 @@ AI 搜索不是无限制调参，而是受 `search_policy` 控制。
 当前规则：
 
 - 前 `50%` 轮次允许基础超参数主导
-- 后 `50%` 轮次必须包含至少一个 augmentation / loss / strategy 变化
+- 后 `50%` 时间预算优先考虑 augmentation / loss / strategy 变化
+- 若当前 run 的可行动作仍不足以支持切维或非 `basic` 变化，系统会保留可执行性，而不是强行制造无解约束
 
 这样做的原因：
 
 - 前半段先快速找到稳定区间
-- 后半段避免一直围绕 `lr / batch_size / wd / scheduler` 打转
+- 后半段尽量避免一直围绕 `lr / batch_size / wd / scheduler` 打转
 - 让 auto-train 的后半程更像真正的策略探索，而不是重复微调
 
 ## 7. 预算与可比性设计

@@ -12,7 +12,7 @@ from app.models.experiment import ExperimentModel
 from app.models.result import ResultModel
 from app.models.run import RunModel
 from app.services.run_logging import append_run_log
-from app.services.run_policy import evaluate_promotion, get_default_run_policy
+from app.services.run_policy import evaluate_promotion, get_experiment_ranking_policy
 from app.schemas.ai import ProposalSchema, ReflectionSchema, ResultSchema
 from app.schemas.common import PointMetric
 from app.schemas.experiment import ExperimentCreateRequest, ExperimentDecisionRequest, ExperimentDetailResponse, ExperimentSummary
@@ -39,7 +39,7 @@ def _refresh_run_summary(db: Session, run_id: str) -> RunModel | None:
     baseline_experiment = experiments[0]
     best_experiment: ExperimentModel | None = None
     frontier_experiment: ExperimentModel | None = None
-    run_policy = get_default_run_policy()
+    ranking_policy = get_experiment_ranking_policy(baseline_experiment)
 
     for experiment in experiments:
         experiment.is_best_so_far = False
@@ -57,7 +57,7 @@ def _refresh_run_summary(db: Session, run_id: str) -> RunModel | None:
                 should_promote, decision_reason = evaluate_promotion(
                     experiment,
                     best_experiment,
-                    policy=run_policy,
+                    ranking_policy=ranking_policy,
                 )
                 if should_promote:
                     best_experiment = experiment

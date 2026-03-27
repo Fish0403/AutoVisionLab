@@ -156,6 +156,11 @@ LOG_LIMIT = 60
 LIVE_LOG_CONTAINER: Any | None = None
 LIVE_AI_PANEL_CONTAINER: Any | None = None
 AI_BLOCKED_CHANGE_FIELDS = {"epochs"}
+RANKING_METRIC_LABELS = {
+    "top1_acc": "Top1 Acc",
+    "val_loss": "Val Loss",
+    "training_seconds": "Training Seconds",
+}
 
 
 def default_search_policy() -> dict[str, bool]:
@@ -175,6 +180,41 @@ def default_search_policy() -> dict[str, bool]:
         "allow_augmentation_search": True,
         "require_manual_approval_for_high_impact_changes": True,
     }
+
+
+def default_ranking_policy() -> dict[str, Any]:
+    """Return the default ranking policy for the UI."""
+    return {
+        "primary_metric": "top1_acc",
+        "primary_metric_mode": "max",
+        "min_primary_metric_improvement": 0.01,
+        "primary_metric_parity_epsilon": 0.0005,
+        "tie_breaker_metric": "val_loss",
+        "tie_breaker_mode": "min",
+        "min_tie_breaker_metric_improvement": 0.01,
+        "max_image_size": None,
+    }
+
+
+def get_ranking_metric_mode(metric_name: str) -> str:
+    """Return the comparison mode for one ranking metric."""
+    return "max" if metric_name == "top1_acc" else "min"
+
+
+def summarize_ranking_policy(ranking_policy: dict[str, Any]) -> str:
+    """Build a compact ranking policy summary for the UI."""
+    max_image_size = ranking_policy.get("max_image_size")
+    max_image_size_label = str(max_image_size) if max_image_size is not None else "none"
+    return ", ".join(
+        [
+            f"primary={ranking_policy.get('primary_metric')}",
+            f"min_delta={ranking_policy.get('min_primary_metric_improvement')}",
+            f"parity_eps={ranking_policy.get('primary_metric_parity_epsilon')}",
+            f"tie_breaker={ranking_policy.get('tie_breaker_metric')}",
+            f"tie_delta={ranking_policy.get('min_tie_breaker_metric_improvement')}",
+            f"max_image_size={max_image_size_label}",
+        ]
+    )
 
 
 def build_auto_run_name(dataset: str, model_name: str) -> str:
@@ -1060,6 +1100,7 @@ def load_reference_config(selected_run_id: str) -> dict[str, Any]:
         "model_name": "mobilenet_v2",
         "participates_in_ranking": True,
         "search_policy": default_search_policy(),
+        "ranking_policy": default_ranking_policy(),
         "params": {
             "optimizer": "adamw",
             "learning_rate": 0.003,
@@ -1095,6 +1136,7 @@ def load_reference_config(selected_run_id: str) -> dict[str, Any]:
         "model_name": latest_experiment["config"]["model_name"],
         "participates_in_ranking": latest_experiment["config"].get("participates_in_ranking", True),
         "search_policy": latest_experiment["config"].get("search_policy") or default_search_policy(),
+        "ranking_policy": latest_experiment["config"].get("ranking_policy") or default_ranking_policy(),
         "params": latest_experiment["config"]["params"],
     }
 
@@ -1148,6 +1190,7 @@ def build_payload_from_form(form_values: dict[str, Any]) -> dict[str, Any]:
             "parameter_space_version": model_config["parameter_space_version"],
             "participates_in_ranking": bool(form_values.get("participates_in_ranking", True)),
             "search_policy": form_values["search_policy"],
+            "ranking_policy": form_values["ranking_policy"],
             "params": params,
         },
         "parameter_space": parameter_space,
@@ -1263,12 +1306,36 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
         st.session_state["require_manual_approval_for_high_impact_changes"] = search_policy[
             "require_manual_approval_for_high_impact_changes"
         ]
+        ranking_policy = reference_config.get("ranking_policy") or default_ranking_policy()
+        default_policy = default_ranking_policy()
+        st.session_state["use_default_ranking_policy"] = ranking_policy == default_policy
+        st.session_state["ranking_primary_metric"] = ranking_policy.get("primary_metric", default_policy["primary_metric"])
+        st.session_state["ranking_min_primary_metric_improvement"] = float(
+            ranking_policy.get("min_primary_metric_improvement", default_policy["min_primary_metric_improvement"])
+        )
+        st.session_state["ranking_primary_metric_parity_epsilon"] = float(
+            ranking_policy.get("primary_metric_parity_epsilon", default_policy["primary_metric_parity_epsilon"])
+        )
+        st.session_state["ranking_tie_breaker_metric"] = ranking_policy.get(
+            "tie_breaker_metric",
+            default_policy["tie_breaker_metric"],
+        )
+        st.session_state["ranking_min_tie_breaker_metric_improvement"] = float(
+            ranking_policy.get(
+                "min_tie_breaker_metric_improvement",
+                default_policy["min_tie_breaker_metric_improvement"],
+            )
+        )
+        st.session_state["ranking_max_image_size"] = ranking_policy.get("max_image_size")
         st.session_state["based_on_experiment_ids"] = []
         st.session_state["form_reference_run"] = selected_run_id
 
     original_image_size = get_original_image_size(st.session_state["dataset"], st.session_state["model_name"])
     if selected_run_id == "__all__":
         st.session_state["image_size"] = original_image_size
+    allowed_ranking_image_sizes = [None] + get_dataset_image_size_options(st.session_state["dataset"])
+    if st.session_state.get("ranking_max_image_size") not in allowed_ranking_image_sizes:
+        st.session_state["ranking_max_image_size"] = None
     if "auto_train_time_budget_minutes" not in st.session_state:
         st.session_state["auto_train_time_budget_minutes"] = 60
 
@@ -1352,6 +1419,68 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
                 disabled=is_training_active,
             )
 
+        with st.expander("Ranking Policy", expanded=False):
+            st.caption("这里控制 run 内实验如何晋级。默认模式保持轻量；关闭默认后可微调主指标、灰区和平局裁决。")
+            st.checkbox(
+                "Use default ranking policy",
+                key="use_default_ranking_policy",
+                disabled=is_training_active,
+            )
+            if st.session_state["use_default_ranking_policy"]:
+                st.caption("Default: " + summarize_ranking_policy(default_ranking_policy()))
+            else:
+                ranking_columns = st.columns(2)
+                with ranking_columns[0]:
+                    st.selectbox(
+                        "Primary Metric",
+                        options=["top1_acc", "val_loss"],
+                        format_func=lambda metric: RANKING_METRIC_LABELS.get(metric, metric),
+                        key="ranking_primary_metric",
+                        disabled=is_training_active,
+                    )
+                    st.number_input(
+                        "Min Primary Improvement",
+                        min_value=0.0,
+                        max_value=1.0,
+                        step=0.001,
+                        format="%.4f",
+                        key="ranking_min_primary_metric_improvement",
+                        disabled=is_training_active,
+                    )
+                    st.number_input(
+                        "Primary Parity Epsilon",
+                        min_value=0.0,
+                        max_value=1.0,
+                        step=0.0001,
+                        format="%.4f",
+                        key="ranking_primary_metric_parity_epsilon",
+                        disabled=is_training_active,
+                    )
+                with ranking_columns[1]:
+                    st.selectbox(
+                        "Tie Breaker",
+                        options=["val_loss", "top1_acc", "training_seconds"],
+                        format_func=lambda metric: RANKING_METRIC_LABELS.get(metric, metric),
+                        key="ranking_tie_breaker_metric",
+                        disabled=is_training_active,
+                    )
+                    st.number_input(
+                        "Min Tie Breaker Improvement",
+                        min_value=0.0,
+                        max_value=10.0,
+                        step=0.001,
+                        format="%.4f",
+                        key="ranking_min_tie_breaker_metric_improvement",
+                        disabled=is_training_active,
+                    )
+                    st.selectbox(
+                        "Max Image Size",
+                        options=allowed_ranking_image_sizes,
+                        format_func=lambda value: "No limit" if value is None else str(value),
+                        key="ranking_max_image_size",
+                        disabled=is_training_active,
+                    )
+
     payload = build_payload_from_form(
         {
             "run_name": st.session_state["run_name"],
@@ -1381,6 +1510,22 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
                     "require_manual_approval_for_high_impact_changes"
                 ],
             },
+            "ranking_policy": (
+                default_ranking_policy()
+                if st.session_state["use_default_ranking_policy"]
+                else {
+                    "primary_metric": st.session_state["ranking_primary_metric"],
+                    "primary_metric_mode": get_ranking_metric_mode(st.session_state["ranking_primary_metric"]),
+                    "min_primary_metric_improvement": float(st.session_state["ranking_min_primary_metric_improvement"]),
+                    "primary_metric_parity_epsilon": float(st.session_state["ranking_primary_metric_parity_epsilon"]),
+                    "tie_breaker_metric": st.session_state["ranking_tie_breaker_metric"],
+                    "tie_breaker_mode": get_ranking_metric_mode(st.session_state["ranking_tie_breaker_metric"]),
+                    "min_tie_breaker_metric_improvement": float(
+                        st.session_state["ranking_min_tie_breaker_metric_improvement"]
+                    ),
+                    "max_image_size": st.session_state["ranking_max_image_size"],
+                }
+            ),
             "based_on_experiment_ids": st.session_state.get("based_on_experiment_ids", []),
         }
     )
@@ -1663,6 +1808,7 @@ def render_result_workspace(runs: list[dict[str, Any]], selected_run_id: str) ->
 
         config = summary_experiment_detail.get("config") or {}
         search_policy = config.get("search_policy") or {}
+        ranking_policy = config.get("ranking_policy") or {}
         if search_policy:
             st.caption(
                 "AI search: "
@@ -1676,6 +1822,8 @@ def render_result_workspace(runs: list[dict[str, Any]], selected_run_id: str) ->
                     ]
                 )
             )
+        if ranking_policy:
+            st.caption("Ranking policy: " + summarize_ranking_policy(ranking_policy))
 
         with st.container(border=True):
             title = "Best Experiment Detail" if best_experiment_detail is not None else "Experiment Detail"

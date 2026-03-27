@@ -26,7 +26,11 @@
   - `keep`
   - `discard`
   - `crash`
-  - `timeout`
+
+补充说明：
+
+- `timeout` 当前仍保留在 schema 中
+- 现有后端执行链路尚未自动把实验写成 `timeout`
 
 ## 3. 默认晋级规则
 
@@ -45,6 +49,11 @@
 - 当前实验记为 `keep`
 - `best_experiment_id` 更新到该实验
 - `frontier_experiment_id` 更新到该实验
+
+当前实现补充说明：
+
+- `frontier_experiment_id` 目前随最新晋级的 `keep` 实验一起更新
+- 因此当前实现里，`frontier` 主要是保留独立锚点字段，尚未扩展出长期独立于 `best` 的分支推进逻辑
 
 ## 5. 未晋级时的回退规则
 

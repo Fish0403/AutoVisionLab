@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.ranking_policy import RankingPolicy
+
 
 DEFAULT_BASIC_HPARAM_SEARCH_FIELDS = [
     "optimizer",
@@ -103,4 +105,5 @@ class ExperimentConfig(BaseModel):
     parameter_space_version: str
     participates_in_ranking: bool = True
     search_policy: SearchPolicy = Field(default_factory=SearchPolicy)
+    ranking_policy: RankingPolicy = Field(default_factory=RankingPolicy)
     params: ExperimentParams

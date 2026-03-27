@@ -133,6 +133,8 @@ def _build_followup_config(latest_experiment: dict, proposal_changes: dict) -> d
         "model_name": latest_experiment["config"]["model_name"],
         "parameter_space_version": latest_experiment["config"]["parameter_space_version"],
         "participates_in_ranking": latest_experiment["config"].get("participates_in_ranking", True),
+        "search_policy": latest_experiment["config"].get("search_policy") or {},
+        "ranking_policy": latest_experiment["config"].get("ranking_policy") or {},
         "params": {
             **latest_experiment["config"]["params"],
             **{key: value for key, value in proposal_changes.items() if value is not None},
@@ -175,8 +177,10 @@ def _load_latest_search_policy_for_run(db: SessionLocal, run_id: str) -> SearchP
     latest_experiment_detail = get_experiment_detail(db, run_detail.experiments[-1].id)
     if latest_experiment_detail is None:
         return SearchPolicy()
-    config_payload = latest_experiment_detail.config or {}
-    return SearchPolicy.model_validate(config_payload.get("search_policy") or {})
+    experiment_config = latest_experiment_detail.config
+    if experiment_config is None:
+        return SearchPolicy()
+    return experiment_config.search_policy
 
 
 def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
@@ -268,6 +272,7 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
         _append_task_log(task_id, f"Baseline finished: {summary['baseline']['summary']}")
 
         round_index = 0
+        consecutive_invalid_proposals = 0
         while True:
             elapsed_seconds = _update_elapsed_seconds(task_id, started_at_monotonic)
             if elapsed_seconds >= total_budget_seconds:
@@ -325,13 +330,22 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
 
             db = SessionLocal()
             try:
-                proposal = generate_aihubmix_proposal(
-                    db,
-                    run_id,
-                    require_non_basic_change=require_non_basic_change,
-                )
+                try:
+                    proposal = generate_aihubmix_proposal(
+                        db,
+                        run_id,
+                        require_non_basic_change=require_non_basic_change,
+                    )
+                except ValueError as error:
+                    consecutive_invalid_proposals += 1
+                    _append_task_log(
+                        task_id,
+                        f"Round {round_index}: invalid proposal ({consecutive_invalid_proposals} consecutive) | {error}",
+                    )
+                    continue
             finally:
                 db.close()
+            consecutive_invalid_proposals = 0
 
             proposal_payload = proposal.model_dump()
             _append_task_log(task_id, f"Round {round_index}: AI suggested {proposal.hypothesis}")

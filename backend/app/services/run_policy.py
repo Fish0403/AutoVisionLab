@@ -6,6 +6,7 @@ from typing import Any
 
 from app.models.experiment import ExperimentModel
 from app.schemas.parameter_space import SearchPolicy
+from app.schemas.ranking_policy import RankingMetricMode, RankingPolicy
 from app.schemas.run_policy import RunPolicy
 from app.services.parameter_space import (
     AUGMENTATION_SEARCH_FIELDS,
@@ -17,11 +18,17 @@ from app.services.parameter_space import (
 
 
 ALL_SEARCH_DIMENSIONS = {"basic", "augmentation", "loss", "strategy"}
+NON_BASIC_SEARCH_DIMENSIONS = {"augmentation", "loss", "strategy"}
 
 
 def get_default_run_policy() -> RunPolicy:
     """Return the default run policy used across the backend."""
     return RunPolicy()
+
+
+def get_default_ranking_policy() -> RankingPolicy:
+    """Return the default experiment ranking policy."""
+    return RankingPolicy()
 
 
 def count_consecutive_stagnation_rounds(experiment_history: list[dict[str, Any]]) -> int:
@@ -268,6 +275,48 @@ def get_available_dimensions(search_policy: SearchPolicy | dict[str, Any] | None
     return get_change_dimensions(allowed_fields)
 
 
+def get_preferred_fields(
+    allowed_fields: set[str],
+    *,
+    blocked_fields: set[str] | None = None,
+    discouraged_dimensions: set[str] | None = None,
+    prefer_non_basic: bool = False,
+) -> tuple[set[str], list[str]]:
+    """Return a soft-preference field set without collapsing the feasible space."""
+    preferred_fields = set(allowed_fields)
+    preference_notes: list[str] = []
+    blocked_fields = blocked_fields or set()
+    discouraged_dimensions = discouraged_dimensions or set()
+
+    if prefer_non_basic:
+        non_basic_fields = {
+            field_name
+            for field_name in preferred_fields
+            if get_field_dimension(field_name) in NON_BASIC_SEARCH_DIMENSIONS
+        }
+        if non_basic_fields:
+            preferred_fields = non_basic_fields
+            preference_notes.append("prefer_non_basic")
+
+    if blocked_fields:
+        non_blocked_fields = preferred_fields - blocked_fields
+        if non_blocked_fields:
+            preferred_fields = non_blocked_fields
+            preference_notes.append("avoid_recent_failed_fields")
+
+    if discouraged_dimensions:
+        switched_fields = {
+            field_name
+            for field_name in preferred_fields
+            if get_field_dimension(field_name) not in discouraged_dimensions
+        }
+        if switched_fields:
+            preferred_fields = switched_fields
+            preference_notes.append("prefer_dimension_switch")
+
+    return preferred_fields or set(allowed_fields), preference_notes
+
+
 def get_dimension_attempt_count(
     experiment_history: list[dict[str, Any]],
 ) -> dict[str, int]:
@@ -368,70 +417,167 @@ def format_metric_value(value: float | None) -> str:
     return f"{value:.4f}"
 
 
-def evaluate_promotion(
-    candidate: ExperimentModel,
-    incumbent: ExperimentModel | None,
-    *,
-    policy: RunPolicy | None = None,
-) -> tuple[bool, str]:
-    """Return whether the candidate should be promoted over the incumbent."""
-    effective_policy = policy or get_default_run_policy()
-    candidate_top1_acc, candidate_val_loss = extract_ranking_metrics(candidate)
-    if incumbent is None:
-        return True, "Promoted as the first successful experiment in the run."
+def _get_ranking_metric_value(experiment: ExperimentModel, metric_name: str) -> float | None:
+    """Return one comparable ranking metric from the persisted experiment."""
+    result_payload = experiment.result or {}
+    metrics_payload = result_payload.get("metrics") or {}
+    resource_payload = result_payload.get("resource") or {}
 
-    incumbent_top1_acc, incumbent_val_loss = extract_ranking_metrics(incumbent)
-    if incumbent_top1_acc is not None and candidate_top1_acc is not None:
-        top1_delta = candidate_top1_acc - incumbent_top1_acc
-        if top1_delta >= effective_policy.min_top1_acc_promotion_delta:
+    if metric_name == "training_seconds":
+        metric_value = resource_payload.get("training_seconds")
+    else:
+        metric_value = metrics_payload.get(metric_name)
+
+    if isinstance(metric_value, (int, float)):
+        return float(metric_value)
+    return None
+
+
+def _get_experiment_image_size(experiment: ExperimentModel) -> int | None:
+    """Return image_size from one persisted experiment config."""
+    config_payload = experiment.experiment_config or {}
+    params_payload = config_payload.get("params") or {}
+    image_size = params_payload.get("image_size")
+    return int(image_size) if isinstance(image_size, int) else None
+
+
+def get_experiment_ranking_policy(experiment: ExperimentModel | None) -> RankingPolicy:
+    """Return the effective ranking policy for one persisted experiment."""
+    if experiment is None:
+        return get_default_ranking_policy()
+    config_payload = experiment.experiment_config or {}
+    return RankingPolicy.model_validate(config_payload.get("ranking_policy") or {})
+
+
+def _compute_metric_improvement(
+    candidate_value: float,
+    incumbent_value: float,
+    *,
+    metric_mode: RankingMetricMode,
+) -> float:
+    """Return positive values when the candidate improved under the given metric mode."""
+    if metric_mode == "max":
+        return candidate_value - incumbent_value
+    return incumbent_value - candidate_value
+
+
+def _passes_cost_gate(candidate: ExperimentModel, ranking_policy: RankingPolicy) -> tuple[bool, str | None]:
+    """Return whether the candidate passes all configured cost gates."""
+    candidate_image_size = _get_experiment_image_size(candidate)
+    if ranking_policy.max_image_size is not None and candidate_image_size is not None:
+        if candidate_image_size > ranking_policy.max_image_size:
+            return (
+                False,
+                f"image_size {candidate_image_size} exceeds max_image_size {ranking_policy.max_image_size}",
+            )
+    return True, None
+
+
+def _evaluate_tie_breaker(
+    candidate: ExperimentModel,
+    incumbent: ExperimentModel,
+    ranking_policy: RankingPolicy,
+) -> tuple[bool, str]:
+    """Return whether the candidate wins on the configured tie-breaker."""
+    candidate_tie_breaker = _get_ranking_metric_value(candidate, ranking_policy.tie_breaker_metric)
+    incumbent_tie_breaker = _get_ranking_metric_value(incumbent, ranking_policy.tie_breaker_metric)
+
+    if candidate_tie_breaker is not None and incumbent_tie_breaker is not None:
+        tie_breaker_improvement = _compute_metric_improvement(
+            candidate_tie_breaker,
+            incumbent_tie_breaker,
+            metric_mode=ranking_policy.tie_breaker_mode,
+        )
+        if tie_breaker_improvement >= ranking_policy.min_tie_breaker_metric_improvement:
             return (
                 True,
-                "Promoted by run policy: "
-                f"top1_acc improved from {format_metric_value(incumbent_top1_acc)} "
-                f"to {format_metric_value(candidate_top1_acc)}.",
+                "Promoted by ranking policy: "
+                f"{ranking_policy.tie_breaker_metric} improved from "
+                f"{format_metric_value(incumbent_tie_breaker)} to "
+                f"{format_metric_value(candidate_tie_breaker)} at comparable primary metric.",
             )
-        if abs(top1_delta) <= effective_policy.top1_acc_parity_epsilon:
-            if incumbent_val_loss is not None and candidate_val_loss is not None:
-                val_loss_delta = incumbent_val_loss - candidate_val_loss
-                if val_loss_delta >= effective_policy.min_val_loss_promotion_delta:
-                    return (
-                        True,
-                        "Promoted by run policy: "
-                        f"val_loss improved from {format_metric_value(incumbent_val_loss)} "
-                        f"to {format_metric_value(candidate_val_loss)} at comparable top1_acc.",
-                    )
-                return (
-                    False,
-                    "Discarded by run policy: comparable top1_acc but val_loss "
-                    f"did not improve by at least {effective_policy.min_val_loss_promotion_delta:.3f}.",
-                )
         return (
             False,
-            "Discarded by run policy: top1_acc "
-            f"({format_metric_value(candidate_top1_acc)}) did not beat current best "
-            f"({format_metric_value(incumbent_top1_acc)}) by at least "
-            f"{effective_policy.min_top1_acc_promotion_delta:.3f}.",
+            "Discarded by ranking policy: comparable primary metric but "
+            f"{ranking_policy.tie_breaker_metric} did not improve by at least "
+            f"{ranking_policy.min_tie_breaker_metric_improvement:.3f}.",
         )
 
-    if incumbent_top1_acc is None and candidate_top1_acc is not None:
-        return True, "Promoted by run policy: candidate reports top1_acc while the incumbent does not."
+    if incumbent_tie_breaker is None and candidate_tie_breaker is not None:
+        return (
+            True,
+            "Promoted by ranking policy: candidate reports "
+            f"{ranking_policy.tie_breaker_metric} while the incumbent does not.",
+        )
 
-    if incumbent_top1_acc is None and candidate_top1_acc is None:
-        if incumbent_val_loss is not None and candidate_val_loss is not None:
-            val_loss_delta = incumbent_val_loss - candidate_val_loss
-            if val_loss_delta >= effective_policy.min_val_loss_promotion_delta:
-                return (
-                    True,
-                    "Promoted by run policy: "
-                    f"val_loss improved from {format_metric_value(incumbent_val_loss)} "
-                    f"to {format_metric_value(candidate_val_loss)}.",
-                )
+    if incumbent_tie_breaker is not None and candidate_tie_breaker is None:
         return (
             False,
-            "Discarded by run policy: no significant improvement was observed in ranking metrics.",
+            "Discarded by ranking policy: incumbent reports "
+            f"{ranking_policy.tie_breaker_metric} but the candidate does not.",
         )
 
     return (
         False,
-        "Discarded by run policy: candidate does not provide enough ranking evidence to beat the current best.",
+        "Discarded by ranking policy: neither candidate nor incumbent provides "
+        f"{ranking_policy.tie_breaker_metric} for tie-breaking.",
     )
+
+
+def evaluate_promotion(
+    candidate: ExperimentModel,
+    incumbent: ExperimentModel | None,
+    *,
+    ranking_policy: RankingPolicy | None = None,
+) -> tuple[bool, str]:
+    """Return whether the candidate should be promoted over the incumbent."""
+    effective_ranking_policy = ranking_policy or get_default_ranking_policy()
+    passes_cost_gate, cost_gate_reason = _passes_cost_gate(candidate, effective_ranking_policy)
+    if not passes_cost_gate:
+        return False, f"Discarded by ranking policy: {cost_gate_reason}."
+
+    candidate_primary_metric = _get_ranking_metric_value(candidate, effective_ranking_policy.primary_metric)
+    if incumbent is None:
+        return True, "Promoted as the first successful experiment under the ranking policy."
+
+    incumbent_primary_metric = _get_ranking_metric_value(incumbent, effective_ranking_policy.primary_metric)
+    if incumbent_primary_metric is not None and candidate_primary_metric is not None:
+        primary_metric_improvement = _compute_metric_improvement(
+            candidate_primary_metric,
+            incumbent_primary_metric,
+            metric_mode=effective_ranking_policy.primary_metric_mode,
+        )
+        if primary_metric_improvement >= effective_ranking_policy.min_primary_metric_improvement:
+            return (
+                True,
+                "Promoted by ranking policy: "
+                f"{effective_ranking_policy.primary_metric} improved from "
+                f"{format_metric_value(incumbent_primary_metric)} to "
+                f"{format_metric_value(candidate_primary_metric)}.",
+            )
+        if abs(candidate_primary_metric - incumbent_primary_metric) <= effective_ranking_policy.primary_metric_parity_epsilon:
+            return _evaluate_tie_breaker(candidate, incumbent, effective_ranking_policy)
+        return (
+            False,
+            "Discarded by ranking policy: "
+            f"{effective_ranking_policy.primary_metric} "
+            f"({format_metric_value(candidate_primary_metric)}) did not beat current best "
+            f"({format_metric_value(incumbent_primary_metric)}) by at least "
+            f"{effective_ranking_policy.min_primary_metric_improvement:.3f}.",
+        )
+
+    if incumbent_primary_metric is None and candidate_primary_metric is not None:
+        return (
+            True,
+            "Promoted by ranking policy: candidate reports "
+            f"{effective_ranking_policy.primary_metric} while the incumbent does not.",
+        )
+
+    if incumbent_primary_metric is not None and candidate_primary_metric is None:
+        return (
+            False,
+            "Discarded by ranking policy: incumbent reports "
+            f"{effective_ranking_policy.primary_metric} but the candidate does not.",
+        )
+
+    return _evaluate_tie_breaker(candidate, incumbent, effective_ranking_policy)

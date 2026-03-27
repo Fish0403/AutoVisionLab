@@ -21,8 +21,8 @@ from app.services.run_policy import (
     determine_change_budget,
     determine_forbidden_dimensions,
     determine_temporarily_blocked_fields,
+    get_preferred_fields,
     get_default_run_policy,
-    proposal_switches_dimension,
 )
 from app.services.run_logging import append_run_log
 
@@ -83,6 +83,7 @@ def _build_retry_note(
     forbidden_dimensions: set[str],
     effective_max_changed_fields: int,
     require_non_basic_change: bool,
+    preferred_fields: set[str],
 ) -> str:
     """Build targeted retry guidance after one invalid proposal."""
     retry_lines = [
@@ -91,14 +92,19 @@ def _build_retry_note(
     ]
     if last_error:
         retry_lines.append(f"上一版拒绝原因：{last_error}。")
+    if preferred_fields:
+        retry_lines.append(
+            "本轮优先考虑这些字段："
+            f"{json.dumps(sorted(preferred_fields), ensure_ascii=True)}。"
+        )
     if blocked_fields:
         retry_lines.append(
-            "这些字段当前处于 cooldown，changes 中绝对不能再次包含："
+            "这些字段最近连续失败，若存在其他可行动作，优先不要再次包含："
             f"{json.dumps(sorted(blocked_fields), ensure_ascii=True)}。"
         )
     if forbidden_dimensions:
         retry_lines.append(
-            "本轮必须切换搜索维度，不能只停留在这些维度："
+            "如果有其他可行动作，本轮优先切出这些最近停滞的维度："
             f"{json.dumps(sorted(forbidden_dimensions), ensure_ascii=True)}。"
         )
     if effective_max_changed_fields == 1:
@@ -107,11 +113,11 @@ def _build_retry_note(
         retry_lines.append(f"本轮仍然最多只允许修改 {effective_max_changed_fields} 个字段。")
     if require_non_basic_change:
         retry_lines.append(
-            "本轮 changes 必须至少包含一个非基础字段："
+            "如果当前仍有可行动作，本轮优先包含一个非基础字段："
             "augmentation_policy、mixup_alpha、cutmix_alpha、random_erasing_prob、"
             "loss_name、focal_gamma、aux_logits。"
         )
-    retry_lines.append("不要重复上一版被拒的字段或字段组合；请改用未被 cooldown 的可执行参数。")
+    retry_lines.append("不要重复上一版被拒的字段或字段组合；请改用当前更可执行的字段。")
     return "\n".join(retry_lines)
 
 
@@ -237,6 +243,12 @@ def generate_aihubmix_proposal(
     search_policy = _load_latest_search_policy(db, run_id)
     parameter_space = _load_latest_parameter_space(db, run_id)
     allowed_fields = sorted(get_allowed_ai_search_fields(search_policy))
+    preferred_fields, preference_notes = get_preferred_fields(
+        set(allowed_fields),
+        blocked_fields=blocked_fields,
+        discouraged_dimensions=forbidden_dimensions,
+        prefer_non_basic=require_non_basic_change,
+    )
     image_size_choices: list[int] | None = None
     allowed_field_definitions: dict[str, Any] = {}
     if parameter_space is not None:
@@ -272,11 +284,13 @@ def generate_aihubmix_proposal(
         f"Run summary:\n{json.dumps(prompt_run_payload, ensure_ascii=True)}\n"
         f"Experiment history:\n{json.dumps(experiment_history, ensure_ascii=True)}\n"
         f"Allowed AI change fields:\n{json.dumps(allowed_fields, ensure_ascii=True)}\n"
+        f"Preferred fields for the next proposal:\n{json.dumps(sorted(preferred_fields), ensure_ascii=True)}\n"
+        f"Preference notes:\n{json.dumps(preference_notes, ensure_ascii=True)}\n"
         f"Allowed field definitions:\n{json.dumps(allowed_field_definitions, ensure_ascii=True)}\n"
         f"Allowed image_size choices for this run:\n{json.dumps(image_size_choices, ensure_ascii=True)}\n"
         f"Consecutive stagnation rounds without promotion:\n{json.dumps(stagnation_rounds, ensure_ascii=True)}\n"
-        f"Temporarily blocked fields due to repeated failed use:\n{json.dumps(sorted(blocked_fields), ensure_ascii=True)}\n"
-        f"Forbidden dimensions for the next proposal:\n{json.dumps(sorted(forbidden_dimensions), ensure_ascii=True)}\n"
+        f"Recently failed fields to avoid when alternatives exist:\n{json.dumps(sorted(blocked_fields), ensure_ascii=True)}\n"
+        f"Recently stagnant dimensions to avoid when alternatives exist:\n{json.dumps(sorted(forbidden_dimensions), ensure_ascii=True)}\n"
         f"Run policy:\n{json.dumps(run_policy.model_dump(), ensure_ascii=True)}\n"
         "请为同一个 run 生成下一轮 proposal。"
         "task_type 必须保持 classification。"
@@ -286,7 +300,8 @@ def generate_aihubmix_proposal(
         "每个字段的可选值或范围必须严格遵循 Allowed field definitions。"
         "只能提出结构化参数改动。"
         "不要只根据最后一轮实验下结论；必须结合整个 run 的历史记录判断下一步。"
-        "如果最近几轮没有明显提升，必须切换搜索维度，不要重复最近 3 轮几乎相同的建议。"
+        "如果 Preferred fields 非空，优先从 Preferred fields 中选择。"
+        "如果最近几轮没有明显提升，优先切换搜索维度，不要重复最近 3 轮几乎相同的建议。"
     )
     if effective_max_changed_fields == 1:
         base_user_prompt += "本轮只允许修改 1 个字段。优先做单变量实验，避免一次改太多。"
@@ -299,8 +314,8 @@ def generate_aihubmix_proposal(
     if require_non_basic_change:
         base_user_prompt += (
             "当前处于 auto-train 的后半阶段。"
-            "本轮 proposal 不能只修改基础超参数；"
-            "changes 中必须至少包含一个非基础字段："
+            "如果当前仍有可行动作，优先不要只修改基础超参数；"
+            "优先包含一个非基础字段："
             "augmentation_policy、mixup_alpha、cutmix_alpha、random_erasing_prob、loss_name、focal_gamma、aux_logits。"
     )
     client = AIHubMixClient()
@@ -314,6 +329,7 @@ def generate_aihubmix_proposal(
                 forbidden_dimensions=forbidden_dimensions,
                 effective_max_changed_fields=effective_max_changed_fields,
                 require_non_basic_change=require_non_basic_change,
+                preferred_fields=preferred_fields,
             )
         proposal_payload = client.create_json_completion(
             system_prompt=system_prompt,
@@ -334,25 +350,6 @@ def generate_aihubmix_proposal(
             )
             continue
         changed_fields = set(_get_effective_change_map(proposal).keys())
-        blocked_changed_fields = sorted(changed_fields & blocked_fields)
-        if blocked_changed_fields:
-            last_error = (
-                "Proposal reuses fields currently in cooldown: "
-                + ", ".join(blocked_changed_fields)
-            )
-            continue
-        if not proposal_switches_dimension(
-            changed_fields,
-            forbidden_dimensions=forbidden_dimensions,
-        ):
-            last_error = (
-                "Proposal must switch search dimension away from: "
-                + ", ".join(sorted(forbidden_dimensions))
-            )
-            continue
-        if require_non_basic_change and not _contains_non_basic_change(proposal):
-            last_error = "Proposal must include at least one non-basic change in the current auto-train phase"
-            continue
         unsupported_text_reason = _contains_unsupported_text_hint(proposal, allowed_field_definitions)
         if unsupported_text_reason is not None:
             last_error = unsupported_text_reason
@@ -368,7 +365,8 @@ def generate_aihubmix_proposal(
                 f"stagnation_rounds={stagnation_rounds} | "
                 f"max_changed_fields={effective_max_changed_fields} | "
                 f"blocked_fields={json.dumps(sorted(blocked_fields), ensure_ascii=False)} | "
-                f"forbidden_dimensions={json.dumps(sorted(forbidden_dimensions), ensure_ascii=False)} | "
+                f"discouraged_dimensions={json.dumps(sorted(forbidden_dimensions), ensure_ascii=False)} | "
+                f"preferred_fields={json.dumps(sorted(preferred_fields), ensure_ascii=False)} | "
                 f"hypothesis={proposal.hypothesis} | "
                 f"changes={json.dumps(proposal.changes.model_dump(exclude_none=True), ensure_ascii=False)} | "
                 f"reason={proposal.reason}"

@@ -166,6 +166,7 @@ run 日志会聚合同一个 run 下的：
 - 任务清单：[docs/tasks.md](/home/fish/AutoVisionLab/docs/tasks.md)
 - Schema 说明：[docs/schemas.md](/home/fish/AutoVisionLab/docs/schemas.md)
 - 运行规则：[docs/experiment_policy.md](/home/fish/AutoVisionLab/docs/experiment_policy.md)
+- Ranking Policy：[docs/ranking_policy.md](/home/fish/AutoVisionLab/docs/ranking_policy.md)
 - Run 晋级与回退规则：[docs/run_promotion_policy.md](/home/fish/AutoVisionLab/docs/run_promotion_policy.md)
 - Auto Train 搜索策略：[docs/auto_train_search_policy.md](/home/fish/AutoVisionLab/docs/auto_train_search_policy.md)
 - Auto Train 停止策略：[docs/auto_train_stop_policy.md](/home/fish/AutoVisionLab/docs/auto_train_stop_policy.md)

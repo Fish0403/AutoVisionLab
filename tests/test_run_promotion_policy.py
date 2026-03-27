@@ -26,6 +26,7 @@ from app.db.session import SessionLocal
 from app.schemas.ai import ResultSchema
 from app.schemas.experiment import ExperimentCreateRequest
 from app.schemas.parameter_space import ExperimentConfig, SearchPolicy
+from app.schemas.ranking_policy import RankingPolicy
 from app.schemas.run import RunCreateRequest
 from app.services.parameter_space import get_parameter_space
 from app.services.persistence import (
@@ -41,15 +42,22 @@ from app.services.run_policy import (
     get_dimension_attempt_count,
     determine_forbidden_dimensions,
     determine_temporarily_blocked_fields,
+    get_default_ranking_policy,
     get_default_run_policy,
+    get_preferred_fields,
     proposal_switches_dimension,
     require_non_basic_change_for_elapsed_budget,
     should_stop_after_dimension_coverage,
 )
 
 
-def _build_experiment_config(parameter_space_version: str) -> ExperimentConfig:
+def _build_experiment_config(
+    parameter_space_version: str,
+    *,
+    ranking_policy: RankingPolicy | None = None,
+) -> ExperimentConfig:
     """Build a minimal ranking-enabled config."""
+    effective_ranking_policy = ranking_policy or RankingPolicy()
     return ExperimentConfig.model_validate(
         {
             "task_type": "classification",
@@ -73,6 +81,7 @@ def _build_experiment_config(parameter_space_version: str) -> ExperimentConfig:
                 "allow_augmentation_search": False,
                 "require_manual_approval_for_high_impact_changes": True,
             },
+            "ranking_policy": effective_ranking_policy.model_dump(),
             "params": {
                 "optimizer": "adamw",
                 "learning_rate": 0.003,
@@ -152,11 +161,25 @@ class RunPromotionPolicyTest(unittest.TestCase):
         baseline_val_loss: float,
         candidate_top1_acc: float,
         candidate_val_loss: float,
+        ranking_policy: RankingPolicy | None = None,
+        candidate_image_size: int = 32,
     ) -> tuple[dict[str, str], str]:
         """Create one run and two successful experiments for promotion checks."""
         parameter_space = get_parameter_space("mobilenet_v2")
         assert parameter_space is not None
-        experiment_config = _build_experiment_config(parameter_space.version)
+        experiment_config = _build_experiment_config(
+            parameter_space.version,
+            ranking_policy=ranking_policy,
+        )
+        candidate_config = ExperimentConfig.model_validate(
+            {
+                **experiment_config.model_dump(),
+                "params": {
+                    **experiment_config.params.model_dump(),
+                    "image_size": candidate_image_size,
+                },
+            }
+        )
 
         with SessionLocal() as db:
             run = create_run(
@@ -195,7 +218,7 @@ class RunPromotionPolicyTest(unittest.TestCase):
                 db,
                 ExperimentCreateRequest(
                     run_id=run.id,
-                    config=experiment_config,
+                    config=candidate_config,
                     parameter_space=parameter_space,
                     proposal=None,
                 ),
@@ -207,7 +230,7 @@ class RunPromotionPolicyTest(unittest.TestCase):
                 _build_result(
                     top1_acc=candidate_top1_acc,
                     val_loss=candidate_val_loss,
-                    experiment_config=experiment_config,
+                    experiment_config=candidate_config,
                     run_id=run.id,
                     experiment_id=candidate.id,
                 ),
@@ -284,13 +307,28 @@ class RunPromotionPolicyTest(unittest.TestCase):
         self.assertEqual(stagnation_rounds, 2)
         self.assertEqual(max_changed_fields, 2)
 
-    def test_default_run_policy_exposes_current_hard_constraints(self) -> None:
+    def test_default_policies_expose_current_constraints(self) -> None:
         run_policy = get_default_run_policy()
+        ranking_policy = get_default_ranking_policy()
 
-        self.assertEqual(run_policy.min_top1_acc_promotion_delta, 0.01)
-        self.assertEqual(run_policy.min_val_loss_promotion_delta, 0.01)
         self.assertEqual(run_policy.default_max_changed_fields, 1)
         self.assertEqual(run_policy.max_changed_fields_after_stagnation, 2)
+        self.assertEqual(ranking_policy.primary_metric, "top1_acc")
+        self.assertEqual(ranking_policy.tie_breaker_metric, "val_loss")
+        self.assertEqual(ranking_policy.min_primary_metric_improvement, 0.01)
+        self.assertEqual(ranking_policy.min_tie_breaker_metric_improvement, 0.01)
+
+    def test_max_image_size_gate_blocks_promotion(self) -> None:
+        ids, best_experiment_id = self._create_run_with_two_results(
+            baseline_top1_acc=0.8000,
+            baseline_val_loss=0.5000,
+            candidate_top1_acc=0.8200,
+            candidate_val_loss=0.4700,
+            ranking_policy=RankingPolicy(max_image_size=64),
+            candidate_image_size=96,
+        )
+
+        self.assertEqual(best_experiment_id, ids["baseline_id"])
 
     def test_non_basic_change_phase_uses_budget_ratio(self) -> None:
         run_policy = get_default_run_policy()
@@ -375,6 +413,17 @@ class RunPromotionPolicyTest(unittest.TestCase):
             get_available_dimensions(search_policy),
             {"basic", "loss", "augmentation"},
         )
+
+    def test_preferred_fields_fall_back_when_soft_preferences_would_empty_space(self) -> None:
+        preferred_fields, preference_notes = get_preferred_fields(
+            {"learning_rate"},
+            blocked_fields={"learning_rate"},
+            discouraged_dimensions={"basic"},
+            prefer_non_basic=True,
+        )
+
+        self.assertEqual(preferred_fields, {"learning_rate"})
+        self.assertEqual(preference_notes, [])
 
     def test_dimension_coverage_stop_requires_exploration_budget_and_stagnation(self) -> None:
         search_policy = SearchPolicy.model_validate(

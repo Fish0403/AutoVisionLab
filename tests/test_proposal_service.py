@@ -44,7 +44,7 @@ def _build_parameter_space() -> EditableParameterSpace:
 class ProposalServiceTest(unittest.TestCase):
     """Verify retry behavior for invalid AI proposals."""
 
-    def test_generate_aihubmix_proposal_retries_with_explicit_cooldown_feedback(self) -> None:
+    def test_generate_aihubmix_proposal_retries_with_soft_preference_feedback(self) -> None:
         db = Mock()
         db.get.return_value = SimpleNamespace(
             id="run_1",
@@ -61,9 +61,9 @@ class ProposalServiceTest(unittest.TestCase):
                 "task_type": "classification",
                 "model_name": "mobilenet_v2",
                 "based_on_experiment_ids": ["exp_fail_1", "exp_fail_2"],
-                "hypothesis": "继续提高标签平滑。",
-                "changes": {"label_smoothing": 0.12},
-                "reason": "想继续增强泛化。",
+                "hypothesis": "先给一个空动作。",
+                "changes": {"epochs": 2},
+                "reason": "先试一个会被系统清理掉的字段。",
                 "risk": "low",
             },
             {
@@ -72,7 +72,7 @@ class ProposalServiceTest(unittest.TestCase):
                 "based_on_experiment_ids": ["exp_fail_1", "exp_fail_2"],
                 "hypothesis": "改测权重衰减。",
                 "changes": {"weight_decay": 0.0005},
-                "reason": "label_smoothing 在冷却期，改看正则强度是否更稳。",
+                "reason": "优先避开最近连续失败的字段，改看正则强度是否更稳。",
                 "risk": "low",
             },
         ]
@@ -108,8 +108,9 @@ class ProposalServiceTest(unittest.TestCase):
         self.assertIsNone(proposal.changes.label_smoothing)
         self.assertEqual(mock_client.create_json_completion.call_count, 2)
         second_prompt = mock_client.create_json_completion.call_args_list[1].kwargs["user_prompt"]
-        self.assertIn("Proposal reuses fields currently in cooldown: label_smoothing", second_prompt)
-        self.assertIn("changes 中绝对不能再次包含", second_prompt)
+        self.assertIn("Proposal does not contain any effective parameter changes", second_prompt)
+        self.assertIn("本轮优先考虑这些字段", second_prompt)
+        self.assertIn("优先不要再次包含", second_prompt)
 
 
 if __name__ == "__main__":
