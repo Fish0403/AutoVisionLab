@@ -162,10 +162,13 @@ run 日志会聚合同一个 run 下的：
 
 ## 7. 常用文档
 
-- 项目计划：[plan.md](/home/fish/AutoVisionLab/plan.md)
-- 任务清单：[tasks.md](/home/fish/AutoVisionLab/tasks.md)
-- Schema 说明：[schemas.md](/home/fish/AutoVisionLab/schemas.md)
+- 项目计划：[docs/plan.md](/home/fish/AutoVisionLab/docs/plan.md)
+- 任务清单：[docs/tasks.md](/home/fish/AutoVisionLab/docs/tasks.md)
+- Schema 说明：[docs/schemas.md](/home/fish/AutoVisionLab/docs/schemas.md)
 - 运行规则：[docs/experiment_policy.md](/home/fish/AutoVisionLab/docs/experiment_policy.md)
+- Run 晋级与回退规则：[docs/run_promotion_policy.md](/home/fish/AutoVisionLab/docs/run_promotion_policy.md)
+- Auto Train 搜索策略：[docs/auto_train_search_policy.md](/home/fish/AutoVisionLab/docs/auto_train_search_policy.md)
+- Auto Train 停止策略：[docs/auto_train_stop_policy.md](/home/fish/AutoVisionLab/docs/auto_train_stop_policy.md)
 - 变更记录：[CHANGELOG.md](/home/fish/AutoVisionLab/CHANGELOG.md)
 
 ## 8. 仓库结构
@@ -189,9 +192,6 @@ AutoVisionLab/
 ├── docs/                   # 补充说明文档
 ├── scripts/                # 本地启动脚本
 ├── README.md
-├── plan.md
-├── tasks.md
-├── schemas.md
 ├── CHANGELOG.md
 └── requirements.txt
 ```

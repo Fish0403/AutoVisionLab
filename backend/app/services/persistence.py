@@ -14,26 +14,10 @@ from app.models.run import RunModel
 from app.services.run_logging import append_run_log
 from app.services.run_policy import evaluate_promotion, get_default_run_policy
 from app.schemas.ai import ProposalSchema, ReflectionSchema, ResultSchema
-from app.schemas.common import ExperimentDecision, PointMetric
+from app.schemas.common import PointMetric
 from app.schemas.experiment import ExperimentCreateRequest, ExperimentDecisionRequest, ExperimentDetailResponse, ExperimentSummary
 from app.schemas.parameter_space import EditableParameterSpace, ExperimentConfig
 from app.schemas.run import RunCreateRequest, RunDetailResponse, RunListItem, RunMetricsResponse, RunSummaryResponse
-
-
-def _experiment_ranking_key(experiment: ExperimentModel) -> tuple[float, float, float, float]:
-    result = experiment.result or {}
-    metrics = result.get("metrics") or {}
-    resource = result.get("resource") or {}
-    top1_acc = metrics.get("top1_acc")
-    val_loss = metrics.get("val_loss")
-    training_seconds = resource.get("training_seconds")
-    created_at_ts = experiment.created_at.timestamp()
-    return (
-        float(top1_acc) if top1_acc is not None else float("-inf"),
-        -float(val_loss) if val_loss is not None else float("-inf"),
-        -float(training_seconds) if training_seconds is not None else float("-inf"),
-        created_at_ts,
-    )
 
 def _refresh_run_summary(db: Session, run_id: str) -> RunModel | None:
     run = db.get(RunModel, run_id)
@@ -462,10 +446,7 @@ def discard_experiment(db: Session, experiment_id: str) -> ExperimentDetailRespo
 
     settings = get_settings()
     artifact_root = Path(settings.artifact_root)
-    for artifact_path in (
-        artifact_root / "logs" / f"{experiment_id}.log",
-        artifact_root / "checkpoints" / f"{experiment_id}.pt",
-    ):
+    for artifact_path in (artifact_root / "checkpoints" / f"{experiment_id}.pt",):
         if artifact_path.exists():
             artifact_path.unlink()
 

@@ -5,12 +5,14 @@ from __future__ import annotations
 from typing import Any
 
 from app.models.experiment import ExperimentModel
+from app.schemas.parameter_space import SearchPolicy
 from app.schemas.run_policy import RunPolicy
 from app.services.parameter_space import (
     AUGMENTATION_SEARCH_FIELDS,
     BASIC_HPARAM_SEARCH_FIELDS,
     LOSS_SEARCH_FIELDS,
     STRATEGY_SEARCH_FIELDS,
+    get_allowed_ai_search_fields,
 )
 
 
@@ -47,6 +49,16 @@ def _get_stagnation_history(experiment_history: list[dict[str, Any]]) -> list[di
 
 def _get_effective_history_change_fields(experiment: dict[str, Any]) -> set[str]:
     """Return concrete changed fields recorded in one experiment proposal."""
+    source_experiment = _resolve_source_experiment(experiment, history_index=None)
+    if source_experiment is not None:
+        current_params = _flatten_search_params(_extract_experiment_params(experiment))
+        source_params = _flatten_search_params(_extract_experiment_params(source_experiment))
+        return {
+            field_name
+            for field_name, current_value in current_params.items()
+            if source_params.get(field_name) != current_value
+        }
+
     proposal_payload = experiment.get("proposal") or {}
     changes = proposal_payload.get("changes") or {}
     return {
@@ -54,6 +66,67 @@ def _get_effective_history_change_fields(experiment: dict[str, Any]) -> set[str]
         for field_name, value in changes.items()
         if value is not None
     }
+
+
+def _extract_experiment_params(experiment: dict[str, Any]) -> dict[str, Any]:
+    """Return the structured params payload from one history item."""
+    if isinstance(experiment.get("params"), dict):
+        return experiment["params"]
+    config_payload = experiment.get("config") or {}
+    params_payload = config_payload.get("params")
+    return params_payload if isinstance(params_payload, dict) else {}
+
+
+def _flatten_search_params(params_payload: dict[str, Any]) -> dict[str, Any]:
+    """Flatten nested params into the search field namespace."""
+    augmentation_params = params_payload.get("augmentation_params") or {}
+    loss_params = params_payload.get("loss_params") or {}
+    flattened_payload = {
+        "optimizer": params_payload.get("optimizer"),
+        "learning_rate": params_payload.get("learning_rate"),
+        "batch_size": params_payload.get("batch_size"),
+        "weight_decay": params_payload.get("weight_decay"),
+        "scheduler": params_payload.get("scheduler"),
+        "label_smoothing": params_payload.get("label_smoothing"),
+        "image_size": params_payload.get("image_size"),
+        "augmentation_policy": params_payload.get("augmentation_policy"),
+        "mixup_alpha": augmentation_params.get("mixup_alpha"),
+        "cutmix_alpha": augmentation_params.get("cutmix_alpha"),
+        "random_erasing_prob": augmentation_params.get("random_erasing_prob"),
+        "loss_name": params_payload.get("loss_name"),
+        "focal_gamma": loss_params.get("focal_gamma"),
+        "aux_logits": params_payload.get("aux_logits"),
+    }
+    return {
+        field_name: value
+        for field_name, value in flattened_payload.items()
+        if value is not None
+    }
+
+
+def _build_history_index(experiment_history: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Return one lookup map for experiment history items."""
+    return {
+        experiment["id"]: experiment
+        for experiment in experiment_history
+        if isinstance(experiment.get("id"), str)
+    }
+
+
+def _resolve_source_experiment(
+    experiment: dict[str, Any],
+    history_index: dict[str, dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Return the primary source experiment for one history item, if any."""
+    if history_index is None:
+        return None
+    proposal_payload = experiment.get("proposal") or {}
+    based_on_experiment_ids = proposal_payload.get("based_on_experiment_ids") or []
+    for experiment_id in based_on_experiment_ids:
+        source_experiment = history_index.get(experiment_id)
+        if source_experiment is not None:
+            return source_experiment
+    return None
 
 
 def get_field_dimension(field_name: str) -> str | None:
@@ -100,6 +173,7 @@ def determine_temporarily_blocked_fields(
     """Return fields that should cool down after repeated failed use."""
     effective_policy = policy or get_default_run_policy()
     stagnation_history = _get_stagnation_history(experiment_history)
+    history_index = _build_history_index(experiment_history)
     latest_index = len(stagnation_history) - 1
     if latest_index < 0:
         return set()
@@ -108,13 +182,13 @@ def determine_temporarily_blocked_fields(
     all_fields = {
         field_name
         for experiment in stagnation_history
-        for field_name in _get_effective_history_change_fields(experiment)
+        for field_name in _get_effective_history_change_fields_with_index(experiment, history_index)
     }
     for field_name in all_fields:
         streak_length = 0
         cooldown_anchor_index: int | None = None
         for index, experiment in enumerate(stagnation_history):
-            changed_fields = _get_effective_history_change_fields(experiment)
+            changed_fields = _get_effective_history_change_fields_with_index(experiment, history_index)
             if field_name in changed_fields:
                 streak_length += 1
                 if streak_length >= effective_policy.consecutive_failures_before_field_cooldown:
@@ -136,12 +210,13 @@ def determine_forbidden_dimensions(
     """Return dimensions that the next proposal should switch away from."""
     effective_policy = policy or get_default_run_policy()
     stagnation_history = _get_stagnation_history(experiment_history)
+    history_index = _build_history_index(experiment_history)
     if len(stagnation_history) < effective_policy.stagnation_rounds_for_dimension_switch:
         return set()
 
     recent_history = stagnation_history[-effective_policy.stagnation_rounds_for_dimension_switch :]
     recent_dimension_sets = [
-        get_change_dimensions(_get_effective_history_change_fields(experiment))
+        get_change_dimensions(_get_effective_history_change_fields_with_index(experiment, history_index))
         for experiment in recent_history
     ]
     if not recent_dimension_sets or any(not dimensions for dimensions in recent_dimension_sets):
@@ -167,18 +242,111 @@ def proposal_switches_dimension(
     return not proposal_dimensions.issubset(forbidden_dimensions)
 
 
-def require_non_basic_change_for_round(
-    round_index: int,
-    total_rounds: int,
+def _get_effective_history_change_fields_with_index(
+    experiment: dict[str, Any],
+    history_index: dict[str, dict[str, Any]],
+) -> set[str]:
+    """Return changed fields using both source-diffing and proposal fallbacks."""
+    source_experiment = _resolve_source_experiment(experiment, history_index)
+    if source_experiment is not None:
+        current_params = _flatten_search_params(_extract_experiment_params(experiment))
+        source_params = _flatten_search_params(_extract_experiment_params(source_experiment))
+        return {
+            field_name
+            for field_name, current_value in current_params.items()
+            if source_params.get(field_name) != current_value
+        }
+    return _get_effective_history_change_fields(experiment)
+
+
+def get_available_dimensions(search_policy: SearchPolicy | dict[str, Any] | None) -> set[str]:
+    """Return the search dimensions currently open to the AI."""
+    policy = search_policy
+    if isinstance(search_policy, dict):
+        policy = SearchPolicy.model_validate(search_policy)
+    allowed_fields = get_allowed_ai_search_fields(policy)
+    return get_change_dimensions(allowed_fields)
+
+
+def get_dimension_attempt_count(
+    experiment_history: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Return how many successful experiments have explored each dimension."""
+    history_index = _build_history_index(experiment_history)
+    attempt_count = {
+        dimension: 0
+        for dimension in ALL_SEARCH_DIMENSIONS
+    }
+    for experiment in experiment_history:
+        if experiment.get("status") != "success":
+            continue
+        changed_fields = _get_effective_history_change_fields_with_index(experiment, history_index)
+        for dimension in get_change_dimensions(changed_fields):
+            attempt_count[dimension] += 1
+    return attempt_count
+
+
+def should_stop_after_dimension_coverage(
+    experiment_history: list[dict[str, Any]],
+    search_policy: SearchPolicy | dict[str, Any] | None,
+    *,
+    policy: RunPolicy | None = None,
+) -> tuple[bool, str]:
+    """Return whether auto-train should stop after exhausting the allowed dimensions."""
+    effective_policy = policy or get_default_run_policy()
+    available_dimensions = get_available_dimensions(search_policy)
+    if not available_dimensions:
+        return False, "No AI-search dimensions are enabled for the current run."
+
+    dimension_attempt_count = get_dimension_attempt_count(experiment_history)
+    explored_dimensions = {
+        dimension
+        for dimension, attempt_count in dimension_attempt_count.items()
+        if attempt_count > 0
+    }
+    if not available_dimensions.issubset(explored_dimensions):
+        missing_dimensions = sorted(available_dimensions - explored_dimensions)
+        return False, f"Still missing explored dimensions: {', '.join(missing_dimensions)}."
+
+    underexplored_dimensions = sorted(
+        dimension
+        for dimension in available_dimensions
+        if dimension_attempt_count.get(dimension, 0) < effective_policy.auto_train_min_successful_attempts_per_dimension
+    )
+    if underexplored_dimensions:
+        return (
+            False,
+            "Some dimensions have not reached the minimum successful attempt budget: "
+            f"{', '.join(underexplored_dimensions)}.",
+        )
+
+    stagnation_rounds = count_consecutive_stagnation_rounds(experiment_history)
+    if stagnation_rounds < effective_policy.auto_train_early_stop_stagnation_rounds:
+        return (
+            False,
+            "Dimension coverage is complete, but the recent stagnation window is still below the stop threshold.",
+        )
+
+    return (
+        True,
+        "Stopped by run policy: all enabled search dimensions reached the minimum attempt budget "
+        f"and the run has stalled for {stagnation_rounds} rounds.",
+    )
+
+
+def require_non_basic_change_for_elapsed_budget(
+    elapsed_seconds: float,
+    max_wall_clock_minutes: int,
     *,
     policy: RunPolicy | None = None,
 ) -> bool:
     """Return whether the current round must include augmentation/loss/strategy changes."""
-    if total_rounds <= 1:
+    if max_wall_clock_minutes <= 0:
         return False
     effective_policy = policy or get_default_run_policy()
-    threshold_round = total_rounds * effective_policy.auto_train_non_basic_change_after_round_ratio
-    return round_index > threshold_round
+    total_budget_seconds = max_wall_clock_minutes * 60
+    threshold_seconds = total_budget_seconds * effective_policy.auto_train_non_basic_change_after_budget_ratio
+    return elapsed_seconds > threshold_seconds
 
 
 def extract_ranking_metrics(experiment: ExperimentModel) -> tuple[float | None, float | None]:

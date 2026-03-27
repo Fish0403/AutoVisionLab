@@ -72,15 +72,6 @@ def _is_value_allowed_by_definition(value: object, definition: object) -> bool:
     return False
 
 
-def validate_proposal_against_space(
-    proposal: ProposalSchema,
-    search_policy: SearchPolicy | None = None,
-    parameter_space: EditableParameterSpace | None = None,
-) -> bool:
-    """Validate proposal fields against both policy and parameter space."""
-    return explain_proposal_rejection(proposal, search_policy, parameter_space) is None
-
-
 def explain_proposal_rejection(
     proposal: ProposalSchema,
     search_policy: SearchPolicy | None = None,

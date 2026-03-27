@@ -15,7 +15,6 @@ from app.services.persistence import (
     get_experiment_detail,
     save_experiment_result,
     update_experiment_decision,
-    update_experiment_status,
 )
 from app.services.training_runner import start_experiment_training, stop_experiment_training
 

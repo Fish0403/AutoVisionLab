@@ -1,6 +1,6 @@
 # AutoVisionLab Tasks
 
-这个文件只记录执行层信息，不重复解释整体设计。系统定位与边界见 [plan.md](/home/fish/AutoVisionLab/plan.md)。
+这个文件只记录执行层信息，不重复解释整体设计。系统定位与边界见 [docs/plan.md](/home/fish/AutoVisionLab/docs/plan.md)。
 
 ## 1. 执行原则
 
@@ -61,7 +61,12 @@
 - proposal 已有字段白名单与参数空间校验
 - proposal 默认收敛为单变量实验；连续停滞后才允许双变量组合变更
 - auto-train 已支持后台任务、停止、日志轮询和结果刷新
-- auto-train 已接入按总轮数比例切换的阶段策略
+- auto-train 已切到按总时间预算驱动，而不是固定轮数驱动
+- auto-train 后半程策略已改为按已消耗时间比例切换到非 `basic` 维度
+- auto-train 已增加基于维度覆盖和连续无 `keep` 的提前停止规则：
+  - 当前 run 的已开放维度都已探索
+  - 每个维度至少成功执行 `2` 次
+  - 连续 `6` 轮没有新的 `keep`
 
 ### API 响应收敛
 
@@ -110,6 +115,8 @@
 ### 文档与口径统一
 
 - 收敛 `README / plan / tasks / schemas / experiment_policy`
+- 将过长的 auto-train 规则继续拆分为独立短文档，避免把搜索和停止策略混在一起
+- 将 run 的晋级 / 回退规则独立成单独文档，避免继续堆在总览规则中
 - 清理过时表述，统一当前实现与规则
 
 ### API 响应继续统一
@@ -119,7 +126,8 @@
 
 ### AI 搜索策略收敛
 
-- 继续观察 auto-train 后半程是否真的切到 augmentation / loss 维度
+- 继续观察 auto-train 在时间预算模式下，后半程是否真的切到 augmentation / loss 维度
+- 继续观察“每个维度至少成功执行 `2` 次、连续 `6` 轮无 `keep`”是否合适
 - 继续减少无效或重复 proposal
 - 继续调优当前晋级阈值是否过松或过严
 

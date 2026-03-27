@@ -221,6 +221,16 @@ def get_short_experiment_id(experiment_id: str | None) -> str:
     return experiment_id[:4]
 
 
+def format_elapsed_seconds(elapsed_seconds: float) -> str:
+    """Format elapsed seconds for one progress caption."""
+    total_seconds = max(0, int(elapsed_seconds))
+    minutes, seconds = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours > 0:
+        return f"{hours}h {minutes}m {seconds}s"
+    return f"{minutes}m {seconds}s"
+
+
 def get_allowed_basic_hparam_fields(dataset: str, model_name: str, image_size: int) -> list[str]:
     """Return the effective basic hyperparameter fields allowed for AI search."""
     fields = [
@@ -376,7 +386,11 @@ def generate_aihubmix_proposal_request(run_id: str) -> tuple[bool, Any]:
         return False, {"detail": str(error)}
 
 
-def start_auto_train_task_request(payload: dict[str, Any], selected_run_id: str, rounds: int) -> tuple[bool, Any]:
+def start_auto_train_task_request(
+    payload: dict[str, Any],
+    selected_run_id: str,
+    max_wall_clock_minutes: int,
+) -> tuple[bool, Any]:
     """Start one backend auto-train task."""
     request_payload = {
         "run_id": None if selected_run_id == "__all__" else selected_run_id,
@@ -385,7 +399,7 @@ def start_auto_train_task_request(payload: dict[str, Any], selected_run_id: str,
         "model_name": payload["model_name"],
         "config": payload["config"],
         "parameter_space": payload["parameter_space"],
-        "rounds": rounds,
+        "max_wall_clock_minutes": max_wall_clock_minutes,
     }
     return post_json("/runs/auto-train", request_payload)
 
@@ -398,17 +412,6 @@ def load_auto_train_task(task_id: str) -> tuple[bool, Any]:
 def stop_auto_train_task_request(task_id: str) -> tuple[bool, Any]:
     """Stop one backend auto-train task."""
     return post_without_body(f"/runs/auto-train/{task_id}/stop")
-
-
-def wait_for_experiment_completion(experiment_id: str, timeout_seconds: int = 3600) -> tuple[bool, dict[str, Any]]:
-    """Poll one experiment until it reaches a terminal state."""
-    started_at = time.time()
-    while time.time() - started_at < timeout_seconds:
-        experiment_detail = load_experiment_detail(experiment_id)
-        if experiment_detail.get("status") in {"success", "failed", "discarded"}:
-            return True, experiment_detail
-        time.sleep(2)
-    return False, {"detail": f"Experiment {experiment_id} did not finish within timeout."}
 
 
 def load_runs() -> list[dict[str, Any]]:
@@ -558,7 +561,7 @@ def load_experiment_detail(experiment_id: str) -> dict[str, Any]:
                     "aux_logits": None,
                 },
                 "artifacts": {
-                    "log_path": "artifacts/logs/exp_demo_002.log",
+                    "log_path": "artifacts/runs/run_demo_001.log",
                     "checkpoint_path": "artifacts/checkpoints/exp_demo_002.pt",
                 },
             },
@@ -620,23 +623,6 @@ def format_proposal_changes(changes: dict[str, Any]) -> str:
     return ", ".join(visible_changes) if visible_changes else "无参数变更"
 
 
-def get_best_experiment_id(run_id: str) -> str | None:
-    """Return the best experiment id for one run."""
-    best_experiment = get_best_experiment_detail(run_id)
-    if best_experiment is None:
-        return None
-    return best_experiment.get("id")
-
-
-def sanitize_ai_changes(changes: dict[str, Any]) -> dict[str, Any]:
-    """Drop blocked AI changes before executing auto tuning."""
-    return {
-        key: value
-        for key, value in changes.items()
-        if key not in AI_BLOCKED_CHANGE_FIELDS and value is not None
-    }
-
-
 def clear_database_records() -> tuple[bool, Any]:
     """Clear all backend records."""
     return post_without_body("/runs/reset")
@@ -668,7 +654,7 @@ def reset_frontend_state_after_clear() -> None:
         "augmentation_policy",
         "label_smoothing",
         "aux_logits",
-        "ai_test_rounds",
+        "auto_train_time_budget_minutes",
     }
     preserved_values = {key: st.session_state.get(key) for key in preserved_keys if key in st.session_state}
     for key in list(st.session_state.keys()):
@@ -714,49 +700,6 @@ def store_manual_ai_suggestion(
     )
 
 
-def start_auto_train_summary(run_id: str, experiment_id: str, experiment_detail: dict[str, Any]) -> None:
-    """Initialize auto-train summary."""
-    st.session_state["auto_train_summary"] = {
-        "mode": "auto",
-        "run_id": run_id,
-        "baseline": build_result_snapshot(experiment_id, experiment_detail),
-        "rounds": [],
-    }
-    st.session_state["active_ai_panel_mode"] = "auto"
-    refresh_ai_panel_view()
-
-
-def record_auto_train_round(
-    round_index: int,
-    experiment_id: str,
-    proposal: dict[str, Any],
-    experiment_detail: dict[str, Any],
-) -> None:
-    """Record one auto-train round."""
-    summary = st.session_state.setdefault("auto_train_summary", {"mode": "auto", "rounds": []})
-    summary.setdefault("rounds", []).append(
-        {
-            "round_index": round_index,
-            "proposal": proposal,
-            "result": build_result_snapshot(experiment_id, experiment_detail),
-        }
-    )
-    st.session_state["auto_train_summary"] = summary
-    st.session_state["active_ai_panel_mode"] = "auto"
-    refresh_ai_panel_view()
-
-
-def finalize_auto_train_summary(final_proposal: dict[str, Any]) -> None:
-    """Publish the auto-train summary to the AI panel."""
-    summary = st.session_state.get("auto_train_summary")
-    if not summary:
-        return
-    summary["final_proposal"] = final_proposal
-    st.session_state["auto_train_summary"] = summary
-    st.session_state["active_ai_panel_mode"] = "auto"
-    refresh_ai_panel_view()
-
-
 def refresh_ai_panel_view() -> None:
     """Refresh the live AI panel when available."""
     global LIVE_AI_PANEL_CONTAINER
@@ -779,16 +722,20 @@ def refresh_ai_panel_view() -> None:
                 final_proposal = suggestion_payload.get("final_proposal")
                 baseline = suggestion_payload.get("baseline", {})
                 rounds = suggestion_payload.get("rounds", [])
+                task_status = suggestion_payload.get("task_status")
+                stop_reason = suggestion_payload.get("stop_reason")
                 progress = st.session_state.get("auto_task_progress") or {}
                 st.markdown("**Auto Train Summary**")
                 if progress and progress.get("status") in {"queued", "running", "stopping"}:
                     completed_rounds = len(rounds)
                     current_round = progress.get("current_round", 0)
-                    total_rounds = progress.get("total_rounds", 0)
+                    elapsed_seconds = progress.get("elapsed_seconds", 0.0)
+                    max_wall_clock_minutes = progress.get("max_wall_clock_minutes", 0)
                     current_experiment_id = progress.get("current_experiment_id") or "-"
                     st.caption(
-                        f"进度：已完成 {completed_rounds}/{total_rounds} 轮，"
-                        f"当前轮次 {current_round}/{total_rounds}，"
+                        f"进度：已完成 {completed_rounds} 轮，"
+                        f"当前轮次 {current_round}，"
+                        f"已用 {format_elapsed_seconds(elapsed_seconds)} / {max_wall_clock_minutes}m，"
                         f"实验 {get_short_experiment_id(current_experiment_id)}。"
                     )
                 st.markdown(f"基线实验：`{get_short_experiment_id(baseline.get('experiment_id'))}`  ")
@@ -834,6 +781,8 @@ def refresh_ai_panel_view() -> None:
                     st.markdown(final_proposal["hypothesis"])
                     st.caption(final_proposal["reason"])
                     st.markdown(f"`{format_proposal_changes(final_proposal['changes'])}`")
+                elif task_status in {"stopped", "stopped_by_budget", "stopped_by_policy", "failed"}:
+                    st.caption(stop_reason or "自动训练已经结束。")
                 else:
                     st.caption("自动训练进行中。每完成一轮后，这里的趋势会自动更新。")
                 return
@@ -900,6 +849,9 @@ def sync_auto_train_task_state() -> str | None:
     st.session_state["activity_logs"] = auto_task_response.get("logs", [])
     summary = auto_task_response.get("summary")
     if summary is not None:
+        summary = dict(summary)
+        summary["task_status"] = auto_task_response.get("status")
+        summary["stop_reason"] = auto_task_response.get("stop_reason")
         st.session_state["auto_train_summary"] = summary
         st.session_state["active_ai_panel_mode"] = "auto"
         completed_rounds = len(summary.get("rounds", [])) if summary.get("mode") == "auto" else 0
@@ -913,7 +865,8 @@ def sync_auto_train_task_state() -> str | None:
     st.session_state["auto_task_progress"] = {
         "status": auto_task_response.get("status"),
         "current_round": auto_task_response.get("current_round", 0),
-        "total_rounds": auto_task_response.get("total_rounds", 0),
+        "max_wall_clock_minutes": auto_task_response.get("max_wall_clock_minutes", 0),
+        "elapsed_seconds": auto_task_response.get("elapsed_seconds", 0.0),
         "current_experiment_id": auto_task_response.get("current_experiment_id"),
     }
     if run_id:
@@ -943,19 +896,19 @@ def render_live_training_monitor() -> None:
         refresh_ai_panel_view()
         if st.session_state.pop("auto_result_refresh_needed", False):
             st.rerun()
-        if auto_status in {"completed", "stopped", "failed"}:
-            if auto_status == "completed":
+        if auto_status in {"stopped", "stopped_by_budget", "stopped_by_policy", "failed"}:
+            task_snapshot = request_json(
+                f"/runs/auto-train/{auto_task_id}",
+                {"error": "unknown error"},
+            )
+            if auto_status == "stopped":
+                set_post_action_notice("Auto Train stopped and discarded the current experiment.", "success")
+            elif auto_status in {"stopped_by_budget", "stopped_by_policy"}:
                 set_post_action_notice(
-                    f"Auto Train finished for run {st.session_state.get('selected_run_id', '-')}.",
+                    task_snapshot.get("stop_reason", "Auto Train stopped."),
                     "success",
                 )
-            elif auto_status == "stopped":
-                set_post_action_notice("Auto Train stopped and discarded the current experiment.", "success")
             elif auto_status == "failed":
-                task_snapshot = request_json(
-                    f"/runs/auto-train/{auto_task_id}",
-                    {"error": "unknown error"},
-                )
                 set_post_action_notice(
                     f"Auto Train failed: {task_snapshot.get('error', 'unknown error')}",
                     "error",
@@ -969,15 +922,13 @@ def render_live_training_monitor() -> None:
         st.rerun()
 
 
-def queue_train_request(mode: str, payload: dict[str, Any], rounds: int = 1) -> None:
-    """Queue one train request and force a rerun with locked UI."""
+def queue_train_request(payload: dict[str, Any]) -> None:
+    """Queue one manual train request and force a rerun with locked UI."""
     if st.session_state.get("ui_locked") or st.session_state.get("pending_train_request"):
         return
-    st.session_state["active_train_control"] = "manual" if mode == "manual" else "auto"
+    st.session_state["active_train_control"] = "manual"
     st.session_state["pending_train_request"] = {
-        "mode": mode,
         "payload": payload,
-        "rounds": rounds,
         "selected_run_id": st.session_state.get("selected_run_id", "__all__"),
     }
     set_ui_locked(True)
@@ -985,180 +936,31 @@ def queue_train_request(mode: str, payload: dict[str, Any], rounds: int = 1) -> 
 
 
 def process_pending_train_request() -> None:
-    """Execute one queued train request."""
+    """Execute one queued manual train request."""
     pending_request = st.session_state.get("pending_train_request")
     if not pending_request:
         return
 
     st.session_state["pending_train_request"] = None
-    mode = pending_request["mode"]
     payload = pending_request["payload"]
-    ai_rounds = int(pending_request.get("rounds", 1))
     selected_run_id = pending_request.get("selected_run_id", "__all__")
 
-    if mode == "manual":
-        append_activity_log("Manual train requested from the current parameter panel.")
-        if selected_run_id == "__all__":
-            ok, message = create_run_and_first_experiment(payload)
-        else:
-            payload["based_on_experiment_ids"] = [get_latest_experiment_detail(selected_run_id)["id"]] if get_latest_experiment_detail(selected_run_id) else []
-            payload["proposal_hypothesis"] = "Manual follow-up experiment under the selected run."
-            payload["proposal_reason"] = "Use the current parameter panel as the next structured experiment."
-            ok, message = append_experiment_to_run(selected_run_id, payload)
-        if ok:
-            st.session_state["auto_train_mode"] = False
-            set_post_action_notice(message, "success")
-            st.rerun()
-        else:
-            set_ui_locked(False)
-            append_activity_log(message)
-            st.error(message)
-        return
-
-    append_activity_log(f"Auto Train requested for {ai_rounds} AI rounds.")
-    st.session_state["auto_train_mode"] = True
+    append_activity_log("Manual train requested from the current parameter panel.")
     if selected_run_id == "__all__":
         ok, message = create_run_and_first_experiment(payload)
     else:
-        payload["based_on_experiment_ids"] = [get_latest_experiment_detail(selected_run_id)["id"]] if get_latest_experiment_detail(selected_run_id) else []
-        payload["proposal_hypothesis"] = "Auto Train baseline appended to the selected run."
-        payload["proposal_reason"] = "Use the current parameter panel as the baseline before AI follow-up rounds."
+        latest_experiment = get_latest_experiment_detail(selected_run_id)
+        payload["based_on_experiment_ids"] = [latest_experiment["id"]] if latest_experiment else []
+        payload["proposal_hypothesis"] = "Manual follow-up experiment under the selected run."
+        payload["proposal_reason"] = "Use the current parameter panel as the next structured experiment."
         ok, message = append_experiment_to_run(selected_run_id, payload)
-    if not ok:
-        set_ui_locked(False)
-        append_activity_log(message)
-        st.error(message)
-        return
+    if ok:
+        set_post_action_notice(message, "success")
+        st.rerun()
 
-    latest_run_id = st.session_state.get("selected_run_id", "")
-    current_experiment_id = st.session_state.get("training_experiment_id")
-    done, experiment_detail = wait_for_experiment_completion(current_experiment_id)
-    if not done or experiment_detail.get("status") != "success":
-        set_ui_locked(False)
-        append_activity_log(f"Baseline experiment {current_experiment_id} failed.")
-        st.error(experiment_detail.get("detail", f"Experiment {current_experiment_id} failed"))
-        return
-
-    start_auto_train_summary(latest_run_id, current_experiment_id, experiment_detail)
-    append_activity_log(
-        f"Baseline experiment {current_experiment_id} finished successfully with "
-        f"{format_metric_summary(experiment_detail)}."
-    )
-
-    for round_index in range(ai_rounds):
-        ok, proposal_response = generate_aihubmix_proposal_request(latest_run_id)
-        if not ok:
-            set_ui_locked(False)
-            append_activity_log(f"Round {round_index + 1}: AI suggestion failed.")
-            st.error(f'AIHubMix proposal failed: {proposal_response.get("detail", proposal_response)}')
-            return
-        append_activity_log(
-            f"Round {round_index + 1}: AI suggested {proposal_response['hypothesis']}"
-        )
-        sanitized_changes = sanitize_ai_changes(proposal_response["changes"])
-        append_activity_log(
-            f"Round {round_index + 1}: applied changes {format_proposal_changes(sanitized_changes)}."
-        )
-        latest_experiment = get_latest_experiment_detail(latest_run_id)
-        if latest_experiment is None:
-            set_ui_locked(False)
-            st.error("No experiment is available in the selected run for proposal generation.")
-            return
-
-        proposal = dict(proposal_response)
-        proposal["config"] = {
-            "task_type": latest_experiment["config"]["task_type"],
-            "dataset": latest_experiment["config"]["dataset"],
-            "model_family": latest_experiment["config"]["model_family"],
-            "model_name": latest_experiment["config"]["model_name"],
-            "parameter_space_version": latest_experiment["config"]["parameter_space_version"],
-            "params": {
-                **latest_experiment["config"]["params"],
-                **sanitized_changes,
-            },
-        }
-        round_payload = build_payload_from_form(
-            {
-                "run_name": st.session_state["run_name"],
-                "dataset": proposal["config"]["dataset"],
-                "model_name": proposal["config"]["model_name"],
-                **proposal["config"]["params"],
-                "proposal_hypothesis": proposal["hypothesis"],
-                "proposal_reason": proposal["reason"],
-                "based_on_experiment_ids": proposal["based_on_experiment_ids"],
-            }
-        )
-        round_payload["proposal_changes"] = sanitized_changes
-        ok, message = append_experiment_to_run(latest_run_id, round_payload)
-        if not ok:
-            set_ui_locked(False)
-            append_activity_log(message)
-            st.error(message)
-            return
-
-        current_experiment_id = st.session_state.get("training_experiment_id")
-        done, experiment_detail = wait_for_experiment_completion(current_experiment_id)
-        if not done or experiment_detail.get("status") != "success":
-            set_ui_locked(False)
-            append_activity_log(f"Round {round_index + 1}: experiment {current_experiment_id} failed.")
-            st.error(experiment_detail.get("detail", f"Experiment {current_experiment_id} failed"))
-            return
-
-        record_auto_train_round(round_index + 1, current_experiment_id, proposal_response, experiment_detail)
-        append_activity_log(
-            f"Round {round_index + 1}: experiment {current_experiment_id} finished with "
-            f"{format_metric_summary(experiment_detail)}."
-        )
-
-    ok, suggestion_message = generate_and_store_ai_suggestion(
-        latest_run_id,
-        current_experiment_id,
-        experiment_detail,
-        "Final",
-    )
-    if not ok:
-        append_activity_log(suggestion_message)
-    else:
-        finalize_auto_train_summary(suggestion_message)
-
-    st.session_state["selected_experiment_id"] = current_experiment_id
-    st.session_state["last_finished_experiment_id"] = current_experiment_id
-    st.session_state["training_experiment_id"] = None
-    st.session_state["last_running_experiment_id"] = None
     set_ui_locked(False)
-    set_post_action_notice(f"Auto Train finished for run {latest_run_id}.", "success")
-    st.rerun()
-
-
-def build_experiment_comparison_rows(experiments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Build comparison rows for one run."""
-    rows: list[dict[str, Any]] = []
-    for experiment in experiments:
-        detail = load_experiment_detail(experiment["id"])
-        result = detail.get("result") or {}
-        metrics = result.get("metrics") or {}
-        params = detail.get("config", {}).get("params", {})
-        rows.append(
-            {
-                "selected": True,
-                "exp": get_short_experiment_id(experiment["id"]),
-                "experiment_id": experiment["id"],
-                "decision": detail.get("decision"),
-                "anchor": "",
-                "status": experiment["status"],
-                "top1_acc": metrics.get("top1_acc"),
-                "val_loss": metrics.get("val_loss"),
-                "train_loss": metrics.get("train_loss"),
-                "best_epoch": metrics.get("best_epoch"),
-                "optimizer": params.get("optimizer"),
-                "learning_rate": params.get("learning_rate"),
-                "batch_size": params.get("batch_size"),
-                "image_size": params.get("image_size"),
-                "epochs": params.get("epochs"),
-                "scheduler": params.get("scheduler"),
-            }
-        )
-    return rows
+    append_activity_log(message)
+    st.error(message)
 
 
 def build_all_training_records(runs: list[dict[str, Any]], selected_run_id: str) -> list[dict[str, Any]]:
@@ -1248,72 +1050,6 @@ def get_best_experiment_detail(run_id: str) -> dict[str, Any] | None:
             best_detail = detail
 
     return best_detail or get_latest_experiment_detail(run_id)
-
-
-def generate_fake_llm_proposal(run_id: str) -> dict[str, Any] | None:
-    """Generate a deterministic fake proposal from the latest experiment."""
-    latest_experiment = get_latest_experiment_detail(run_id)
-    if latest_experiment is None:
-        return None
-
-    config = latest_experiment["config"]
-    params = dict(config["params"])
-    latest_experiment_id = latest_experiment["id"]
-    updated_params = dict(params)
-
-    current_learning_rate = float(params["learning_rate"])
-    next_learning_rate = round(min(current_learning_rate * 1.2, 0.01), 4)
-    updated_params["learning_rate"] = next_learning_rate
-
-    current_label_smoothing = float(params["label_smoothing"])
-    next_label_smoothing = round(min(current_label_smoothing + 0.02, 0.2), 2)
-    updated_params["label_smoothing"] = next_label_smoothing
-
-    proposal = {
-        "task_type": "classification",
-        "model_name": config["model_name"],
-        "based_on_experiment_ids": [latest_experiment_id],
-        "hypothesis": "适度提高学习率并增加标签平滑，可能改善早期收敛。",
-        "changes": {
-            "learning_rate": next_learning_rate,
-            "label_smoothing": next_label_smoothing,
-        },
-        "reason": "基于上一轮实验结果，继续围绕收敛速度和泛化能力做小步调整。",
-        "risk": "low",
-        "config": {
-            "task_type": config["task_type"],
-            "dataset": config["dataset"],
-            "model_family": config["model_family"],
-            "model_name": config["model_name"],
-            "parameter_space_version": config["parameter_space_version"],
-            "participates_in_ranking": config.get("participates_in_ranking", True),
-            "params": updated_params,
-        },
-    }
-    return proposal
-
-
-def apply_generated_proposal(run_id: str, proposal: dict[str, Any]) -> None:
-    """Apply one generated proposal into the append-experiment form."""
-    generated_params = proposal["config"]["params"]
-    st.session_state["append_run_id"] = run_id
-    st.session_state["model_name"] = proposal["config"]["model_name"]
-    st.session_state["optimizer"] = generated_params["optimizer"]
-    st.session_state["learning_rate"] = generated_params["learning_rate"]
-    st.session_state["batch_size"] = generated_params["batch_size"]
-    st.session_state["image_size"] = generated_params["image_size"]
-    st.session_state["epochs"] = generated_params["epochs"]
-    st.session_state["weight_decay"] = generated_params["weight_decay"]
-    st.session_state["scheduler"] = generated_params["scheduler"]
-    st.session_state["augmentation_policy"] = generated_params["augmentation_policy"]
-    st.session_state["label_smoothing"] = generated_params["label_smoothing"]
-    st.session_state["aux_logits"] = generated_params["aux_logits"] if generated_params["aux_logits"] is not None else False
-    st.session_state["participates_in_ranking"] = proposal["config"].get("participates_in_ranking", True)
-    st.session_state["proposal_hypothesis"] = proposal["hypothesis"]
-    st.session_state["proposal_reason"] = proposal["reason"]
-    st.session_state["proposal_changes"] = proposal["changes"]
-    st.session_state["based_on_experiment_ids"] = proposal["based_on_experiment_ids"]
-    st.session_state["action_mode"] = "append_experiment"
 
 
 def load_reference_config(selected_run_id: str) -> dict[str, Any]:
@@ -1533,8 +1269,8 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
     original_image_size = get_original_image_size(st.session_state["dataset"], st.session_state["model_name"])
     if selected_run_id == "__all__":
         st.session_state["image_size"] = original_image_size
-    if "ai_test_rounds" not in st.session_state:
-        st.session_state["ai_test_rounds"] = 10
+    if "auto_train_time_budget_minutes" not in st.session_state:
+        st.session_state["auto_train_time_budget_minutes"] = 60
 
     with st.container(border=True):
         st.markdown("**Training Setup**")
@@ -1565,7 +1301,13 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
         with row_two[0]:
             st.selectbox("Image Size", options=get_dataset_image_size_options(st.session_state["dataset"]), key="image_size")
         with row_two[1]:
-            ai_rounds = st.number_input("Auto Train Rounds", min_value=1, max_value=20, step=1, key="ai_test_rounds")
+            auto_train_time_budget_minutes = st.number_input(
+                "Auto Train Budget (min)",
+                min_value=1,
+                max_value=24 * 60,
+                step=5,
+                key="auto_train_time_budget_minutes",
+            )
         with row_two[2]:
             pass
 
@@ -1664,7 +1406,7 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
                     else:
                         st.error(f'Stop training failed: {response.get("detail", response)}')
             else:
-                queue_train_request("manual", payload, rounds=1)
+                queue_train_request(payload)
     with action_right:
         right_label = "Stop Training" if is_training_active and active_train_control == "auto" else auto_train_button_label
         right_disabled = is_training_active and active_train_control != "auto"
@@ -1680,12 +1422,19 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
                         st.error(f'Stop training failed: {response.get("detail", response)}')
             else:
                 st.session_state["active_train_control"] = "auto"
-                ok, response = start_auto_train_task_request(payload, selected_run_id, int(ai_rounds))
+                ok, response = start_auto_train_task_request(
+                    payload,
+                    selected_run_id,
+                    int(auto_train_time_budget_minutes),
+                )
                 if ok:
                     st.session_state["current_auto_task_id"] = response["task_id"]
                     st.session_state["ui_locked"] = True
                     st.session_state["skip_auto_poll_once"] = True
-                    append_activity_log(f"Auto Train task started: {response['task_id']}")
+                    append_activity_log(
+                        f"Auto Train task started: {response['task_id']} | "
+                        f"time budget={int(auto_train_time_budget_minutes)}m"
+                    )
                     st.rerun()
                 else:
                     st.session_state["active_train_control"] = None

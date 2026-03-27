@@ -76,7 +76,7 @@ class AutoTrainStartRequest(BaseModel):
     model_name: str
     config: ExperimentConfig
     parameter_space: EditableParameterSpace
-    rounds: int = Field(ge=1, le=20)
+    max_wall_clock_minutes: int = Field(ge=1, le=24 * 60)
 
 
 class AutoTrainTaskResponse(BaseModel):
@@ -86,9 +86,11 @@ class AutoTrainTaskResponse(BaseModel):
     status: str
     run_id: str | None = None
     current_round: int = 0
-    total_rounds: int
+    max_wall_clock_minutes: int
+    elapsed_seconds: float = 0.0
     current_experiment_id: str | None = None
     logs: list[str]
     summary: dict[str, Any] | None = None
     error: str | None = None
     stop_requested: bool = False
+    stop_reason: str | None = None

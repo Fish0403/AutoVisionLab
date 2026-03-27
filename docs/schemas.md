@@ -366,4 +366,9 @@ result 表示一次训练完成后的结构化输出。
 - 数据库存结构化记录与路径索引
 - 本地文件存 run log 与 checkpoint
 
-更具体的运行规则见 [docs/experiment_policy.md](/home/fish/AutoVisionLab/docs/experiment_policy.md)。
+更具体的运行规则见：
+
+- [docs/experiment_policy.md](/home/fish/AutoVisionLab/docs/experiment_policy.md)
+- [docs/run_promotion_policy.md](/home/fish/AutoVisionLab/docs/run_promotion_policy.md)
+- [docs/auto_train_search_policy.md](/home/fish/AutoVisionLab/docs/auto_train_search_policy.md)
+- [docs/auto_train_stop_policy.md](/home/fish/AutoVisionLab/docs/auto_train_stop_policy.md)

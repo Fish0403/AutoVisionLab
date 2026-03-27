@@ -3,11 +3,12 @@
 from sqlalchemy import inspect, text
 
 from app.db.base import Base
-from app.db.session import engine
+from app.db.session import get_engine
 from app.models import ExperimentModel, ResultModel, RunModel
 
 
 def _ensure_column(table_name: str, column_name: str, ddl: str) -> None:
+    engine = get_engine()
     inspector = inspect(engine)
     columns = {column["name"] for column in inspector.get_columns(table_name)}
     if column_name in columns:
@@ -29,6 +30,7 @@ def _migrate_demo_schema() -> None:
 def init_database() -> None:
     """Create all declared tables for the demo environment."""
     _ = (RunModel, ExperimentModel, ResultModel)
+    engine = get_engine()
     Base.metadata.create_all(bind=engine)
     _migrate_demo_schema()
 

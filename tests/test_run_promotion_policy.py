@@ -25,7 +25,7 @@ from app.main import initialize_database
 from app.db.session import SessionLocal
 from app.schemas.ai import ResultSchema
 from app.schemas.experiment import ExperimentCreateRequest
-from app.schemas.parameter_space import ExperimentConfig
+from app.schemas.parameter_space import ExperimentConfig, SearchPolicy
 from app.schemas.run import RunCreateRequest
 from app.services.parameter_space import get_parameter_space
 from app.services.persistence import (
@@ -37,11 +37,14 @@ from app.services.persistence import (
 )
 from app.services.run_policy import (
     determine_change_budget,
+    get_available_dimensions,
+    get_dimension_attempt_count,
     determine_forbidden_dimensions,
     determine_temporarily_blocked_fields,
     get_default_run_policy,
     proposal_switches_dimension,
-    require_non_basic_change_for_round,
+    require_non_basic_change_for_elapsed_budget,
+    should_stop_after_dimension_coverage,
 )
 
 
@@ -289,11 +292,11 @@ class RunPromotionPolicyTest(unittest.TestCase):
         self.assertEqual(run_policy.default_max_changed_fields, 1)
         self.assertEqual(run_policy.max_changed_fields_after_stagnation, 2)
 
-    def test_non_basic_change_phase_uses_run_policy(self) -> None:
+    def test_non_basic_change_phase_uses_budget_ratio(self) -> None:
         run_policy = get_default_run_policy()
 
-        self.assertFalse(require_non_basic_change_for_round(5, 10, policy=run_policy))
-        self.assertTrue(require_non_basic_change_for_round(6, 10, policy=run_policy))
+        self.assertFalse(require_non_basic_change_for_elapsed_budget(300, 10, policy=run_policy))
+        self.assertTrue(require_non_basic_change_for_elapsed_budget(301, 10, policy=run_policy))
 
     def test_repeated_failed_field_enters_temporary_cooldown(self) -> None:
         run_policy = get_default_run_policy()
@@ -355,6 +358,279 @@ class RunPromotionPolicyTest(unittest.TestCase):
                 forbidden_dimensions=forbidden_dimensions,
             )
         )
+
+    def test_available_dimensions_follow_search_policy(self) -> None:
+        search_policy = SearchPolicy.model_validate(
+            {
+                "allow_basic_hparam_search": True,
+                "allowed_basic_hparam_fields": ["learning_rate", "batch_size"],
+                "allow_strategy_search": False,
+                "allow_loss_search": True,
+                "allow_augmentation_search": True,
+                "require_manual_approval_for_high_impact_changes": True,
+            }
+        )
+
+        self.assertEqual(
+            get_available_dimensions(search_policy),
+            {"basic", "loss", "augmentation"},
+        )
+
+    def test_dimension_coverage_stop_requires_exploration_budget_and_stagnation(self) -> None:
+        search_policy = SearchPolicy.model_validate(
+            {
+                "allow_basic_hparam_search": True,
+                "allowed_basic_hparam_fields": ["learning_rate", "batch_size"],
+                "allow_strategy_search": False,
+                "allow_loss_search": False,
+                "allow_augmentation_search": True,
+                "require_manual_approval_for_high_impact_changes": True,
+            }
+        )
+        experiment_history = [
+            {
+                "id": "exp_keep",
+                "status": "success",
+                "decision": "keep",
+                "params": {
+                    "learning_rate": 0.003,
+                    "batch_size": 32,
+                    "augmentation_policy": "basic",
+                    "augmentation_params": {
+                        "mixup_alpha": 0.0,
+                        "cutmix_alpha": 0.0,
+                        "random_erasing_prob": 0.0,
+                    },
+                    "loss_params": {"focal_gamma": 2.0},
+                },
+                "proposal": None,
+            },
+            {
+                "id": "exp_basic_1",
+                "status": "success",
+                "decision": "discard",
+                "params": {
+                    "learning_rate": 0.001,
+                    "batch_size": 32,
+                    "augmentation_policy": "basic",
+                    "augmentation_params": {
+                        "mixup_alpha": 0.0,
+                        "cutmix_alpha": 0.0,
+                        "random_erasing_prob": 0.0,
+                    },
+                    "loss_params": {"focal_gamma": 2.0},
+                },
+                "proposal": {"based_on_experiment_ids": ["exp_keep"], "changes": {"learning_rate": 0.001}},
+            },
+            {
+                "id": "exp_aug_1",
+                "status": "success",
+                "decision": "discard",
+                "params": {
+                    "learning_rate": 0.003,
+                    "batch_size": 32,
+                    "augmentation_policy": "basic",
+                    "augmentation_params": {
+                        "mixup_alpha": 0.2,
+                        "cutmix_alpha": 0.0,
+                        "random_erasing_prob": 0.0,
+                    },
+                    "loss_params": {"focal_gamma": 2.0},
+                },
+                "proposal": {"based_on_experiment_ids": ["exp_keep"], "changes": {"mixup_alpha": 0.2}},
+            },
+            {
+                "id": "exp_basic_2",
+                "status": "success",
+                "decision": "discard",
+                "params": {
+                    "learning_rate": 0.002,
+                    "batch_size": 32,
+                    "augmentation_policy": "basic",
+                    "augmentation_params": {
+                        "mixup_alpha": 0.0,
+                        "cutmix_alpha": 0.0,
+                        "random_erasing_prob": 0.0,
+                    },
+                    "loss_params": {"focal_gamma": 2.0},
+                },
+                "proposal": {"based_on_experiment_ids": ["exp_keep"], "changes": {"learning_rate": 0.002}},
+            },
+            {
+                "id": "exp_aug_2",
+                "status": "success",
+                "decision": "discard",
+                "params": {
+                    "learning_rate": 0.003,
+                    "batch_size": 32,
+                    "augmentation_policy": "basic",
+                    "augmentation_params": {
+                        "mixup_alpha": 0.3,
+                        "cutmix_alpha": 0.0,
+                        "random_erasing_prob": 0.0,
+                    },
+                    "loss_params": {"focal_gamma": 2.0},
+                },
+                "proposal": {"based_on_experiment_ids": ["exp_keep"], "changes": {"mixup_alpha": 0.3}},
+            },
+            {
+                "id": "exp_basic_3",
+                "status": "success",
+                "decision": "discard",
+                "params": {
+                    "learning_rate": 0.004,
+                    "batch_size": 32,
+                    "augmentation_policy": "basic",
+                    "augmentation_params": {
+                        "mixup_alpha": 0.0,
+                        "cutmix_alpha": 0.0,
+                        "random_erasing_prob": 0.0,
+                    },
+                    "loss_params": {"focal_gamma": 2.0},
+                },
+                "proposal": {"based_on_experiment_ids": ["exp_keep"], "changes": {"learning_rate": 0.004}},
+            },
+            {
+                "id": "exp_aug_3",
+                "status": "success",
+                "decision": "discard",
+                "params": {
+                    "learning_rate": 0.003,
+                    "batch_size": 32,
+                    "augmentation_policy": "basic",
+                    "augmentation_params": {
+                        "mixup_alpha": 0.4,
+                        "cutmix_alpha": 0.0,
+                        "random_erasing_prob": 0.0,
+                    },
+                    "loss_params": {"focal_gamma": 2.0},
+                },
+                "proposal": {"based_on_experiment_ids": ["exp_keep"], "changes": {"mixup_alpha": 0.4}},
+            },
+        ]
+
+        self.assertEqual(
+            get_dimension_attempt_count(experiment_history),
+            {"basic": 3, "augmentation": 3, "loss": 0, "strategy": 0},
+        )
+        should_stop, _ = should_stop_after_dimension_coverage(experiment_history, search_policy)
+        self.assertTrue(should_stop)
+
+    def test_dimension_coverage_stop_waits_for_minimum_attempt_budget(self) -> None:
+        search_policy = SearchPolicy.model_validate(
+            {
+                "allow_basic_hparam_search": True,
+                "allowed_basic_hparam_fields": ["learning_rate"],
+                "allow_strategy_search": False,
+                "allow_loss_search": False,
+                "allow_augmentation_search": True,
+                "require_manual_approval_for_high_impact_changes": True,
+            }
+        )
+        experiment_history = [
+            {
+                "id": "exp_keep",
+                "status": "success",
+                "decision": "keep",
+                "params": {
+                    "learning_rate": 0.003,
+                    "augmentation_policy": "basic",
+                    "augmentation_params": {
+                        "mixup_alpha": 0.0,
+                        "cutmix_alpha": 0.0,
+                        "random_erasing_prob": 0.0,
+                    },
+                    "loss_params": {"focal_gamma": 2.0},
+                },
+                "proposal": None,
+            },
+            {
+                "id": "exp_basic_1",
+                "status": "success",
+                "decision": "discard",
+                "params": {
+                    "learning_rate": 0.001,
+                    "augmentation_policy": "basic",
+                    "augmentation_params": {
+                        "mixup_alpha": 0.0,
+                        "cutmix_alpha": 0.0,
+                        "random_erasing_prob": 0.0,
+                    },
+                    "loss_params": {"focal_gamma": 2.0},
+                },
+                "proposal": {"based_on_experiment_ids": ["exp_keep"], "changes": {"learning_rate": 0.001}},
+            },
+            {
+                "id": "exp_aug_1",
+                "status": "success",
+                "decision": "discard",
+                "params": {
+                    "learning_rate": 0.003,
+                    "augmentation_policy": "basic",
+                    "augmentation_params": {"mixup_alpha": 0.2, "cutmix_alpha": 0.0, "random_erasing_prob": 0.0},
+                },
+                "proposal": {"based_on_experiment_ids": ["exp_keep"], "changes": {"mixup_alpha": 0.2}},
+            },
+            {
+                "id": "exp_aug_2",
+                "status": "success",
+                "decision": "discard",
+                "params": {
+                    "learning_rate": 0.003,
+                    "augmentation_policy": "basic",
+                    "augmentation_params": {"mixup_alpha": 0.3, "cutmix_alpha": 0.0, "random_erasing_prob": 0.0},
+                },
+                "proposal": {"based_on_experiment_ids": ["exp_keep"], "changes": {"mixup_alpha": 0.3}},
+            },
+            {
+                "id": "exp_aug_3",
+                "status": "success",
+                "decision": "discard",
+                "params": {
+                    "learning_rate": 0.003,
+                    "augmentation_policy": "basic",
+                    "augmentation_params": {"mixup_alpha": 0.4, "cutmix_alpha": 0.0, "random_erasing_prob": 0.0},
+                },
+                "proposal": {"based_on_experiment_ids": ["exp_keep"], "changes": {"mixup_alpha": 0.4}},
+            },
+            {
+                "id": "exp_aug_4",
+                "status": "success",
+                "decision": "discard",
+                "params": {
+                    "learning_rate": 0.003,
+                    "augmentation_policy": "basic",
+                    "augmentation_params": {"mixup_alpha": 0.5, "cutmix_alpha": 0.0, "random_erasing_prob": 0.0},
+                },
+                "proposal": {"based_on_experiment_ids": ["exp_keep"], "changes": {"mixup_alpha": 0.5}},
+            },
+            {
+                "id": "exp_aug_5",
+                "status": "success",
+                "decision": "discard",
+                "params": {
+                    "learning_rate": 0.003,
+                    "augmentation_policy": "basic",
+                    "augmentation_params": {"mixup_alpha": 0.6, "cutmix_alpha": 0.0, "random_erasing_prob": 0.0},
+                },
+                "proposal": {"based_on_experiment_ids": ["exp_keep"], "changes": {"mixup_alpha": 0.6}},
+            },
+            {
+                "id": "exp_aug_6",
+                "status": "success",
+                "decision": "discard",
+                "params": {
+                    "learning_rate": 0.003,
+                    "augmentation_policy": "basic",
+                    "augmentation_params": {"mixup_alpha": 0.7, "cutmix_alpha": 0.0, "random_erasing_prob": 0.0},
+                },
+                "proposal": {"based_on_experiment_ids": ["exp_keep"], "changes": {"mixup_alpha": 0.7}},
+            },
+        ]
+
+        should_stop, stop_reason = should_stop_after_dimension_coverage(experiment_history, search_policy)
+        self.assertFalse(should_stop)
+        self.assertIn("minimum successful attempt budget", stop_reason)
 
 
 if __name__ == "__main__":

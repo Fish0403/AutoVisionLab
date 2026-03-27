@@ -4,18 +4,21 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from threading import Event, Lock
+from threading import Lock
 import time
 from uuid import uuid4
 
-from pydantic import BaseModel
-
 from app.db.session import SessionLocal
 from app.schemas.experiment import ExperimentCreateRequest
+from app.schemas.parameter_space import SearchPolicy
 from app.schemas.run import AutoTrainStartRequest, AutoTrainTaskResponse, RunCreateRequest
 from app.services.persistence import create_experiment, create_run, get_experiment_detail, get_run_detail
-from app.services.proposal_service import generate_aihubmix_proposal
-from app.services.run_policy import get_default_run_policy, require_non_basic_change_for_round
+from app.services.proposal_service import generate_aihubmix_proposal, get_run_history_payload
+from app.services.run_policy import (
+    get_default_run_policy,
+    require_non_basic_change_for_elapsed_budget,
+    should_stop_after_dimension_coverage,
+)
 from app.services.training_runner import start_experiment_training, stop_experiment_training
 
 
@@ -26,6 +29,19 @@ AUTO_TRAIN_LOCK = Lock()
 
 class AutoTrainStoppedError(RuntimeError):
     """Raised when auto train is stopped by user request."""
+
+
+def _get_elapsed_seconds(started_at_monotonic: float) -> float:
+    """Return elapsed time since the task started."""
+    return max(0.0, time.monotonic() - started_at_monotonic)
+
+
+def _update_elapsed_seconds(task_id: str, started_at_monotonic: float) -> float:
+    """Refresh the elapsed time stored in the task snapshot."""
+    elapsed_seconds = _get_elapsed_seconds(started_at_monotonic)
+    _update_task(task_id, elapsed_seconds=elapsed_seconds)
+    return elapsed_seconds
+
 
 def _append_task_log(task_id: str, message: str) -> None:
     with AUTO_TRAIN_LOCK:
@@ -84,8 +100,9 @@ def _build_summary_snapshot(experiment_detail: dict) -> dict:
     }
 
 
-def _wait_for_experiment_terminal(task_id: str, experiment_id: str) -> dict:
+def _wait_for_experiment_terminal(task_id: str, experiment_id: str, *, started_at_monotonic: float) -> dict:
     while True:
+        _update_elapsed_seconds(task_id, started_at_monotonic)
         task = _snapshot_task(task_id)
         if task is None:
             raise AutoTrainStoppedError("Auto train task disappeared")
@@ -150,10 +167,24 @@ def _resolve_followup_source_experiment(db: SessionLocal, run_id: str, proposal_
     raise ValueError("No valid source experiment found for the next auto-train round")
 
 
+def _load_latest_search_policy_for_run(db: SessionLocal, run_id: str) -> SearchPolicy:
+    """Return the latest persisted search policy for one run."""
+    run_detail = get_run_detail(db, run_id)
+    if run_detail is None or not run_detail.experiments:
+        return SearchPolicy()
+    latest_experiment_detail = get_experiment_detail(db, run_detail.experiments[-1].id)
+    if latest_experiment_detail is None:
+        return SearchPolicy()
+    config_payload = latest_experiment_detail.config or {}
+    return SearchPolicy.model_validate(config_payload.get("search_policy") or {})
+
+
 def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
     try:
         _update_task(task_id, status="running")
+        started_at_monotonic = time.monotonic()
         run_policy = get_default_run_policy()
+        total_budget_seconds = request.max_wall_clock_minutes * 60
         db = SessionLocal()
         try:
             if request.run_id:
@@ -217,7 +248,11 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
         _append_task_log(task_id, f"Baseline created: {baseline_experiment.id}")
         start_experiment_training(baseline_experiment.id)
         _append_task_log(task_id, f"Baseline training started: {baseline_experiment.id}")
-        baseline_detail = _wait_for_experiment_terminal(task_id, baseline_experiment.id)
+        baseline_detail = _wait_for_experiment_terminal(
+            task_id,
+            baseline_experiment.id,
+            started_at_monotonic=started_at_monotonic,
+        )
         if baseline_detail["status"] == "discarded":
             raise AutoTrainStoppedError("Baseline experiment was discarded")
         if baseline_detail["status"] != "success":
@@ -232,14 +267,53 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
         _update_task(task_id, summary=summary)
         _append_task_log(task_id, f"Baseline finished: {summary['baseline']['summary']}")
 
-        for round_index in range(1, request.rounds + 1):
+        round_index = 0
+        while True:
+            elapsed_seconds = _update_elapsed_seconds(task_id, started_at_monotonic)
+            if elapsed_seconds >= total_budget_seconds:
+                stop_reason = (
+                    f"Stopped by time budget after {elapsed_seconds:.1f}s "
+                    f"(budget {request.max_wall_clock_minutes} minutes)."
+                )
+                _update_task(
+                    task_id,
+                    status="stopped_by_budget",
+                    current_experiment_id=None,
+                    stop_reason=stop_reason,
+                )
+                _append_task_log(task_id, stop_reason)
+                return
+
+            db = SessionLocal()
+            try:
+                search_policy = _load_latest_search_policy_for_run(db, run_id)
+                history_payload = get_run_history_payload(db, run_id)
+                should_stop, stop_reason = should_stop_after_dimension_coverage(
+                    history_payload,
+                    search_policy,
+                    policy=run_policy,
+                )
+            finally:
+                db.close()
+
+            if should_stop:
+                _update_task(
+                    task_id,
+                    status="stopped_by_policy",
+                    current_experiment_id=None,
+                    stop_reason=stop_reason,
+                )
+                _append_task_log(task_id, stop_reason)
+                return
+
             task = _snapshot_task(task_id)
             if task is None or task.stop_requested:
                 raise AutoTrainStoppedError("Auto train stopped by user request")
+            round_index += 1
             _update_task(task_id, current_round=round_index)
-            require_non_basic_change = require_non_basic_change_for_round(
-                round_index,
-                request.rounds,
+            require_non_basic_change = require_non_basic_change_for_elapsed_budget(
+                elapsed_seconds,
+                request.max_wall_clock_minutes,
                 policy=run_policy,
             )
             if require_non_basic_change:
@@ -293,7 +367,11 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
             _append_task_log(task_id, f"Round {round_index}: created experiment {next_experiment.id}")
             start_experiment_training(next_experiment.id)
             _append_task_log(task_id, f"Round {round_index}: training started for {next_experiment.id}")
-            current_experiment_detail = _wait_for_experiment_terminal(task_id, next_experiment.id)
+            current_experiment_detail = _wait_for_experiment_terminal(
+                task_id,
+                next_experiment.id,
+                started_at_monotonic=started_at_monotonic,
+            )
             if current_experiment_detail["status"] == "discarded":
                 raise AutoTrainStoppedError("Current experiment was discarded")
             if current_experiment_detail["status"] != "success":
@@ -320,17 +398,8 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                     f"Round {round_index}: no promotion, revert to current best/frontier | "
                     f"{current_experiment_detail.get('decision_reason')}",
                 )
-
-        db = SessionLocal()
-        try:
-            final_proposal = generate_aihubmix_proposal(db, run_id)
-        finally:
-            db.close()
-        summary["final_proposal"] = final_proposal.model_dump()
-        _update_task(task_id, status="completed", summary=summary, current_experiment_id=None)
-        _append_task_log(task_id, "Auto train completed")
     except AutoTrainStoppedError:
-        _update_task(task_id, status="stopped", current_experiment_id=None)
+        _update_task(task_id, status="stopped", current_experiment_id=None, stop_reason="Stopped by user request.")
         _append_task_log(task_id, "Auto train stopped and current experiment discarded")
     except Exception as error:
         _update_task(task_id, status="failed", error=str(error), current_experiment_id=None)
@@ -349,12 +418,14 @@ def start_auto_train_task(request: AutoTrainStartRequest) -> AutoTrainTaskRespon
         "status": "queued",
         "run_id": request.run_id,
         "current_round": 0,
-        "total_rounds": request.rounds,
+        "max_wall_clock_minutes": request.max_wall_clock_minutes,
+        "elapsed_seconds": 0.0,
         "current_experiment_id": None,
         "logs": [],
         "summary": None,
         "error": None,
         "stop_requested": False,
+        "stop_reason": None,
     }
     with AUTO_TRAIN_LOCK:
         AUTO_TRAIN_TASKS[task_id] = task_payload

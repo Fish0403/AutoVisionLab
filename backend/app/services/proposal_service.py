@@ -36,11 +36,6 @@ def _get_effective_change_map(proposal: ProposalSchema) -> dict[str, Any]:
     }
 
 
-def _has_effective_changes(proposal: ProposalSchema) -> bool:
-    """Return whether a proposal contains at least one concrete parameter change."""
-    return bool(_get_effective_change_map(proposal))
-
-
 def _count_effective_changes(proposal: ProposalSchema) -> int:
     """Return the number of concrete parameter changes in the proposal."""
     return len(_get_effective_change_map(proposal))

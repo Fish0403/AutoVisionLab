@@ -9,6 +9,9 @@ Thumbs.db
 # Logs
 *.log
 
+# Private local notes
+CHANGELOG.md
+
 # Python
 __pycache__/
 *.py[cod]

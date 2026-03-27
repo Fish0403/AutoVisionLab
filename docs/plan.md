@@ -294,13 +294,19 @@ data/
 
 - [README.md](/home/fish/AutoVisionLab/README.md)
   - 环境、启动、数据准备、目录结构
-- [plan.md](/home/fish/AutoVisionLab/plan.md)
+- [docs/plan.md](/home/fish/AutoVisionLab/docs/plan.md)
   - 项目定位、系统边界、核心设计
-- [tasks.md](/home/fish/AutoVisionLab/tasks.md)
+- [docs/tasks.md](/home/fish/AutoVisionLab/docs/tasks.md)
   - 已完成 / 进行中 / 待做事项
-- [schemas.md](/home/fish/AutoVisionLab/schemas.md)
+- [docs/schemas.md](/home/fish/AutoVisionLab/docs/schemas.md)
   - 结构化数据与示例
 - [docs/experiment_policy.md](/home/fish/AutoVisionLab/docs/experiment_policy.md)
-  - 实际运行规则
+  - 实验运行总览
+- [docs/run_promotion_policy.md](/home/fish/AutoVisionLab/docs/run_promotion_policy.md)
+  - run 晋级与回退规则
+- [docs/auto_train_search_policy.md](/home/fish/AutoVisionLab/docs/auto_train_search_policy.md)
+  - Auto Train 搜索策略
+- [docs/auto_train_stop_policy.md](/home/fish/AutoVisionLab/docs/auto_train_stop_policy.md)
+  - Auto Train 停止策略
 - [CHANGELOG.md](/home/fish/AutoVisionLab/CHANGELOG.md)
   - 历史变更记录

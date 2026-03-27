@@ -1,7 +1,5 @@
 """Application settings."""
 
-from functools import lru_cache
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,8 +21,6 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="AVL_", env_file=".env", extra="ignore")
 
-
-@lru_cache
 def get_settings() -> Settings:
-    """Cache settings so the app uses a single resolved instance."""
+    """Return settings resolved from the current environment."""
     return Settings()
