@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime
 import time
 from typing import Any
 
@@ -146,6 +147,10 @@ DATASET_IMAGE_SIZE_OPTIONS = {
     "cifar10": [32, 64, 96],
     "neu-cls": [200, 224, 256],
 }
+DATASET_RUN_NAME_LABELS = {
+    "cifar10": "cifar10",
+    "neu-cls": "neu",
+}
 
 LOG_LIMIT = 60
 LIVE_LOG_CONTAINER: Any | None = None
@@ -165,11 +170,27 @@ def default_search_policy() -> dict[str, bool]:
             "scheduler",
             "label_smoothing",
         ],
-        "allow_strategy_search": False,
-        "allow_loss_search": False,
-        "allow_augmentation_search": False,
+        "allow_strategy_search": True,
+        "allow_loss_search": True,
+        "allow_augmentation_search": True,
         "require_manual_approval_for_high_impact_changes": True,
     }
+
+
+def build_auto_run_name(dataset: str, model_name: str) -> str:
+    """Build an auto-generated run name from the current dataset and model."""
+    dataset_label = DATASET_RUN_NAME_LABELS.get(dataset, dataset)
+    model_label = model_name.replace("_", "-")
+    date_label = datetime.now().strftime("%Y%m%d")
+    return f"{dataset_label}-{model_label}-{date_label}"
+
+
+def sync_auto_run_name() -> None:
+    """Keep the run name aligned with the current dataset and model selection."""
+    st.session_state["run_name"] = build_auto_run_name(
+        st.session_state["dataset"],
+        st.session_state["model_name"],
+    )
 
 
 def get_original_image_size(dataset: str, model_name: str) -> int:
@@ -1298,8 +1319,8 @@ def apply_generated_proposal(run_id: str, proposal: dict[str, Any]) -> None:
 def load_reference_config(selected_run_id: str) -> dict[str, Any]:
     """Load the latest config for the selected run or return defaults."""
     default_config = {
-        "run_name": "CIFAR-10 baseline study",
-        "dataset": "cifar10",
+        "run_name": build_auto_run_name("neu-cls", "mobilenet_v2"),
+        "dataset": "neu-cls",
         "model_name": "mobilenet_v2",
         "participates_in_ranking": True,
         "search_policy": default_search_policy(),
@@ -1307,7 +1328,7 @@ def load_reference_config(selected_run_id: str) -> dict[str, Any]:
             "optimizer": "adamw",
             "learning_rate": 0.003,
             "batch_size": 128,
-            "image_size": get_original_image_size("cifar10", "mobilenet_v2"),
+            "image_size": get_original_image_size("neu-cls", "mobilenet_v2"),
             "epochs": 10,
             "weight_decay": 0.0001,
             "scheduler": "cosine",
@@ -1330,7 +1351,10 @@ def load_reference_config(selected_run_id: str) -> dict[str, Any]:
         return default_config
     run_detail = load_run_detail(selected_run_id)
     return {
-        "run_name": run_detail["name"],
+        "run_name": build_auto_run_name(
+            latest_experiment["config"]["dataset"],
+            latest_experiment["config"]["model_name"],
+        ),
         "dataset": latest_experiment["config"]["dataset"],
         "model_name": latest_experiment["config"]["model_name"],
         "participates_in_ranking": latest_experiment["config"].get("participates_in_ranking", True),
@@ -1519,13 +1543,14 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
         with top_left:
             st.text_input("Run Name", key="run_name")
         with top_mid:
-            st.selectbox("Dataset", options=SUPPORTED_DATASETS, key="dataset")
+            st.selectbox("Dataset", options=SUPPORTED_DATASETS, key="dataset", on_change=sync_auto_run_name)
         with top_right:
             model_name = st.selectbox(
                 "Model",
                 options=["mobilenet_v2", "googlenet", "resnet18", "resnet34", "densenet121"],
                 format_func=get_model_label,
                 key="model_name",
+                on_change=sync_auto_run_name,
             )
 
         row_one = st.columns(3)

@@ -15,6 +15,7 @@ from app.schemas.experiment import ExperimentCreateRequest
 from app.schemas.run import AutoTrainStartRequest, AutoTrainTaskResponse, RunCreateRequest
 from app.services.persistence import create_experiment, create_run, get_experiment_detail, get_run_detail
 from app.services.proposal_service import generate_aihubmix_proposal
+from app.services.run_policy import get_default_run_policy, require_non_basic_change_for_round
 from app.services.training_runner import start_experiment_training, stop_experiment_training
 
 
@@ -25,14 +26,6 @@ AUTO_TRAIN_LOCK = Lock()
 
 class AutoTrainStoppedError(RuntimeError):
     """Raised when auto train is stopped by user request."""
-
-
-def _require_non_basic_change_for_round(round_index: int, total_rounds: int) -> bool:
-    """Return whether the current round must include augmentation/loss/strategy changes."""
-    if total_rounds <= 1:
-        return False
-    return round_index > (total_rounds / 2)
-
 
 def _append_task_log(task_id: str, message: str) -> None:
     with AUTO_TRAIN_LOCK:
@@ -84,6 +77,8 @@ def _build_summary_snapshot(experiment_detail: dict) -> dict:
     return {
         "experiment_id": experiment_detail["id"],
         "status": experiment_detail["status"],
+        "decision": experiment_detail.get("decision"),
+        "decision_reason": experiment_detail.get("decision_reason"),
         "metrics": metrics,
         "summary": ", ".join(summary_parts) if summary_parts else "no metrics returned",
     }
@@ -158,6 +153,7 @@ def _resolve_followup_source_experiment(db: SessionLocal, run_id: str, proposal_
 def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
     try:
         _update_task(task_id, status="running")
+        run_policy = get_default_run_policy()
         db = SessionLocal()
         try:
             if request.run_id:
@@ -241,7 +237,11 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
             if task is None or task.stop_requested:
                 raise AutoTrainStoppedError("Auto train stopped by user request")
             _update_task(task_id, current_round=round_index)
-            require_non_basic_change = _require_non_basic_change_for_round(round_index, request.rounds)
+            require_non_basic_change = require_non_basic_change_for_round(
+                round_index,
+                request.rounds,
+                policy=run_policy,
+            )
             if require_non_basic_change:
                 _append_task_log(
                     task_id,
@@ -308,6 +308,18 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
             )
             _update_task(task_id, summary=summary)
             _append_task_log(task_id, f"Round {round_index}: {summary['rounds'][-1]['result']['summary']}")
+            if current_experiment_detail.get("decision") == "keep":
+                _append_task_log(
+                    task_id,
+                    f"Round {round_index}: promoted to the active frontier | "
+                    f"{current_experiment_detail.get('decision_reason')}",
+                )
+            else:
+                _append_task_log(
+                    task_id,
+                    f"Round {round_index}: no promotion, revert to current best/frontier | "
+                    f"{current_experiment_detail.get('decision_reason')}",
+                )
 
         db = SessionLocal()
         try:

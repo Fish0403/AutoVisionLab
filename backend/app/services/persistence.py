@@ -12,6 +12,7 @@ from app.models.experiment import ExperimentModel
 from app.models.result import ResultModel
 from app.models.run import RunModel
 from app.services.run_logging import append_run_log
+from app.services.run_policy import evaluate_promotion, get_default_run_policy
 from app.schemas.ai import ProposalSchema, ReflectionSchema, ResultSchema
 from app.schemas.common import ExperimentDecision, PointMetric
 from app.schemas.experiment import ExperimentCreateRequest, ExperimentDecisionRequest, ExperimentDetailResponse, ExperimentSummary
@@ -34,7 +35,6 @@ def _experiment_ranking_key(experiment: ExperimentModel) -> tuple[float, float, 
         created_at_ts,
     )
 
-
 def _refresh_run_summary(db: Session, run_id: str) -> RunModel | None:
     run = db.get(RunModel, run_id)
     if run is None:
@@ -53,16 +53,12 @@ def _refresh_run_summary(db: Session, run_id: str) -> RunModel | None:
         return run
 
     baseline_experiment = experiments[0]
-    ranked_candidates = [
-        experiment
-        for experiment in experiments
-        if experiment.status == "success" and experiment.experiment_config.get("participates_in_ranking", True)
-    ]
-    best_experiment = max(ranked_candidates, key=_experiment_ranking_key, default=None)
-    frontier_experiment = best_experiment or experiments[-1]
+    best_experiment: ExperimentModel | None = None
+    frontier_experiment: ExperimentModel | None = None
+    run_policy = get_default_run_policy()
 
     for experiment in experiments:
-        experiment.is_best_so_far = best_experiment is not None and experiment.id == best_experiment.id
+        experiment.is_best_so_far = False
         if experiment.status == "failed" and experiment.decision is None:
             experiment.decision = "crash"
             experiment.decision_reason = experiment.decision_reason or "Training failed before producing a valid result."
@@ -70,12 +66,41 @@ def _refresh_run_summary(db: Session, run_id: str) -> RunModel | None:
             experiment.decision = "discard"
             experiment.decision_reason = experiment.decision_reason or "Experiment was stopped or discarded before completion."
         if experiment.status == "success":
+            if not experiment.experiment_config.get("participates_in_ranking", True):
+                experiment.decision = "discard"
+                experiment.decision_reason = "Completed successfully but does not participate in run ranking."
+            else:
+                should_promote, decision_reason = evaluate_promotion(
+                    experiment,
+                    best_experiment,
+                    policy=run_policy,
+                )
+                if should_promote:
+                    best_experiment = experiment
+                    frontier_experiment = experiment
+                    experiment.decision = "keep"
+                    experiment.decision_reason = decision_reason
+                else:
+                    experiment.decision = "discard"
+                    experiment.decision_reason = decision_reason
+        experiment.updated_at = datetime.utcnow()
+
+    if best_experiment is not None:
+        best_experiment.is_best_so_far = True
+    elif baseline_experiment.status == "success":
+        best_experiment = baseline_experiment
+        frontier_experiment = baseline_experiment
+        baseline_experiment.is_best_so_far = True
+        baseline_experiment.decision = "keep"
+        baseline_experiment.decision_reason = "Promoted as the first successful experiment in the run."
+
+    for experiment in experiments:
+        if experiment.status == "success" and experiment.decision is None:
             if best_experiment is not None and experiment.id == best_experiment.id:
                 experiment.decision = "keep"
-                experiment.decision_reason = "Current best experiment under the run ranking."
-            elif experiment.decision is None:
+                experiment.decision_reason = experiment.decision_reason or "Current best experiment under the run promotion policy."
+            else:
                 experiment.decision = "discard"
-                experiment.decision_reason = "Completed successfully but did not beat the current best experiment."
         experiment.updated_at = datetime.utcnow()
 
     run.baseline_experiment_id = baseline_experiment.id

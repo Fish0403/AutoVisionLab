@@ -23,8 +23,20 @@
 
 主要差距不是“能不能跑”，而是下面两件事还没有完全收敛：
 
-1. 关键状态还没有被统一成稳定、可复用、面向机器的 JSON 契约
+1. 关键状态虽然已经开始统一，但还没有全部收敛成稳定、可复用、面向机器的 JSON 契约
 2. 核心链路还缺少一份清晰的、可重复执行的验收清单
+
+截至当前代码状态，已经落地的部分是：
+
+- `runs` 主链路的成功响应已开始统一到 `ok / code / message / data / errors / meta`
+- `experiments`、`models` 和 `/health` 成功响应也已经切到相同外层
+- `auto-train` 的启动、查询、停止接口也已经使用相同外层结构
+- 全局错误响应已开始统一为同一 JSON 外层
+
+但还没有完全收敛的部分是：
+
+- `ArtifactManifest` 仍未形成独立对象与独立接口
+- 还没有 `docs/testing.md` 这类固定验收文档
 
 这正是 CLI-Anything 最值得学习的地方。
 
@@ -72,6 +84,8 @@ CLI-Anything 不是只做“功能生成”，它很强调测试计划、测试�
 
 建议把系统里的关键查询和关键动作结果统一成稳定返回格式。
 
+当前仓库已经把 `runs`、`experiments`、`models` 与 `/health` 收敛到同一成功响应外层，但 `ArtifactManifest` 和固定验收文档仍未落地。
+
 统一信封结构建议：
 
 ```json
@@ -105,6 +119,12 @@ CLI-Anything 不是只做“功能生成”，它很强调测试计划、测试�
 - `AutoTrainTaskStatus`
 - `ArtifactManifest`
 
+当前进度可以概括为：
+
+- `RunDetail`：已落地第一轮统一响应外层，但 `data` 内部仍主要沿用现有 `RunDetailResponse`
+- `AutoTrainTaskStatus`：已落地第一轮统一响应外层，但字段仍是当前任务快照模型
+- `ArtifactManifest`：仍未落地，是下一阶段最明显的缺口
+
 原因：
 
 - `RunDetail` 决定前端结果区是否需要自行拼装状态
@@ -112,6 +132,8 @@ CLI-Anything 不是只做“功能生成”，它很强调测试计划、测试�
 - `ArtifactManifest` 决定日志、checkpoint 和后续产物能否被一致展示和消费
 
 ### 3.3 改造后的对象应长什么样
+
+下面这些结构更适合作为后续目标，而不是说当前代码已经完全长成这样。
 
 #### RunDetail
 
@@ -387,10 +409,11 @@ CLI-Anything 不是只做“功能生成”，它很强调测试计划、测试�
 
 不建议一次性做完，建议按下面顺序推进：
 
-1. 先定义 `RunDetail`、`AutoTrainTaskStatus`、`ArtifactManifest` 三个 JSON 对象
-2. 再新增 `docs/testing.md`，写 5 条核心链路验收清单
-3. 再让前端结果区和训练状态区改为直接消费这三个对象
-4. 最后视需要补轻量 CLI 或 agent-facing 命令入口
+1. 先把统一响应信封从 `runs` 主链路扩到 `experiments`、`models` 等剩余接口
+2. 再补 `ArtifactManifest` 对象与对应接口
+3. 再新增 `docs/testing.md`，写 5 条核心链路验收清单
+4. 再让前端结果区和训练状态区进一步直接消费这些稳定对象
+5. 最后视需要补轻量 CLI 或 agent-facing 命令入口
 
 ## 8. 一句话总结
 

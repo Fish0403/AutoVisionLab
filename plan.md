@@ -178,9 +178,76 @@ AI 搜索不是无限制调参，而是受 `search_policy` 控制。
 - 后半段避免一直围绕 `lr / batch_size / wd / scheduler` 打转
 - 让 auto-train 的后半程更像真正的策略探索，而不是重复微调
 
-## 7. 数据与产物
+## 7. 预算与可比性设计
 
-### 7.1 数据目录
+### 7.1 当前问题
+
+当前系统主要按 `epochs` 控制训练轮数。
+
+这能保证单次实验有稳定的训练终止条件，但不能完全保证实验成本可比。
+
+原因是：
+
+- 不同模型的单 epoch 耗时不同
+- 不同 `image_size` 会直接改变训练与推理成本
+- 不同 `batch_size`、augmentation、loss / strategy 会改变训练时间
+
+因此，“固定 epochs” 更接近固定训练流程长度，而不是固定真实预算。
+
+### 7.2 为什么不直接采用固定训练时长
+
+参考部分自动研究项目时，一个常见做法是给每轮实验固定 wall-clock budget，例如“每轮只训练 5 分钟”。
+
+这个策略适合追求研究效率最大化的场景，但不一定适合本项目当前目标。
+
+本项目更关心的是：
+
+- 在相近推理成本下比较模型效果
+- 允许训练期开销增加，只要部署期开销没有失控
+
+因此，如果只固定训练时间，容易把“研究效率”当成主要目标，而弱化“部署可比性”。
+
+### 7.3 后续更偏向的方向
+
+后续如果要继续强化 run 内可比性，优先考虑的是“推理预算”而不是“训练时长预算”。
+
+更适合本项目的约束方式是：
+
+- 先确定 baseline 的推理成本
+- 再限制后续实验的推理成本不能超过该 baseline 太多
+- 只有在推理成本仍落在预算内时，才继续比较 `top1_acc`、`val_loss` 等效果指标
+
+### 7.4 可能的推理预算字段
+
+后续可考虑在 `result` 或 run policy 中增加：
+
+- `inference_latency_ms`
+- `throughput_samples_per_second`
+- `parameter_count`
+- `flops`
+- `peak_inference_memory_mb`
+- `input_image_size`
+
+以及相对 baseline 的预算约束，例如：
+
+- `max_latency_ratio_vs_baseline`
+- `max_flops_ratio_vs_baseline`
+- `max_parameter_count_ratio_vs_baseline`
+- `max_image_size`
+
+### 7.5 当前结论
+
+当前阶段暂不修改实现。
+
+设计上先明确这条判断：
+
+- `epochs` 不等于真正预算
+- 训练时间与推理时间有关联，但不是同一个量
+- 本项目后续更应该优先约束“推理成本下的效果优化”，而不是机械收敛到固定训练时长
+
+## 8. 数据与产物
+
+### 8.1 数据目录
 
 统一目录规则：
 
@@ -200,7 +267,7 @@ data/
 - `cifar10`
 - `neu-cls`
 
-### 7.2 产物目录
+### 8.2 产物目录
 
 当前本地产物规则：
 
@@ -209,7 +276,7 @@ data/
 - `artifacts/checkpoints/<experiment_id>.pt`
   - 按 experiment 保存 checkpoint
 
-## 8. 前端目标
+## 9. 前端目标
 
 前端保持两个核心工作区：
 
@@ -223,7 +290,7 @@ data/
 - Results 默认跟随当前 run 的 best experiment
 - Training Records 既能回看历史，也能做趋势比较
 
-## 9. 文档分工
+## 10. 文档分工
 
 - [README.md](/home/fish/AutoVisionLab/README.md)
   - 环境、启动、数据准备、目录结构

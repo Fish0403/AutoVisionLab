@@ -1,8 +1,19 @@
 # Changelog
 
+## 2026-03-26
+
+- 新增统一的 run policy 层：[`backend/app/schemas/run_policy.py`](/home/fish/AutoVisionLab/backend/app/schemas/run_policy.py) 负责声明晋级阈值、停滞轮数、单变量 / 双变量预算等硬约束默认值，[`backend/app/services/run_policy.py`](/home/fish/AutoVisionLab/backend/app/services/run_policy.py) 负责承接这些约束的计算逻辑；同时将 [`backend/app/services/proposal_service.py`](/home/fish/AutoVisionLab/backend/app/services/proposal_service.py)、[`backend/app/services/auto_train_service.py`](/home/fish/AutoVisionLab/backend/app/services/auto_train_service.py) 与 [`backend/app/services/persistence.py`](/home/fish/AutoVisionLab/backend/app/services/persistence.py) 改为统一从这层读取，减少策略散落。
+- 调整 [`backend/app/services/persistence.py`](/home/fish/AutoVisionLab/backend/app/services/persistence.py)，为 run 引入明确的晋级 / 回退规则：不再把“当前排名第一”直接视为 `keep`，而是要求新实验至少跨过最小提升阈值后才晋级 `best / frontier`；若未达到阈值，则自动记为 `discard` 并回退到当前最佳分支，减少噪声实验误晋级。
+- 同步把 run 晋级阈值进一步收紧为：`top1_acc` 至少提升 `0.01`，或在 `top1_acc` 近似持平时 `val_loss` 至少下降 `0.01`，避免把过小波动误判成有效晋级。
+- 调整 [`backend/app/services/proposal_service.py`](/home/fish/AutoVisionLab/backend/app/services/proposal_service.py) 与 [`backend/app/services/auto_train_service.py`](/home/fish/AutoVisionLab/backend/app/services/auto_train_service.py)，把 proposal 默认收敛为单变量实验；只有当 run 已连续至少两轮没有晋级时，才允许最多两个字段的组合变更，同时在 auto-train 日志里显式记录每轮是“晋级”还是“回退”。
+- 新增 [`tests/test_run_promotion_policy.py`](/home/fish/AutoVisionLab/tests/test_run_promotion_policy.py)，覆盖“小幅提升不晋级”“显著提升才晋级”“停滞两轮后放宽到双变量”三类关键策略测试，防止后续回归。
+- 把统一 JSON 响应信封从 `runs` 主链路继续扩到 [`backend/app/api/routes/experiments.py`](/home/fish/AutoVisionLab/backend/app/api/routes/experiments.py) 与 [`backend/app/api/routes/models.py`](/home/fish/AutoVisionLab/backend/app/api/routes/models.py)，让创建/读取/更新实验、训练启动/停止，以及模型参数空间接口都返回稳定的 `ok / code / message / data / errors / meta` 结构；同时把 [`backend/app/main.py`](/home/fish/AutoVisionLab/backend/app/main.py) 的 `/health` 也统一到相同外层，减少系统接口的例外形状。
+- 同步更新 [`schemas.md`](/home/fish/AutoVisionLab/schemas.md)、[`tasks.md`](/home/fish/AutoVisionLab/tasks.md) 与 [`docs/cli_anything_learning.md`](/home/fish/AutoVisionLab/docs/cli_anything_learning.md)，把 API 响应收敛状态从“`runs` 主链路已完成第一轮收敛”更新为“主要现有 API 已统一成功响应外层，后续重点转向 `ArtifactManifest` 与固定验收文档”，避免文档继续落后于实现。
+
 ## 2026-03-25
 
 - 统一 `runs` 相关 FastAPI 接口的 JSON 成功响应外层，新增通用 `ApiResponse` 信封与异常处理器，让 `list/create/get run`、`run summary/metrics`、`proposal`、`auto-train`、`reset` 等接口都返回稳定的 `ok / code / message / data / errors / meta` 结构；同时调整 [`frontend/streamlit_app.py`](/home/fish/AutoVisionLab/frontend/streamlit_app.py) 的请求封装层，自动解包成功响应并归一化错误响应，避免页面逻辑直接依赖裸 JSON 形状。
+- 同步更新 [`docs/cli_anything_learning.md`](/home/fish/AutoVisionLab/docs/cli_anything_learning.md)、[`schemas.md`](/home/fish/AutoVisionLab/schemas.md) 与 [`tasks.md`](/home/fish/AutoVisionLab/tasks.md)，把“统一 JSON 响应信封”的文档口径从纯待落地改为“`runs` 主链路已完成第一轮收敛，其余接口与 `ArtifactManifest` 仍待继续推进”，避免文档与当前代码状态不一致。
 
 ## 2026-03-24
 

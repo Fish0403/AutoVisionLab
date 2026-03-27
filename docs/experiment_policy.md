@@ -4,6 +4,11 @@
 
 它不负责解释项目愿景。整体定位见 [plan.md](/home/fish/AutoVisionLab/plan.md)，执行事项见 [tasks.md](/home/fish/AutoVisionLab/tasks.md)，结构化对象见 [schemas.md](/home/fish/AutoVisionLab/schemas.md)。
 
+当前默认的硬约束参数已集中定义在：
+
+- [backend/app/schemas/run_policy.py](/home/fish/AutoVisionLab/backend/app/schemas/run_policy.py)
+- [backend/app/services/run_policy.py](/home/fish/AutoVisionLab/backend/app/services/run_policy.py)
+
 ## 1. 适用范围
 
 - 任务类型：图像分类
@@ -27,6 +32,18 @@
   - `baseline_experiment_id`
   - `best_experiment_id`
   - `frontier_experiment_id`
+
+### 2.1 晋级 / 回退规则
+
+- `baseline` 的首个成功实验会先成为当前 `best` 与 `frontier`
+- 后续成功实验不会因为“略好一点”就自动晋级
+- 当前实现的默认晋级阈值：
+  - `top1_acc` 至少提升 `0.01`
+  - 或在 `top1_acc` 近似持平时，`val_loss` 至少下降 `0.01`
+- 如果未达到阈值：
+  - 当前实验记为 `discard`
+  - `best` 和 `frontier` 保持不变
+  - 后续 auto-train 默认回到当前 `best / frontier` 继续分支
 
 ## 3. 参数分层
 
@@ -121,6 +138,11 @@
 - proposal 必须通过 parameter space 校验
 - proposal 必须通过 `search_policy` 校验
 - proposal 不能为空，必须包含至少一个有效参数变化
+- proposal 默认只允许修改 `1` 个字段
+- 只有当 run 已连续至少 `2` 轮没有晋级时，proposal 才最多允许修改 `2` 个字段
+- 同一个字段连续至少 `2` 轮参与失败实验后，会进入临时冷却
+- 处于冷却中的字段，在接下来至少 `2` 轮 proposal 中不允许再次提出
+- 如果最近至少 `3` 轮停滞都停留在同一个搜索维度，下一轮必须切换维度
 - proposal 文本不允许引用当前未开放的字段或取值
 
 proposal 生成时必须参考：
@@ -129,6 +151,13 @@ proposal 生成时必须参考：
 - `baseline`
 - `best`
 - `frontier`
+
+这里的“搜索维度”当前分为：
+
+- `basic`
+- `augmentation`
+- `loss`
+- `strategy`
 
 ## 7. Auto Train 规则
 
@@ -149,6 +178,11 @@ proposal 生成时必须参考：
 - `loss_name`
 - `focal_gamma`
 - `aux_logits`
+
+除此之外，`Auto Train` 还遵循两条实验纪律：
+
+- 默认优先单变量实验，避免一次混入过多变化
+- 当连续 `2` 轮没有晋级时，下一轮才允许双变量组合变更
 
 ## 8. 前端显示规则
 

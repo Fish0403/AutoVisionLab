@@ -4,15 +4,94 @@
 
 ## 1. 核心对象
 
-当前平台围绕五类结构化对象工作：
+当前平台围绕六类结构化对象工作：
 
+- `api response envelope`
 - `experiment config`
 - `editable parameter space`
 - `search policy`
 - `proposal`
 - `result`
 
-## 2. Experiment Config
+其中前五类偏业务对象，`api response envelope` 负责把这些对象包装成统一 API 返回格式。
+
+## 2. API Response Envelope
+
+`api response envelope` 是当前后端开始采用的统一 JSON 外层。
+
+当前已经覆盖的主要接口：
+
+- `GET /health`
+- `GET /runs`
+- `POST /runs`
+- `GET /runs/{run_id}`
+- `GET /runs/{run_id}/summary`
+- `GET /runs/{run_id}/metrics`
+- `POST /runs/{run_id}/proposal`
+- `POST /runs/reset`
+- `POST /runs/{run_id}/reset`
+- `POST /runs/auto-train`
+- `GET /runs/auto-train/{task_id}`
+- `POST /runs/auto-train/{task_id}/stop`
+- `POST /experiments`
+- `GET /experiments/{experiment_id}`
+- `POST /experiments/{experiment_id}/result`
+- `POST /experiments/{experiment_id}/decision`
+- `POST /experiments/{experiment_id}/train`
+- `POST /experiments/{experiment_id}/stop`
+- `GET /models/{model_name}/parameter-space`
+
+当前统一字段：
+
+- `ok`
+- `code`
+- `message`
+- `data`
+- `errors`
+- `meta`
+
+示例：
+
+```json
+{
+  "ok": true,
+  "code": "success",
+  "message": "Run detail loaded.",
+  "data": {
+    "id": "run_ab12cd34",
+    "name": "neu-cls-resnet18-baseline",
+    "dataset": "neu-cls",
+    "model_name": "resnet18",
+    "status": "active",
+    "notes": null,
+    "baseline_experiment_id": "exp_1111aaaa",
+    "best_experiment_id": "exp_2222bbbb",
+    "frontier_experiment_id": "exp_3333cccc",
+    "experiments": []
+  },
+  "errors": [],
+  "meta": {
+    "schema_version": "v1",
+    "timestamp": "2026-03-25T10:00:00Z"
+  }
+}
+```
+
+说明：
+
+- `ok` 用于快速判断请求是否成功
+- `code` 用于稳定区分结果类型，例如 `success`、`created`、`running`
+- `message` 给人类阅读
+- `data` 放实际业务对象
+- `errors` 放字段级或请求级错误
+- `meta` 放版本与时间戳等补充信息
+
+当前还未完全统一的部分：
+
+- 独立的 `ArtifactManifest` 对象
+- 未来新增接口落地时的默认接入约束
+
+## 3. Experiment Config
 
 `experiment config` 表示一次实验真正执行的配置快照。
 
@@ -76,7 +155,7 @@
 }
 ```
 
-## 3. Editable Parameter Space
+## 4. Editable Parameter Space
 
 `editable parameter space` 定义某个模型允许 AI 修改哪些字段，以及每个字段的合法范围。
 
@@ -151,7 +230,7 @@
 }
 ```
 
-## 4. Search Policy
+## 5. Search Policy
 
 `search policy` 决定当前 run 中 AI 到底能动哪些字段。
 
@@ -196,7 +275,7 @@
 - strategy
   - `aux_logits`
 
-## 5. Proposal
+## 6. Proposal
 
 proposal 是 AI 输出的结构化参数变更建议。
 
@@ -225,7 +304,7 @@ proposal 是 AI 输出的结构化参数变更建议。
 }
 ```
 
-## 6. Result
+## 7. Result
 
 result 表示一次训练完成后的结构化输出。
 
@@ -280,7 +359,7 @@ result 表示一次训练完成后的结构化输出。
 }
 ```
 
-## 7. 运行时边界
+## 8. 运行时边界
 
 - trainer 不读取自由文本
 - proposal 不能越过 parameter space
