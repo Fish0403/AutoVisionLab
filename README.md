@@ -66,82 +66,23 @@ cp .env.example .env
 
 ## 4. 数据目录规则
 
-平台统一读取标准分类目录：
+数据相关的处理细节、脚本说明和数据集示例统一放在：
 
-```text
-data/
-  <dataset_name>/
-    raw/
-    classification/
-      train/
-        <class_name>/
-      val/
-        <class_name>/
-```
-
-说明：
-
-- `raw/` 存原始下载内容
-- `classification/train|val/` 存可直接训练的数据
-- trainer 不直接依赖原始压缩包格式
+- [data/README.md](data/README.md)
 
 ## 5. 数据准备
 
-### CIFAR-10
-
-将 `CIFAR-10` 整理成统一分类目录：
+常用数据命令：
 
 ```bash
-python3 data/cifar10/prepare_classification_split.py
+python3 data/prepare_classification_split.py --source-dir data/raw/KDSC --dataset-name KDSC
+python3 data/raw/neu/prepare_classification_source.py --force
+python3 data/prepare_classification_split.py --dataset-name neu --force
 ```
 
-默认会导出平衡抽样子集：
+更详细的数据目录、manifest 格式和 `neu` 预处理流程见：
 
-- `train`: 每类 `500`
-- `val`: 每类 `100`
-
-如果需要导出全量：
-
-```bash
-python3 data/cifar10/prepare_classification_split.py --full
-```
-
-输出目录：
-
-```text
-data/
-  cifar10/
-    raw/
-    classification/
-      train/
-      val/
-```
-
-### NEU-CLS
-
-`NEU-CLS` 是较适合本项目的工业分类数据集，常见描述为：
-
-- `6` 类
-- 每类 `300` 张
-- 总计 `1800` 张
-- 图像大小 `200x200`
-
-下载后可用以下脚本整理为统一分类目录：
-
-```bash
-python3 data/neu-cls/prepare_classification_split.py
-```
-
-输出目录：
-
-```text
-data/
-  neu-cls/
-    raw/
-    classification/
-      train/
-      val/
-```
+- [data/README.md](data/README.md)
 
 ## 6. 本地产物
 
@@ -162,15 +103,15 @@ run 日志会聚合同一个 run 下的：
 
 ## 7. 常用文档
 
-- 项目计划：[docs/plan.md](/home/fish/AutoVisionLab/docs/plan.md)
-- 任务清单：[docs/tasks.md](/home/fish/AutoVisionLab/docs/tasks.md)
-- Schema 说明：[docs/schemas.md](/home/fish/AutoVisionLab/docs/schemas.md)
-- 运行规则：[docs/experiment_policy.md](/home/fish/AutoVisionLab/docs/experiment_policy.md)
-- Ranking Policy：[docs/ranking_policy.md](/home/fish/AutoVisionLab/docs/ranking_policy.md)
-- Run 晋级与回退规则：[docs/run_promotion_policy.md](/home/fish/AutoVisionLab/docs/run_promotion_policy.md)
-- Auto Train 搜索策略：[docs/auto_train_search_policy.md](/home/fish/AutoVisionLab/docs/auto_train_search_policy.md)
-- Auto Train 停止策略：[docs/auto_train_stop_policy.md](/home/fish/AutoVisionLab/docs/auto_train_stop_policy.md)
-- 变更记录：[CHANGELOG.md](/home/fish/AutoVisionLab/CHANGELOG.md)
+- 项目计划：[docs/plan.md](docs/plan.md)
+- 任务清单：[docs/tasks.md](docs/tasks.md)
+- Schema 说明：[docs/schemas.md](docs/schemas.md)
+- 运行规则：[docs/experiment_policy.md](docs/experiment_policy.md)
+- Ranking Policy：[docs/ranking_policy.md](docs/ranking_policy.md)
+- Run 晋级与回退规则：[docs/run_promotion_policy.md](docs/run_promotion_policy.md)
+- Auto Train 搜索策略：[docs/auto_train_search_policy.md](docs/auto_train_search_policy.md)
+- Auto Train 停止策略：[docs/auto_train_stop_policy.md](docs/auto_train_stop_policy.md)
+- 变更记录：[CHANGELOG.md](CHANGELOG.md)
 
 ## 8. 仓库结构
 

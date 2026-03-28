@@ -1,6 +1,6 @@
 # AutoVisionLab Tasks
 
-这个文件只记录执行层信息，不重复解释整体设计。系统定位与边界见 [docs/plan.md](/home/fish/AutoVisionLab/docs/plan.md)。
+这个文件只记录执行层信息，不重复解释整体设计。系统定位与边界见 [docs/plan.md](plan.md)。
 
 ## 1. 执行原则
 
@@ -102,10 +102,10 @@
 
 ### 数据与产物
 
-- `CIFAR-10` 已有准备脚本：
-  [data/cifar10/prepare_classification_split.py](/home/fish/AutoVisionLab/data/cifar10/prepare_classification_split.py)
-- `NEU-CLS` 已有准备脚本：
-  [data/neu-cls/prepare_classification_split.py](/home/fish/AutoVisionLab/data/neu-cls/prepare_classification_split.py)
+- 分类数据已开始收敛到通用切分脚本：
+  [data/prepare_classification_split.py](../data/prepare_classification_split.py)
+- `NEU-CLS` 已补原始目录到类别目录的预处理脚本：
+  [data/raw/neu/prepare_classification_source.py](../data/raw/neu/prepare_classification_source.py)
 - 本地日志已改为按 run 聚合：
   - `artifacts/runs/<run_id>.log`
 - checkpoint 继续按 experiment 保存：
@@ -139,6 +139,7 @@
 - 给 `AI Search Policy` 增加更细的字段级配置，而不只是分类开关
 - 在结果区增加本地 run log 查看入口
 - 在结果区增加 checkpoint / artifact 路径查看入口
+- 训练失败时，如果后端识别到 `CUDA out of memory`，前端显示明确错误提示，而不只是留在日志里
 
 ### 后端
 
@@ -146,6 +147,7 @@
 - 增加更稳定的 proposal 去重 / 失败回退逻辑
 - 增加更清晰的 artifact manifest，而不只是一对路径
 - 保持后续新增主要 API 默认复用统一响应信封
+- 训练失败时识别 `CUDA out of memory` 等常见资源错误，并保留原始异常到 run log / decision reason
 
 ### 测试与验收
 
@@ -153,7 +155,7 @@
 
 ### 数据
 
-- 清理前端默认值与 fallback demo 文案中残留的 `cifar10` 假设，使 `NEU-CLS` 的现有支持在界面和文档里表达得更准确
+- 清理前端默认值与 fallback demo 文案中的旧数据集名残留，使当前 `data/classification/<dataset_name>/` 目录名与界面显示保持一致
 - 根据统一目录规范增加更多工业分类数据集
 
 ### 研究决策

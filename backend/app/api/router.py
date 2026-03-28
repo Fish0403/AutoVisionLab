@@ -2,11 +2,11 @@
 
 from fastapi import APIRouter
 
-from app.api.routes import experiments, models, runs
+from app.api.routes import datasets, experiments, models, runs
 
 
 api_router = APIRouter()
+api_router.include_router(datasets.router, prefix="/datasets", tags=["datasets"])
 api_router.include_router(runs.router, prefix="/runs", tags=["runs"])
 api_router.include_router(experiments.router, prefix="/experiments", tags=["experiments"])
 api_router.include_router(models.router, prefix="/models", tags=["models"])
-

@@ -272,7 +272,7 @@ data/
 当前推荐：
 
 - `cifar10`
-- `neu-cls`
+- `neu`
 
 ### 8.2 产物目录
 
@@ -299,21 +299,21 @@ data/
 
 ## 10. 文档分工
 
-- [README.md](/home/fish/AutoVisionLab/README.md)
+- [README.md](../README.md)
   - 环境、启动、数据准备、目录结构
-- [docs/plan.md](/home/fish/AutoVisionLab/docs/plan.md)
+- [docs/plan.md](plan.md)
   - 项目定位、系统边界、核心设计
-- [docs/tasks.md](/home/fish/AutoVisionLab/docs/tasks.md)
+- [docs/tasks.md](tasks.md)
   - 已完成 / 进行中 / 待做事项
-- [docs/schemas.md](/home/fish/AutoVisionLab/docs/schemas.md)
+- [docs/schemas.md](schemas.md)
   - 结构化数据与示例
-- [docs/experiment_policy.md](/home/fish/AutoVisionLab/docs/experiment_policy.md)
+- [docs/experiment_policy.md](experiment_policy.md)
   - 实验运行总览
-- [docs/run_promotion_policy.md](/home/fish/AutoVisionLab/docs/run_promotion_policy.md)
+- [docs/run_promotion_policy.md](run_promotion_policy.md)
   - run 晋级与回退规则
-- [docs/auto_train_search_policy.md](/home/fish/AutoVisionLab/docs/auto_train_search_policy.md)
+- [docs/auto_train_search_policy.md](auto_train_search_policy.md)
   - Auto Train 搜索策略
-- [docs/auto_train_stop_policy.md](/home/fish/AutoVisionLab/docs/auto_train_stop_policy.md)
+- [docs/auto_train_stop_policy.md](auto_train_stop_policy.md)
   - Auto Train 停止策略
-- [CHANGELOG.md](/home/fish/AutoVisionLab/CHANGELOG.md)
+- [CHANGELOG.md](../CHANGELOG.md)
   - 历史变更记录

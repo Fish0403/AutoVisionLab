@@ -35,6 +35,7 @@ from app.services.persistence import (
     get_run_detail,
     save_experiment_result,
     clear_all_records,
+    clear_run_records,
 )
 from app.services.run_policy import (
     determine_change_budget,
@@ -396,6 +397,56 @@ class RunPromotionPolicyTest(unittest.TestCase):
                 forbidden_dimensions=forbidden_dimensions,
             )
         )
+
+    def test_clear_run_records_removes_run_artifacts(self) -> None:
+        ids, _ = self._create_run_with_two_results(
+            baseline_top1_acc=0.8000,
+            baseline_val_loss=0.5000,
+            candidate_top1_acc=0.8100,
+            candidate_val_loss=0.4900,
+        )
+        run_log_path = TEST_ARTIFACT_ROOT / "runs" / f"{ids['run_id']}.log"
+        baseline_checkpoint_path = TEST_ARTIFACT_ROOT / "checkpoints" / f"{ids['baseline_id']}.pt"
+        candidate_checkpoint_path = TEST_ARTIFACT_ROOT / "checkpoints" / f"{ids['candidate_id']}.pt"
+        run_log_path.parent.mkdir(parents=True, exist_ok=True)
+        baseline_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        run_log_path.write_text("run-log", encoding="utf-8")
+        baseline_checkpoint_path.write_text("baseline", encoding="utf-8")
+        candidate_checkpoint_path.write_text("candidate", encoding="utf-8")
+
+        with SessionLocal() as db:
+            deleted_counts = clear_run_records(db, ids["run_id"])
+
+        self.assertIsNotNone(deleted_counts)
+        self.assertEqual(deleted_counts["deleted_runs"], 1)
+        self.assertGreaterEqual(deleted_counts["deleted_artifact_files"], 3)
+        self.assertFalse(run_log_path.exists())
+        self.assertFalse(baseline_checkpoint_path.exists())
+        self.assertFalse(candidate_checkpoint_path.exists())
+
+    def test_clear_all_records_removes_all_artifacts(self) -> None:
+        ids, _ = self._create_run_with_two_results(
+            baseline_top1_acc=0.8000,
+            baseline_val_loss=0.5000,
+            candidate_top1_acc=0.8100,
+            candidate_val_loss=0.4900,
+        )
+        run_log_path = TEST_ARTIFACT_ROOT / "runs" / f"{ids['run_id']}.log"
+        baseline_checkpoint_path = TEST_ARTIFACT_ROOT / "checkpoints" / f"{ids['baseline_id']}.pt"
+        candidate_checkpoint_path = TEST_ARTIFACT_ROOT / "checkpoints" / f"{ids['candidate_id']}.pt"
+        run_log_path.parent.mkdir(parents=True, exist_ok=True)
+        baseline_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        run_log_path.write_text("run-log", encoding="utf-8")
+        baseline_checkpoint_path.write_text("baseline", encoding="utf-8")
+        candidate_checkpoint_path.write_text("candidate", encoding="utf-8")
+
+        with SessionLocal() as db:
+            deleted_counts = clear_all_records(db)
+
+        self.assertGreaterEqual(deleted_counts["deleted_artifact_files"], 3)
+        self.assertFalse(run_log_path.exists())
+        self.assertFalse(baseline_checkpoint_path.exists())
+        self.assertFalse(candidate_checkpoint_path.exists())
 
     def test_available_dimensions_follow_search_policy(self) -> None:
         search_policy = SearchPolicy.model_validate(

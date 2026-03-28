@@ -103,6 +103,7 @@ class ExperimentConfig(BaseModel):
     model_family: Literal["mobilenet", "googlenet", "resnet", "densenet"]
     model_name: Literal["mobilenet_v2", "googlenet", "resnet18", "resnet34", "densenet121"]
     parameter_space_version: str
+    use_demo_mode: bool = False
     participates_in_ranking: bool = True
     search_policy: SearchPolicy = Field(default_factory=SearchPolicy)
     ranking_policy: RankingPolicy = Field(default_factory=RankingPolicy)

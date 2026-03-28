@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -11,8 +12,8 @@ import torch
 from torch import nn
 from torch.optim import Adam, AdamW, SGD
 from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR
-from torch.utils.data import DataLoader, Subset
-from torchvision import datasets
+from torch.utils.data import DataLoader, Dataset, Subset
+from torchvision.datasets.folder import default_loader
 
 from app.core.settings import get_settings
 from app.schemas.ai import ResultSchema
@@ -26,8 +27,77 @@ from app.trainers.classification.components import (
 )
 
 
+PREPARED_SOURCE_DIRNAME = "classification_source"
+DEMO_SUBSET_SEED = 42
+
+
 class TrainingInterruptedError(RuntimeError):
     """Raised when the current experiment is stopped and discarded."""
+
+
+class ManifestClassificationDataset(Dataset):
+    """Classification dataset backed by a split manifest file."""
+
+    def __init__(
+        self,
+        manifest_path: Path,
+        source_root: Path,
+        class_to_idx: dict[str, int],
+        transform=None,
+    ) -> None:
+        self.manifest_path = manifest_path
+        self.source_root = source_root
+        self.class_to_idx = class_to_idx
+        self.transform = transform
+        self.classes = [class_name for class_name, _ in sorted(class_to_idx.items(), key=lambda item: item[1])]
+        self.samples = self._load_samples()
+        self.targets = [target for _, target in self.samples]
+
+    def _load_samples(self) -> list[tuple[Path, int]]:
+        """Load manifest lines into path and class index tuples."""
+        if not self.manifest_path.exists():
+            raise FileNotFoundError(f"Classification manifest not found: {self.manifest_path}")
+
+        samples: list[tuple[Path, int]] = []
+        for line_number, raw_line in enumerate(self.manifest_path.read_text(encoding="utf-8").splitlines(), start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            if "\t" in line:
+                relative_path_text, class_name = line.rsplit("\t", maxsplit=1)
+            else:
+                parts = line.split(maxsplit=1)
+                if len(parts) != 2:
+                    raise ValueError(
+                        f"Invalid manifest line at {self.manifest_path}:{line_number}: {raw_line!r}"
+                    )
+                relative_path_text, class_name = parts
+            if class_name not in self.class_to_idx:
+                raise ValueError(
+                    f"Unknown class {class_name!r} found in manifest {self.manifest_path}:{line_number}"
+                )
+            image_path = self.source_root / Path(relative_path_text)
+            if not image_path.exists():
+                raise FileNotFoundError(
+                    f"Manifest points to a missing image: {image_path} "
+                    f"(from {self.manifest_path}:{line_number})"
+                )
+            samples.append((image_path, self.class_to_idx[class_name]))
+        if not samples:
+            raise ValueError(f"Classification manifest is empty: {self.manifest_path}")
+        return samples
+
+    def __len__(self) -> int:
+        """Return sample count."""
+        return len(self.samples)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
+        """Load one sample from the manifest."""
+        image_path, label = self.samples[index]
+        image = default_loader(str(image_path))
+        if self.transform is not None:
+            image = self.transform(image)
+        return image, label
 
 
 class BaseClassificationTrainer(ABC):
@@ -122,29 +192,154 @@ class BaseClassificationTrainer(ABC):
             augmentation_params=self.config.params.augmentation_params,
         )
         eval_transform = build_eval_transform(image_size)
-        train_dir, val_dir = self.resolve_classification_dataset_dirs(self.config.dataset.strip().lower())
-        train_dataset = datasets.ImageFolder(root=str(train_dir), transform=train_transform)
-        val_dataset = datasets.ImageFolder(root=str(val_dir), transform=eval_transform)
-        if self.settings.is_demo_mode:
-            train_dataset = Subset(train_dataset, range(min(len(train_dataset), self.settings.demo_train_samples)))
-            val_dataset = Subset(val_dataset, range(min(len(val_dataset), self.settings.demo_val_samples)))
+        train_manifest, val_manifest, source_root = self.resolve_classification_dataset_files(self.config.dataset.strip())
+        class_to_idx = self.build_class_index(train_manifest, val_manifest)
+        train_dataset = ManifestClassificationDataset(
+            manifest_path=train_manifest,
+            source_root=source_root,
+            class_to_idx=class_to_idx,
+            transform=train_transform,
+        )
+        val_dataset = ManifestClassificationDataset(
+            manifest_path=val_manifest,
+            source_root=source_root,
+            class_to_idx=class_to_idx,
+            transform=eval_transform,
+        )
+        if self.config.use_demo_mode:
+            train_dataset = self.build_demo_subset(
+                train_dataset,
+                max_samples=self.settings.demo_train_samples,
+                seed=DEMO_SUBSET_SEED,
+            )
+            val_dataset = self.build_demo_subset(
+                val_dataset,
+                max_samples=self.settings.demo_val_samples,
+                seed=DEMO_SUBSET_SEED + 1,
+            )
         batch_size = self.config.params.batch_size
         return (
             DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0),
             DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0),
         )
 
-    def resolve_classification_dataset_dirs(self, dataset_name: str) -> tuple[Path, Path]:
-        """Resolve ImageFolder train/val directories for one dataset."""
-        dataset_root = self.data_root / dataset_name / "classification"
-        train_dir = dataset_root / "train"
-        val_dir = dataset_root / "val"
-        if not train_dir.exists() or not val_dir.exists():
-            raise FileNotFoundError(
-                "Classification dataset directory not found. Expected: "
-                f"{train_dir} and {val_dir}"
+    def build_demo_subset(
+        self,
+        dataset: Dataset,
+        *,
+        max_samples: int,
+        seed: int,
+    ) -> Dataset:
+        """Build a deterministic demo subset with class coverage when possible."""
+        if len(dataset) <= max_samples:
+            return dataset
+        subset_indices = self.build_demo_subset_indices(dataset, max_samples=max_samples, seed=seed)
+        return Subset(dataset, subset_indices)
+
+    def build_demo_subset_indices(
+        self,
+        dataset: Dataset,
+        *,
+        max_samples: int,
+        seed: int,
+    ) -> list[int]:
+        """Build deterministic subset indices for demo mode."""
+        targets = getattr(dataset, "targets", None)
+        if not isinstance(targets, list) or len(targets) != len(dataset):
+            shuffled_indices = list(range(len(dataset)))
+            random.Random(seed).shuffle(shuffled_indices)
+            return shuffled_indices[:max_samples]
+
+        rng = random.Random(seed)
+        indices_by_class: dict[int, list[int]] = {}
+        for index, target in enumerate(targets):
+            indices_by_class.setdefault(int(target), []).append(index)
+        for class_indices in indices_by_class.values():
+            rng.shuffle(class_indices)
+
+        selected_indices: list[int] = []
+        max_class_length = max(len(class_indices) for class_indices in indices_by_class.values())
+        for position in range(max_class_length):
+            for class_id in sorted(indices_by_class):
+                class_indices = indices_by_class[class_id]
+                if position >= len(class_indices):
+                    continue
+                selected_indices.append(class_indices[position])
+                if len(selected_indices) >= max_samples:
+                    return selected_indices
+        return selected_indices[:max_samples]
+
+    def build_class_index(self, train_manifest: Path, val_manifest: Path) -> dict[str, int]:
+        """Build a stable class index from the train and val manifests."""
+        class_names = sorted(self.collect_manifest_classes(train_manifest) | self.collect_manifest_classes(val_manifest))
+        if not class_names:
+            raise ValueError(
+                f"No classes found in manifests: train={train_manifest}, val={val_manifest}"
             )
-        return train_dir, val_dir
+        return {class_name: index for index, class_name in enumerate(class_names)}
+
+    def collect_manifest_classes(self, manifest_path: Path) -> set[str]:
+        """Collect class names from one manifest file."""
+        if not manifest_path.exists():
+            raise FileNotFoundError(f"Classification manifest not found: {manifest_path}")
+
+        class_names: set[str] = set()
+        for line_number, raw_line in enumerate(manifest_path.read_text(encoding="utf-8").splitlines(), start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            if "\t" in line:
+                _, class_name = line.rsplit("\t", maxsplit=1)
+            else:
+                parts = line.split(maxsplit=1)
+                if len(parts) != 2:
+                    raise ValueError(
+                        f"Invalid manifest line at {manifest_path}:{line_number}: {raw_line!r}"
+                    )
+                _, class_name = parts
+            class_names.add(class_name)
+        return class_names
+
+    def resolve_classification_dataset_files(self, dataset_name: str) -> tuple[Path, Path, Path]:
+        """Resolve manifest files and source root for one classification dataset."""
+        manifest_root = self.resolve_dataset_dir(parent_dir=self.data_root / "classification", dataset_name=dataset_name)
+        train_manifest = manifest_root / "train.txt"
+        val_manifest = manifest_root / "val.txt"
+        if not train_manifest.exists() or not val_manifest.exists():
+            raise FileNotFoundError(
+                "Classification manifests not found. Expected: "
+                f"{train_manifest} and {val_manifest}"
+            )
+
+        raw_root = self.resolve_dataset_dir(parent_dir=self.data_root / "raw", dataset_name=dataset_name)
+        prepared_source_root = raw_root / PREPARED_SOURCE_DIRNAME
+        source_root = prepared_source_root if prepared_source_root.exists() else raw_root
+        return train_manifest, val_manifest, source_root
+
+    def resolve_dataset_dir(self, parent_dir: Path, dataset_name: str) -> Path:
+        """Resolve one dataset directory with alias and case-insensitive fallback."""
+        if not parent_dir.exists():
+            raise FileNotFoundError(f"Dataset parent directory not found: {parent_dir}")
+
+        candidate_names = [dataset_name]
+
+        for candidate_name in candidate_names:
+            candidate_dir = parent_dir / candidate_name
+            if candidate_dir.exists():
+                return candidate_dir
+
+        normalized_candidates = {self.normalize_dataset_name(name) for name in candidate_names}
+        for child_dir in sorted(path for path in parent_dir.iterdir() if path.is_dir()):
+            if self.normalize_dataset_name(child_dir.name) in normalized_candidates:
+                return child_dir
+
+        raise FileNotFoundError(
+            f"Dataset directory not found under {parent_dir} for dataset={dataset_name!r}"
+        )
+
+    def normalize_dataset_name(self, dataset_name: str) -> str:
+        """Normalize one dataset name for tolerant directory lookup."""
+        return dataset_name.strip().lower().replace("_", "-")
 
     def build_optimizer(self, model: nn.Module) -> torch.optim.Optimizer:
         """Build the optimizer from structured params."""

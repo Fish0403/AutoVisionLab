@@ -142,15 +142,24 @@ MODEL_LABELS = {
     "resnet34": "ResNet34",
     "densenet121": "DenseNet121",
 }
-SUPPORTED_DATASETS = ["cifar10", "neu-cls"]
-DATASET_IMAGE_SIZE_OPTIONS = {
-    "cifar10": [32, 64, 96],
-    "neu-cls": [200, 224, 256],
-}
-DATASET_RUN_NAME_LABELS = {
-    "cifar10": "cifar10",
-    "neu-cls": "neu",
-}
+FALLBACK_DATASET_CATALOG = [
+    {
+        "name": "cifar10",
+        "is_ready_for_training": True,
+        "classification_dir": "data/classification/cifar10",
+        "original_image_size": 32,
+        "image_size_options": [32, 64, 96],
+        "message": "Fallback dataset entry.",
+    },
+    {
+        "name": "neu",
+        "is_ready_for_training": True,
+        "classification_dir": "data/classification/neu",
+        "original_image_size": 200,
+        "image_size_options": [200, 224, 256],
+        "message": "Fallback dataset entry.",
+    },
+]
 
 LOG_LIMIT = 60
 LIVE_LOG_CONTAINER: Any | None = None
@@ -219,7 +228,7 @@ def summarize_ranking_policy(ranking_policy: dict[str, Any]) -> str:
 
 def build_auto_run_name(dataset: str, model_name: str) -> str:
     """Build an auto-generated run name from the current dataset and model."""
-    dataset_label = DATASET_RUN_NAME_LABELS.get(dataset, dataset)
+    dataset_label = get_dataset_run_name_label(dataset)
     model_label = model_name.replace("_", "-")
     date_label = datetime.now().strftime("%Y%m%d")
     return f"{dataset_label}-{model_label}-{date_label}"
@@ -235,16 +244,88 @@ def sync_auto_run_name() -> None:
 
 def get_original_image_size(dataset: str, model_name: str) -> int:
     """Return the dataset-native image size used as the UI default."""
-    if dataset == "cifar10":
-        return 32
-    if dataset == "neu-cls":
-        return 200
+    dataset_info = get_dataset_info(dataset)
+    original_image_size = dataset_info.get("original_image_size")
+    if isinstance(original_image_size, int) and original_image_size > 0:
+        return original_image_size
     return 64
 
 
 def get_dataset_image_size_options(dataset: str) -> list[int]:
     """Return allowed image size options for one dataset."""
-    return DATASET_IMAGE_SIZE_OPTIONS.get(dataset, [get_original_image_size(dataset, "")])
+    dataset_info = get_dataset_info(dataset)
+    image_size_options = dataset_info.get("image_size_options") or []
+    if image_size_options:
+        return [int(size) for size in image_size_options]
+    return [get_original_image_size(dataset, "")]
+
+
+def load_dataset_catalog() -> list[dict[str, Any]]:
+    """Load dataset readiness info from the backend."""
+    payload = request_json("/datasets", FALLBACK_DATASET_CATALOG)
+    return payload if isinstance(payload, list) and payload else deepcopy(FALLBACK_DATASET_CATALOG)
+
+
+def get_dataset_catalog() -> list[dict[str, Any]]:
+    """Return the active dataset catalog for the current session."""
+    catalog = st.session_state.get("dataset_catalog")
+    if isinstance(catalog, list) and catalog:
+        return catalog
+    return deepcopy(FALLBACK_DATASET_CATALOG)
+
+
+def get_dataset_info(dataset_name: str) -> dict[str, Any]:
+    """Return one dataset entry from the current catalog."""
+    for dataset_info in get_dataset_catalog():
+        if dataset_info.get("name") == dataset_name:
+            return dataset_info
+    for dataset_info in FALLBACK_DATASET_CATALOG:
+        if dataset_info.get("name") == dataset_name:
+            return dataset_info
+    return {"name": dataset_name, "original_image_size": 64, "image_size_options": [64]}
+
+
+def get_dataset_run_name_label(dataset_name: str) -> str:
+    """Return the label used for auto-generated run names."""
+    return str(get_dataset_info(dataset_name).get("name") or dataset_name)
+
+
+def is_oom_failure(training_experiment_detail: dict[str, Any]) -> bool:
+    """Return whether one failed experiment looks like a CUDA OOM."""
+    decision_reason = str(training_experiment_detail.get("decision_reason") or "")
+    return "cuda out of memory" in decision_reason.lower()
+
+
+def get_ready_dataset_options(current_dataset: str | None = None) -> list[str]:
+    """Return dataset names that should appear in the dataset selectbox."""
+    visible_datasets = [
+        dataset_info["name"]
+        for dataset_info in get_dataset_catalog()
+        if (
+            dataset_info.get("classification_dir")
+            and dataset_info.get("train_manifest_exists")
+            and dataset_info.get("val_manifest_exists")
+        )
+    ]
+    if not visible_datasets:
+        visible_datasets = [
+            dataset_info["name"]
+            for dataset_info in FALLBACK_DATASET_CATALOG
+            if dataset_info.get("classification_dir")
+        ]
+    if current_dataset and current_dataset not in visible_datasets:
+        visible_datasets.append(current_dataset)
+    return visible_datasets
+
+
+def get_default_dataset_name() -> str:
+    """Return the preferred default dataset for the UI."""
+    ready_dataset_options = get_ready_dataset_options()
+    if "neu" in ready_dataset_options:
+        return "neu"
+    if ready_dataset_options:
+        return ready_dataset_options[0]
+    return "cifar10"
 
 
 def get_model_label(model_name: str) -> str:
@@ -1094,10 +1175,12 @@ def get_best_experiment_detail(run_id: str) -> dict[str, Any] | None:
 
 def load_reference_config(selected_run_id: str) -> dict[str, Any]:
     """Load the latest config for the selected run or return defaults."""
+    default_dataset = get_default_dataset_name()
     default_config = {
-        "run_name": build_auto_run_name("neu-cls", "mobilenet_v2"),
-        "dataset": "neu-cls",
+        "run_name": build_auto_run_name(default_dataset, "mobilenet_v2"),
+        "dataset": default_dataset,
         "model_name": "mobilenet_v2",
+        "use_demo_mode": False,
         "participates_in_ranking": True,
         "search_policy": default_search_policy(),
         "ranking_policy": default_ranking_policy(),
@@ -1105,7 +1188,7 @@ def load_reference_config(selected_run_id: str) -> dict[str, Any]:
             "optimizer": "adamw",
             "learning_rate": 0.003,
             "batch_size": 128,
-            "image_size": get_original_image_size("neu-cls", "mobilenet_v2"),
+            "image_size": get_original_image_size(default_dataset, "mobilenet_v2"),
             "epochs": 10,
             "weight_decay": 0.0001,
             "scheduler": "cosine",
@@ -1134,6 +1217,7 @@ def load_reference_config(selected_run_id: str) -> dict[str, Any]:
         ),
         "dataset": latest_experiment["config"]["dataset"],
         "model_name": latest_experiment["config"]["model_name"],
+        "use_demo_mode": latest_experiment["config"].get("use_demo_mode", False),
         "participates_in_ranking": latest_experiment["config"].get("participates_in_ranking", True),
         "search_policy": latest_experiment["config"].get("search_policy") or default_search_policy(),
         "ranking_policy": latest_experiment["config"].get("ranking_policy") or default_ranking_policy(),
@@ -1187,7 +1271,8 @@ def build_payload_from_form(form_values: dict[str, Any]) -> dict[str, Any]:
             "dataset": form_values["dataset"],
             "model_family": model_config["model_family"],
             "model_name": model_name,
-            "parameter_space_version": model_config["parameter_space_version"],
+        "parameter_space_version": model_config["parameter_space_version"],
+            "use_demo_mode": bool(form_values.get("use_demo_mode", False)),
             "participates_in_ranking": bool(form_values.get("participates_in_ranking", True)),
             "search_policy": form_values["search_policy"],
             "ranking_policy": form_values["ranking_policy"],
@@ -1280,6 +1365,7 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
         st.session_state["run_name"] = reference_config["run_name"]
         st.session_state["dataset"] = reference_config["dataset"]
         st.session_state["model_name"] = reference_config["model_name"]
+        st.session_state["use_demo_mode"] = bool(reference_config.get("use_demo_mode", False))
         st.session_state["optimizer"] = reference_config["params"]["optimizer"]
         st.session_state["learning_rate"] = reference_config["params"]["learning_rate"]
         st.session_state["batch_size"] = reference_config["params"]["batch_size"]
@@ -1346,7 +1432,8 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
         with top_left:
             st.text_input("Run Name", key="run_name")
         with top_mid:
-            st.selectbox("Dataset", options=SUPPORTED_DATASETS, key="dataset", on_change=sync_auto_run_name)
+            dataset_options = get_ready_dataset_options(st.session_state.get("dataset"))
+            st.selectbox("Dataset", options=dataset_options, key="dataset", on_change=sync_auto_run_name)
         with top_right:
             model_name = st.selectbox(
                 "Model",
@@ -1376,9 +1463,13 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
                 key="auto_train_time_budget_minutes",
             )
         with row_two[2]:
-            pass
+            st.checkbox("Use Demo Subset", key="use_demo_mode")
 
         st.caption("Current Managed Params: " + summarize_ai_managed_params(st.session_state))
+        if st.session_state.get("use_demo_mode"):
+            st.caption("Mode: Demo subset training is enabled for this run.")
+        else:
+            st.caption("Mode: Full dataset training is enabled for this run.")
 
         with st.expander("AI Search Policy", expanded=False):
             image_size_choices = get_image_size_search_choices(
@@ -1486,6 +1577,7 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
             "run_name": st.session_state["run_name"],
             "dataset": st.session_state["dataset"],
             "model_name": st.session_state["model_name"],
+            "use_demo_mode": st.session_state["use_demo_mode"],
             "optimizer": st.session_state["optimizer"],
             "learning_rate": st.session_state["learning_rate"],
             "batch_size": st.session_state["batch_size"],
@@ -1854,6 +1946,7 @@ def main() -> None:
     st.set_page_config(page_title="AutoVisionLab Demo", layout="wide")
     st.title("AutoVisionLab Demo")
     st.caption("左侧训练，右侧看结果。`Train` 单次执行后给建议；`Auto Train` 自动连续调优并总结本轮优化结果。")
+    st.session_state["dataset_catalog"] = load_dataset_catalog()
     post_action_notice = st.session_state.pop("post_action_notice", None)
     if post_action_notice:
         if post_action_notice["level"] == "success":
@@ -1912,7 +2005,16 @@ def main() -> None:
                 )
                 if not ok:
                     append_activity_log(suggestion_message)
-            st.success(f"Training finished with status: {training_status}")
+            if training_status == "failed":
+                if is_oom_failure(training_experiment_detail):
+                    st.error(
+                        "Training failed: CUDA out of memory. "
+                        "Try a smaller batch size, or reduce image size if needed."
+                    )
+                else:
+                    st.error(f"Training failed with status: {training_status}")
+            else:
+                st.success(f"Training finished with status: {training_status}")
 
 
 if __name__ == "__main__":

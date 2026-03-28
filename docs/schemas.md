@@ -59,8 +59,8 @@
   "message": "Run detail loaded.",
   "data": {
     "id": "run_ab12cd34",
-    "name": "neu-cls-resnet18-baseline",
-    "dataset": "neu-cls",
+    "name": "neu-resnet18-baseline",
+    "dataset": "neu",
     "model_name": "resnet18",
     "status": "active",
     "notes": null,
@@ -368,7 +368,7 @@ result 表示一次训练完成后的结构化输出。
 
 更具体的运行规则见：
 
-- [docs/experiment_policy.md](/home/fish/AutoVisionLab/docs/experiment_policy.md)
-- [docs/run_promotion_policy.md](/home/fish/AutoVisionLab/docs/run_promotion_policy.md)
-- [docs/auto_train_search_policy.md](/home/fish/AutoVisionLab/docs/auto_train_search_policy.md)
-- [docs/auto_train_stop_policy.md](/home/fish/AutoVisionLab/docs/auto_train_stop_policy.md)
+- [docs/experiment_policy.md](experiment_policy.md)
+- [docs/run_promotion_policy.md](run_promotion_policy.md)
+- [docs/auto_train_search_policy.md](auto_train_search_policy.md)
+- [docs/auto_train_stop_policy.md](auto_train_stop_policy.md)

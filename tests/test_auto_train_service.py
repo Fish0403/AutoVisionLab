@@ -86,6 +86,7 @@ class AutoTrainServiceTest(unittest.TestCase):
                     "model_family": "mobilenet",
                     "model_name": "mobilenet_v2",
                     "parameter_space_version": "test-v1",
+                    "use_demo_mode": True,
                     "participates_in_ranking": True,
                     "search_policy": {
                         "allow_basic_hparam_search": True,
@@ -131,6 +132,7 @@ class AutoTrainServiceTest(unittest.TestCase):
 
         self.assertIn("search_policy", followup_config)
         self.assertIn("ranking_policy", followup_config)
+        self.assertTrue(followup_config["use_demo_mode"])
         self.assertEqual(followup_config["ranking_policy"]["max_image_size"], 64)
         self.assertEqual(followup_config["params"]["learning_rate"], 0.001)
 

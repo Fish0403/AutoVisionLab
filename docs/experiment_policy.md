@@ -72,13 +72,13 @@ data/
 
 ## 6. 细则文档
 
-- [docs/run_promotion_policy.md](/home/fish/AutoVisionLab/docs/run_promotion_policy.md)
+- [docs/run_promotion_policy.md](run_promotion_policy.md)
   - run 晋级与回退规则
-- [docs/ranking_policy.md](/home/fish/AutoVisionLab/docs/ranking_policy.md)
+- [docs/ranking_policy.md](ranking_policy.md)
   - run 内实验的可配置评价体系
-- [docs/auto_train_search_policy.md](/home/fish/AutoVisionLab/docs/auto_train_search_policy.md)
+- [docs/auto_train_search_policy.md](auto_train_search_policy.md)
   - Auto Train 搜索策略
-- [docs/auto_train_stop_policy.md](/home/fish/AutoVisionLab/docs/auto_train_stop_policy.md)
+- [docs/auto_train_stop_policy.md](auto_train_stop_policy.md)
   - Auto Train 停止策略
-- [docs/schemas.md](/home/fish/AutoVisionLab/docs/schemas.md)
+- [docs/schemas.md](schemas.md)
   - 结构化对象说明

@@ -132,6 +132,7 @@ def _build_followup_config(latest_experiment: dict, proposal_changes: dict) -> d
         "model_family": latest_experiment["config"]["model_family"],
         "model_name": latest_experiment["config"]["model_name"],
         "parameter_space_version": latest_experiment["config"]["parameter_space_version"],
+        "use_demo_mode": latest_experiment["config"].get("use_demo_mode", False),
         "participates_in_ranking": latest_experiment["config"].get("participates_in_ranking", True),
         "search_policy": latest_experiment["config"].get("search_policy") or {},
         "ranking_policy": latest_experiment["config"].get("ranking_policy") or {},

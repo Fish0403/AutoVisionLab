@@ -20,6 +20,24 @@ TRAINING_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="autovi
 STOP_EVENTS: dict[str, Event] = {}
 
 
+def is_cuda_oom_error(error: Exception) -> bool:
+    """Return whether one exception represents a CUDA OOM failure."""
+    error_message = str(error).lower()
+    return "cuda out of memory" in error_message or "cuda error: out of memory" in error_message
+
+
+def build_failure_reason(error: Exception) -> str:
+    """Build a user-facing failure reason while preserving the raw error context."""
+    raw_message = str(error)
+    if is_cuda_oom_error(error):
+        return (
+            "CUDA out of memory. Try a smaller batch size, "
+            "or reduce image size if needed. "
+            f"Raw error: {raw_message}"
+        )
+    return raw_message
+
+
 def cleanup_stale_running_experiments(db: Session) -> int:
     """Discard experiments left in running state after an unclean shutdown."""
     stale_experiments = db.scalars(select(ExperimentModel).where(ExperimentModel.status == "running")).all()
@@ -63,7 +81,7 @@ def _run_experiment_job(experiment_id: str) -> None:
         if experiment is not None:
             append_run_log(experiment.run_id, f"[{experiment_id}] training failed: {error}")
             experiment.decision = "crash"
-            experiment.decision_reason = str(error)
+            experiment.decision_reason = build_failure_reason(error)
             db.commit()
     finally:
         STOP_EVENTS.pop(experiment_id, None)

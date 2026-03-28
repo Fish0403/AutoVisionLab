@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from pathlib import Path
+import shutil
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -18,6 +19,70 @@ from app.schemas.common import PointMetric
 from app.schemas.experiment import ExperimentCreateRequest, ExperimentDecisionRequest, ExperimentDetailResponse, ExperimentSummary
 from app.schemas.parameter_space import EditableParameterSpace, ExperimentConfig
 from app.schemas.run import RunCreateRequest, RunDetailResponse, RunListItem, RunMetricsResponse, RunSummaryResponse
+
+
+def _get_artifact_root() -> Path:
+    """Return the configured artifact root."""
+    settings = get_settings()
+    artifact_root = Path(settings.artifact_root)
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    return artifact_root
+
+
+def _delete_file_if_exists(file_path: Path) -> int:
+    """Delete one file if it exists and return delete count."""
+    if not file_path.exists():
+        return 0
+    file_path.unlink()
+    return 1
+
+
+def _delete_experiment_artifacts(experiment_ids: list[str]) -> int:
+    """Delete checkpoint files for the given experiments."""
+    artifact_root = _get_artifact_root()
+    deleted_files = 0
+    for experiment_id in experiment_ids:
+        deleted_files += _delete_file_if_exists(artifact_root / "checkpoints" / f"{experiment_id}.pt")
+    return deleted_files
+
+
+def _delete_run_artifacts(run_ids: list[str]) -> int:
+    """Delete run log files for the given runs."""
+    artifact_root = _get_artifact_root()
+    deleted_files = 0
+    for run_id in run_ids:
+        deleted_files += _delete_file_if_exists(artifact_root / "runs" / f"{run_id}.log")
+    return deleted_files
+
+
+def _clear_all_artifacts() -> int:
+    """Delete all managed artifact files."""
+    artifact_root = _get_artifact_root()
+    deleted_files = 0
+    for child_name in ("runs", "checkpoints"):
+        child_dir = artifact_root / child_name
+        if not child_dir.exists():
+            continue
+        for path in child_dir.rglob("*"):
+            if path.is_file():
+                path.unlink()
+                deleted_files += 1
+        shutil.rmtree(child_dir)
+    return deleted_files
+
+
+def _delete_recorded_artifact_paths(result_models: list[ResultModel]) -> int:
+    """Delete artifact files recorded in persisted result payloads."""
+    deleted_files = 0
+    for result_model in result_models:
+        artifacts = result_model.artifacts or {}
+        for artifact_key in ("log_path", "checkpoint_path"):
+            artifact_path_text = artifacts.get(artifact_key)
+            if not artifact_path_text:
+                continue
+            deleted_files += _delete_file_if_exists(Path(artifact_path_text))
+    return deleted_files
+
 
 def _refresh_run_summary(db: Session, run_id: str) -> RunModel | None:
     run = db.get(RunModel, run_id)
@@ -392,6 +457,9 @@ def get_run_metrics(db: Session, run_id: str, metric_name: str) -> RunMetricsRes
 
 def clear_all_records(db: Session) -> dict[str, int]:
     """Delete all persisted demo records."""
+    result_models = db.scalars(select(ResultModel)).all()
+    deleted_artifact_files = _delete_recorded_artifact_paths(result_models)
+    deleted_artifact_files += _clear_all_artifacts()
     deleted_results = db.query(ResultModel).delete()
     deleted_experiments = db.query(ExperimentModel).delete()
     deleted_runs = db.query(RunModel).delete()
@@ -400,6 +468,7 @@ def clear_all_records(db: Session) -> dict[str, int]:
         "deleted_runs": deleted_runs,
         "deleted_experiments": deleted_experiments,
         "deleted_results": deleted_results,
+        "deleted_artifact_files": deleted_artifact_files,
     }
 
 
@@ -413,6 +482,9 @@ def clear_run_records(db: Session, run_id: str) -> dict[str, int] | None:
         experiment.id
         for experiment in db.scalars(select(ExperimentModel).where(ExperimentModel.run_id == run_id)).all()
     ]
+    result_models = db.scalars(select(ResultModel).where(ResultModel.experiment_id.in_(experiment_ids))).all()
+    deleted_artifact_files = _delete_recorded_artifact_paths(result_models)
+    deleted_artifact_files += _delete_run_artifacts([run_id]) + _delete_experiment_artifacts(experiment_ids)
     deleted_results = 0
     if experiment_ids:
         deleted_results = (
@@ -431,6 +503,7 @@ def clear_run_records(db: Session, run_id: str) -> dict[str, int] | None:
         "deleted_runs": 1,
         "deleted_experiments": deleted_experiments,
         "deleted_results": deleted_results,
+        "deleted_artifact_files": deleted_artifact_files,
     }
 
 
@@ -444,11 +517,7 @@ def discard_experiment(db: Session, experiment_id: str) -> ExperimentDetailRespo
     if stored_result is not None:
         db.delete(stored_result)
 
-    settings = get_settings()
-    artifact_root = Path(settings.artifact_root)
-    for artifact_path in (artifact_root / "checkpoints" / f"{experiment_id}.pt",):
-        if artifact_path.exists():
-            artifact_path.unlink()
+    _delete_experiment_artifacts([experiment_id])
 
     experiment.status = "discarded"
     experiment.decision = "discard"

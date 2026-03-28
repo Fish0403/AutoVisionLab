@@ -2,7 +2,7 @@
 
 这份文档只描述 `Auto Train` 如何继续搜索，不讨论停止条件。
 
-停止条件见 [docs/auto_train_stop_policy.md](/home/fish/AutoVisionLab/docs/auto_train_stop_policy.md)。
+停止条件见 [docs/auto_train_stop_policy.md](auto_train_stop_policy.md)。
 
 ## 1. 基本原则
 
