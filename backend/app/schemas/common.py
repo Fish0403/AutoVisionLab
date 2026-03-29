@@ -6,8 +6,8 @@ from pydantic import BaseModel, Field
 
 
 TaskType = Literal["classification"]
-ModelFamily = Literal["mobilenet", "googlenet", "resnet", "densenet"]
-ModelName = Literal["mobilenet_v2", "googlenet", "resnet18", "resnet34", "densenet121"]
+ModelFamily = Literal["mobilenet", "googlenet", "resnet"]
+ModelName = Literal["mobilenet_v3_small", "googlenet", "resnet18"]
 RiskLevel = Literal["low", "medium", "high"]
 ExperimentStatus = Literal["draft", "queued", "running", "success", "failed", "discarded"]
 RunStatus = Literal["draft", "active", "paused", "completed", "failed"]
@@ -28,6 +28,8 @@ class ResourceUsage(BaseModel):
 
     gpu_memory_mb: int | None = None
     training_seconds: int | None = None
+    latency_ms: float | None = Field(default=None, ge=0)
+    parameter_count_million: float | None = Field(default=None, ge=0)
 
 
 class MetricsSnapshot(BaseModel):

@@ -14,7 +14,8 @@ AutoVisionLab 是一个面向图像分类实验的自主训练 Web 平台。
 
 平台当前坚持两个边界：
 
-- 不开放模型结构搜索
+- 不开放自由代码生成式模型搜索
+- 允许白名单内的结构化 recipe 模块变化
 - AI 只能在白名单参数内搜索
 
 ## 2. 任务范围
@@ -30,16 +31,14 @@ AutoVisionLab 是一个面向图像分类实验的自主训练 Web 平台。
 
 当前可选模型：
 
-- `MobileNetV2`
+- `MobileNetV3 Small`
 - `GoogLeNet`
 - `ResNet18`
-- `ResNet34`
-- `DenseNet121`
 
 当前数据读取方式：
 
-- 平台统一读取 `data/<dataset>/classification/train|val/<class>/`
-- 原始下载内容保留在 `data/<dataset>/raw/`
+- 平台统一读取 `data/classification/<dataset>/train.txt` 和 `val.txt`
+- 原始数据保留在 `data/raw/<dataset>/`
 
 不在本项目当前范围内的内容：
 
@@ -175,14 +174,14 @@ AI 搜索不是无限制调参，而是受 `search_policy` 控制。
 
 当前规则：
 
-- 前 `50%` 轮次允许基础超参数主导
-- 后 `50%` 时间预算优先考虑 augmentation / loss / strategy 变化
+- 前 `3` 轮允许基础超参数主导
+- 第 `4` 轮起优先考虑 augmentation / loss / strategy 变化
 - 若当前 run 的可行动作仍不足以支持切维或非 `basic` 变化，系统会保留可执行性，而不是强行制造无解约束
 
 这样做的原因：
 
-- 前半段先快速找到稳定区间
-- 后半段尽量避免一直围绕 `lr / batch_size / wd / scheduler` 打转
+- 前几轮先快速找到稳定区间
+- 后续尽量避免一直围绕 `lr / batch_size / wd / scheduler` 打转
 - 让 auto-train 的后半程更像真正的策略探索，而不是重复微调
 
 ## 7. 预算与可比性设计
@@ -301,19 +300,31 @@ data/
 
 - [README.md](../README.md)
   - 环境、启动、数据准备、目录结构
+- [docs/api.md](api.md)
+  - HTTP 接口、请求体、响应体与常见错误
 - [docs/plan.md](plan.md)
   - 项目定位、系统边界、核心设计
 - [docs/tasks.md](tasks.md)
   - 已完成 / 进行中 / 待做事项
-- [docs/schemas.md](schemas.md)
-  - 结构化数据与示例
-- [docs/experiment_policy.md](experiment_policy.md)
+- [docs/schemas/README.md](schemas/README.md)
+  - 结构化对象总览与示例
+- [docs/schemas/model_recipe_schema.md](schemas/model_recipe_schema.md)
+  - `model_recipe` 结构设计，`v1` 先聚焦分类与 `MobileNetV3 Small`
+- [docs/schemas/train_hyp_schema.md](schemas/train_hyp_schema.md)
+  - `train_hyp` 结构设计，尽量贴近 YOLO 风格命名
+- [docs/schemas/dataset_recipe_schema.md](schemas/dataset_recipe_schema.md)
+  - `dataset_recipe` 结构设计，先兼容分类 manifest，再为检测/分割预留
+- [docs/policies/README.md](policies/README.md)
+  - 策略文档分组入口
+- [docs/policies/experiment_policy.md](policies/experiment_policy.md)
   - 实验运行总览
-- [docs/run_promotion_policy.md](run_promotion_policy.md)
+- [docs/policies/run_promotion_policy.md](policies/run_promotion_policy.md)
   - run 晋级与回退规则
-- [docs/auto_train_search_policy.md](auto_train_search_policy.md)
+- [docs/policies/auto_train_search_policy.md](policies/auto_train_search_policy.md)
   - Auto Train 搜索策略
-- [docs/auto_train_stop_policy.md](auto_train_stop_policy.md)
+- [docs/policies/auto_train_stop_policy.md](policies/auto_train_stop_policy.md)
   - Auto Train 停止策略
+- [docs/policies/ranking_policy.md](policies/ranking_policy.md)
+  - Ranking Policy 与成本 gate
 - [CHANGELOG.md](../CHANGELOG.md)
   - 历史变更记录

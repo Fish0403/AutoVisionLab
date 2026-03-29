@@ -12,6 +12,6 @@ class RunPolicy(BaseModel):
     consecutive_failures_before_field_cooldown: int = Field(default=2, ge=1)
     field_cooldown_rounds: int = Field(default=2, ge=1)
     stagnation_rounds_for_dimension_switch: int = Field(default=3, ge=1)
-    auto_train_non_basic_change_after_budget_ratio: float = Field(default=0.5, ge=0, le=1)
+    auto_train_non_basic_change_after_round: int = Field(default=3, ge=0)
     auto_train_early_stop_stagnation_rounds: int = Field(default=6, ge=1)
     auto_train_min_successful_attempts_per_dimension: int = Field(default=2, ge=1)

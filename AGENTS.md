@@ -47,6 +47,32 @@
 - 当仓库对应区域已经有测试目录或测试模式时，行为变更应同步新增或更新测试。
 - 测试名称应能表达被测行为和具体场景。
 
+## 上下文加载
+
+- 进入本仓库开始新任务时，默认先建立最小上下文，不要一次性全文读取所有文档。
+- 默认优先阅读：
+  - [README.md](README.md)
+  - [docs/plan.md](docs/plan.md)
+  - [docs/tasks.md](docs/tasks.md)
+  - [docs/policies/README.md](docs/policies/README.md)
+  - [docs/schemas/README.md](docs/schemas/README.md)
+- 完成上述默认阅读后，应在首次回复或首次进度更新中显式告诉用户已经读了这些启动文档，避免让用户猜测是否已建立上下文。
+- 如果任务涉及 `auto-train`、proposal、搜索行为、停止条件或晋级逻辑，再按需阅读：
+  - [docs/policies/auto_train_search_policy.md](docs/policies/auto_train_search_policy.md)
+  - [docs/policies/auto_train_stop_policy.md](docs/policies/auto_train_stop_policy.md)
+  - [docs/policies/ranking_policy.md](docs/policies/ranking_policy.md)
+  - [docs/policies/run_promotion_policy.md](docs/policies/run_promotion_policy.md)
+  - [docs/policies/experiment_policy.md](docs/policies/experiment_policy.md)
+- 如果任务涉及 `ExperimentConfig`、API payload、recipe、trainer 配置、数据对象或结构化字段，再按需阅读：
+  - [docs/schemas/model_recipe_schema.md](docs/schemas/model_recipe_schema.md)
+  - [docs/schemas/train_hyp_schema.md](docs/schemas/train_hyp_schema.md)
+  - [docs/schemas/dataset_recipe_schema.md](docs/schemas/dataset_recipe_schema.md)
+- 如果任务涉及接口定义、请求体、响应体或错误码，再按需阅读：
+  - [docs/api.md](docs/api.md)
+- 如果任务涉及数据准备、manifest、原始数据目录或切分脚本，再按需阅读：
+  - [data/README.md](data/README.md)
+- 按需加载时，只读取与当前任务直接相关的文档，不要把整个 `docs/` 目录一次性读完。
+
 ## 协作记录
 
 - 默认将用户视为正在旁观执行过程的协作者；在无相反要求时，优先保证过程可跟随、可检查，而不是单纯追求速度。

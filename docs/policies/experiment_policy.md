@@ -7,15 +7,14 @@
 - 任务类型：图像分类
 - 一个 run 固定一个数据集和一个模型
 - AI 只能在结构化白名单参数内搜索
-- 不开放模型结构搜索
+- 不开放自由代码生成式模型搜索
+- 允许白名单内的结构化 recipe 模块变化
 
 当前可选模型：
 
-- `MobileNetV2`
+- `MobileNetV3 Small`
 - `GoogLeNet`
 - `ResNet18`
-- `ResNet34`
-- `DenseNet121`
 
 ## 2. Run 基本边界
 
@@ -37,7 +36,7 @@
 - `batch_size`
 - `epochs`
 - `image_size`
-- `max_wall_clock_minutes`
+- `use_demo_mode`
 
 ## 4. 数据与产物边界
 
@@ -61,24 +60,26 @@
 
 ```text
 data/
-  <dataset_name>/
-    raw/
-    classification/
-      train/
-        <class_name>/
-      val/
-        <class_name>/
+  raw/
+    <dataset_name>/
+  classification/
+    <dataset_name>/
+      train.txt
+      val.txt
+      test.txt
 ```
 
 ## 6. 细则文档
 
-- [docs/run_promotion_policy.md](run_promotion_policy.md)
+- [README.md](README.md)
+  - 策略文档总览
+- [run_promotion_policy.md](run_promotion_policy.md)
   - run 晋级与回退规则
-- [docs/ranking_policy.md](ranking_policy.md)
+- [ranking_policy.md](ranking_policy.md)
   - run 内实验的可配置评价体系
-- [docs/auto_train_search_policy.md](auto_train_search_policy.md)
+- [auto_train_search_policy.md](auto_train_search_policy.md)
   - Auto Train 搜索策略
-- [docs/auto_train_stop_policy.md](auto_train_stop_policy.md)
+- [auto_train_stop_policy.md](auto_train_stop_policy.md)
   - Auto Train 停止策略
-- [docs/schemas.md](schemas.md)
+- [../schemas/README.md](../schemas/README.md)
   - 结构化对象说明

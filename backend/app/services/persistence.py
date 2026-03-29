@@ -12,12 +12,14 @@ from app.core.settings import get_settings
 from app.models.experiment import ExperimentModel
 from app.models.result import ResultModel
 from app.models.run import RunModel
+from app.services.parameter_space import get_parameter_space
 from app.services.run_logging import append_run_log
 from app.services.run_policy import evaluate_promotion, get_experiment_ranking_policy
 from app.schemas.ai import ProposalSchema, ReflectionSchema, ResultSchema
 from app.schemas.common import PointMetric
 from app.schemas.experiment import ExperimentCreateRequest, ExperimentDecisionRequest, ExperimentDetailResponse, ExperimentSummary
 from app.schemas.parameter_space import EditableParameterSpace, ExperimentConfig
+from app.schemas.ranking_policy import RankingMetricMode, RankingPolicy
 from app.schemas.run import RunCreateRequest, RunDetailResponse, RunListItem, RunMetricsResponse, RunSummaryResponse
 
 
@@ -173,10 +175,129 @@ def _to_experiment_summary(experiment: ExperimentModel) -> ExperimentSummary:
     )
 
 
+def _get_experiment_metric_value(experiment: ExperimentModel, metric_name: str) -> float | None:
+    """Return one comparable metric from experiment result payloads."""
+    result_payload = experiment.result or {}
+    metrics_payload = result_payload.get("metrics") or {}
+    resource_payload = result_payload.get("resource") or {}
+    if metric_name in {"training_seconds", "latency_ms", "parameter_count_million"}:
+        metric_value = resource_payload.get(metric_name)
+    else:
+        metric_value = metrics_payload.get(metric_name)
+    return float(metric_value) if isinstance(metric_value, (int, float)) else None
+
+
+def _compute_metric_improvement(
+    candidate_value: float,
+    incumbent_value: float,
+    *,
+    metric_mode: RankingMetricMode,
+) -> float:
+    """Return positive values when the candidate improves the target metric."""
+    if metric_mode == "max":
+        return candidate_value - incumbent_value
+    return incumbent_value - candidate_value
+
+
+def _select_best_quality_experiment(
+    experiments: list[ExperimentModel],
+    *,
+    ranking_policy: RankingPolicy,
+) -> ExperimentModel | None:
+    """Return the best successful experiment by primary metric only."""
+    successful_experiments = [experiment for experiment in experiments if experiment.status == "success"]
+    if not successful_experiments:
+        return None
+
+    best_experiment: ExperimentModel | None = None
+    best_metric_value: float | None = None
+    for experiment in successful_experiments:
+        metric_value = _get_experiment_metric_value(experiment, ranking_policy.primary_metric)
+        if metric_value is None:
+            continue
+        if best_experiment is None or best_metric_value is None:
+            best_experiment = experiment
+            best_metric_value = metric_value
+            continue
+        improvement = _compute_metric_improvement(
+            metric_value,
+            best_metric_value,
+            metric_mode=ranking_policy.primary_metric_mode,
+        )
+        if improvement > 0:
+            best_experiment = experiment
+            best_metric_value = metric_value
+    return best_experiment or successful_experiments[0]
+
+
+def _select_best_efficiency_experiment(experiments: list[ExperimentModel]) -> ExperimentModel | None:
+    """Return the most deployment-efficient successful experiment."""
+    successful_experiments = [experiment for experiment in experiments if experiment.status == "success"]
+    if not successful_experiments:
+        return None
+
+    def efficiency_key(experiment: ExperimentModel) -> tuple[float, float, float, float]:
+        result_payload = experiment.result or {}
+        metrics_payload = result_payload.get("metrics") or {}
+        resource_payload = result_payload.get("resource") or {}
+        latency_ms = resource_payload.get("latency_ms")
+        parameter_count_million = resource_payload.get("parameter_count_million")
+        training_seconds = resource_payload.get("training_seconds")
+        top1_acc = metrics_payload.get("top1_acc")
+        return (
+            float(latency_ms) if isinstance(latency_ms, (int, float)) else float("inf"),
+            float(parameter_count_million) if isinstance(parameter_count_million, (int, float)) else float("inf"),
+            float(training_seconds) if isinstance(training_seconds, (int, float)) else float("inf"),
+            -float(top1_acc) if isinstance(top1_acc, (int, float)) else float("inf"),
+        )
+
+    return min(successful_experiments, key=efficiency_key)
+
+
+def _select_best_tradeoff_experiment(
+    experiments: list[ExperimentModel],
+    *,
+    ranking_policy: RankingPolicy,
+    best_experiment: ExperimentModel | None,
+) -> ExperimentModel | None:
+    """Return one efficient experiment within the primary-metric parity band of the best result."""
+    successful_experiments = [experiment for experiment in experiments if experiment.status == "success"]
+    if not successful_experiments:
+        return None
+    if best_experiment is None:
+        return _select_best_efficiency_experiment(experiments)
+
+    best_primary_metric = _get_experiment_metric_value(best_experiment, ranking_policy.primary_metric)
+    if best_primary_metric is None:
+        return _select_best_efficiency_experiment(experiments)
+
+    parity_candidates: list[ExperimentModel] = []
+    for experiment in successful_experiments:
+        candidate_primary_metric = _get_experiment_metric_value(experiment, ranking_policy.primary_metric)
+        if candidate_primary_metric is None:
+            continue
+        if abs(candidate_primary_metric - best_primary_metric) <= ranking_policy.primary_metric_parity_epsilon:
+            parity_candidates.append(experiment)
+
+    if not parity_candidates:
+        return best_experiment
+    return _select_best_efficiency_experiment(parity_candidates) or best_experiment
+
+
 def _to_run_detail(db: Session, run: RunModel) -> RunDetailResponse:
     experiments = db.scalars(
         select(ExperimentModel).where(ExperimentModel.run_id == run.id).order_by(ExperimentModel.created_at.asc())
     ).all()
+    baseline_experiment = experiments[0] if experiments else None
+    ranking_policy = get_experiment_ranking_policy(baseline_experiment)
+    best_quality_experiment = _select_best_quality_experiment(experiments, ranking_policy=ranking_policy)
+    best_experiment = next((experiment for experiment in experiments if experiment.id == run.best_experiment_id), None)
+    best_efficiency_experiment = _select_best_efficiency_experiment(experiments)
+    best_tradeoff_experiment = _select_best_tradeoff_experiment(
+        experiments,
+        ranking_policy=ranking_policy,
+        best_experiment=best_quality_experiment,
+    )
     return RunDetailResponse(
         id=run.id,
         name=run.name,
@@ -185,7 +306,10 @@ def _to_run_detail(db: Session, run: RunModel) -> RunDetailResponse:
         status=run.status,
         notes=run.notes,
         baseline_experiment_id=run.baseline_experiment_id,
+        best_quality_experiment_id=best_quality_experiment.id if best_quality_experiment is not None else None,
         best_experiment_id=run.best_experiment_id,
+        best_efficiency_experiment_id=best_efficiency_experiment.id if best_efficiency_experiment is not None else None,
+        best_tradeoff_experiment_id=best_tradeoff_experiment.id if best_tradeoff_experiment is not None else None,
         frontier_experiment_id=run.frontier_experiment_id,
         experiments=[_to_experiment_summary(experiment) for experiment in experiments],
     )
@@ -249,6 +373,9 @@ def create_experiment(db: Session, request: ExperimentCreateRequest) -> Experime
         raise ValueError("Experiment model_name must match its parent run")
     if request.config.dataset != run.dataset:
         raise ValueError("Experiment dataset must match its parent run")
+    server_parameter_space = get_parameter_space(request.config.model_name)
+    if server_parameter_space is None:
+        raise ValueError(f"Parameter space not found for model {request.config.model_name}")
     if request.parameter_space.model_name != request.config.model_name:
         raise ValueError("Parameter space model_name must match experiment config model_name")
 
@@ -261,7 +388,7 @@ def create_experiment(db: Session, request: ExperimentCreateRequest) -> Experime
         baseline_experiment_id=run.baseline_experiment_id,
         is_best_so_far=False,
         experiment_config=request.config.model_dump(),
-        editable_parameter_space=request.parameter_space.model_dump(),
+        editable_parameter_space=server_parameter_space.model_dump(),
         proposal=request.proposal.model_dump() if request.proposal else None,
         result=None,
         reflection=None,
@@ -403,7 +530,19 @@ def get_run_summary(db: Session, run_id: str) -> RunSummaryResponse | None:
     run = _refresh_run_summary(db, run_id)
     if run is None:
         return None
-    experiments = db.scalars(select(ExperimentModel).where(ExperimentModel.run_id == run_id)).all()
+    experiments = db.scalars(
+        select(ExperimentModel).where(ExperimentModel.run_id == run_id).order_by(ExperimentModel.created_at.asc())
+    ).all()
+    baseline_experiment = experiments[0] if experiments else None
+    ranking_policy = get_experiment_ranking_policy(baseline_experiment)
+    best_quality_experiment = _select_best_quality_experiment(experiments, ranking_policy=ranking_policy)
+    best_experiment = next((experiment for experiment in experiments if experiment.id == run.best_experiment_id), None)
+    best_efficiency_experiment = _select_best_efficiency_experiment(experiments)
+    best_tradeoff_experiment = _select_best_tradeoff_experiment(
+        experiments,
+        ranking_policy=ranking_policy,
+        best_experiment=best_quality_experiment,
+    )
     counts = {"keep": 0, "discard": 0, "crash": 0, "timeout": 0}
     for experiment in experiments:
         if experiment.decision in counts:
@@ -411,7 +550,10 @@ def get_run_summary(db: Session, run_id: str) -> RunSummaryResponse | None:
     return RunSummaryResponse(
         run_id=run_id,
         baseline_experiment_id=run.baseline_experiment_id,
+        best_quality_experiment_id=best_quality_experiment.id if best_quality_experiment is not None else None,
         best_experiment_id=run.best_experiment_id,
+        best_efficiency_experiment_id=best_efficiency_experiment.id if best_efficiency_experiment is not None else None,
+        best_tradeoff_experiment_id=best_tradeoff_experiment.id if best_tradeoff_experiment is not None else None,
         frontier_experiment_id=run.frontier_experiment_id,
         keep_count=counts["keep"],
         discard_count=counts["discard"],

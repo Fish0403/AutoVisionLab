@@ -2,7 +2,7 @@
 
 这份文档只描述 `Auto Train` 如何继续搜索，不讨论停止条件。
 
-停止条件见 [docs/auto_train_stop_policy.md](auto_train_stop_policy.md)。
+停止条件见 [auto_train_stop_policy.md](auto_train_stop_policy.md)。
 
 ## 1. 基本原则
 
@@ -13,11 +13,11 @@
 
 ## 2. 搜索阶段
 
-当前实现按已消耗时间比例切换搜索阶段。
+当前实现按 auto-train 已完成轮次切换搜索阶段。
 
-- 前 `50%` 时间预算
+- 前 `3` 轮
   - 允许基础超参数主导
-- 后 `50%` 时间预算
+- 第 `4` 轮起
   - 优先考虑 augmentation / loss / strategy 字段变化
   - 若当前 run 仍缺少可执行的非 `basic` 动作，系统会优先保持 proposal 可执行，而不是硬性卡死
 
@@ -64,4 +64,4 @@
 
 ## 6. 一句话总结
 
-当前 `Auto Train` 的搜索策略是：前半段先用基础超参数找稳定区间，后半段优先把注意力转向 augmentation / loss / strategy；字段冷却和切维更多作为软引导，而不是在可行动作已经很窄时继续制造无解限制。
+当前 `Auto Train` 的搜索策略是：前几轮先用基础超参数找稳定区间，从第 `4` 轮开始优先把注意力转向 augmentation / loss / strategy；字段冷却和切维更多作为软引导，而不是在可行动作已经很窄时继续制造无解限制。

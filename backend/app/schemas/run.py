@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.schemas.common import PointMetric, RunStatus
 from app.schemas.experiment import ExperimentSummary
@@ -40,7 +40,10 @@ class RunDetailResponse(BaseModel):
     status: RunStatus
     notes: str | None = None
     baseline_experiment_id: str | None = None
+    best_quality_experiment_id: str | None = None
     best_experiment_id: str | None = None
+    best_efficiency_experiment_id: str | None = None
+    best_tradeoff_experiment_id: str | None = None
     frontier_experiment_id: str | None = None
     experiments: list[ExperimentSummary]
 
@@ -50,7 +53,10 @@ class RunSummaryResponse(BaseModel):
 
     run_id: str
     baseline_experiment_id: str | None = None
+    best_quality_experiment_id: str | None = None
     best_experiment_id: str | None = None
+    best_efficiency_experiment_id: str | None = None
+    best_tradeoff_experiment_id: str | None = None
     frontier_experiment_id: str | None = None
     keep_count: int = 0
     discard_count: int = 0
@@ -76,7 +82,6 @@ class AutoTrainStartRequest(BaseModel):
     model_name: str
     config: ExperimentConfig
     parameter_space: EditableParameterSpace
-    max_wall_clock_minutes: int = Field(ge=1, le=24 * 60)
 
 
 class AutoTrainTaskResponse(BaseModel):
@@ -86,7 +91,6 @@ class AutoTrainTaskResponse(BaseModel):
     status: str
     run_id: str | None = None
     current_round: int = 0
-    max_wall_clock_minutes: int
     elapsed_seconds: float = 0.0
     current_experiment_id: str | None = None
     logs: list[str]
@@ -94,3 +98,12 @@ class AutoTrainTaskResponse(BaseModel):
     error: str | None = None
     stop_requested: bool = False
     stop_reason: str | None = None
+    latest_prompt_tokens_estimate: int | None = None
+    estimated_prompt_tokens_total: int = 0
+    latest_prompt_history_items: int | None = None
+    latest_provider_prompt_tokens: int | None = None
+    latest_provider_completion_tokens: int | None = None
+    latest_provider_total_tokens: int | None = None
+    provider_prompt_tokens_total: int = 0
+    provider_completion_tokens_total: int = 0
+    provider_total_tokens_total: int = 0

@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as functional
 from torch import nn
 
-from app.schemas.parameter_space import ExperimentParams
+from app.schemas.parameter_space import TrainHyp
 
 
 MixedTargets: TypeAlias = tuple[torch.Tensor, torch.Tensor, float]
@@ -62,10 +62,10 @@ class FocalLoss(ClassificationLoss):
         return (focal_weight * per_sample_loss).mean()
 
 
-def build_loss(params: ExperimentParams) -> ClassificationLoss:
+def build_loss(train_hyp: TrainHyp) -> ClassificationLoss:
     """Build one structured loss implementation."""
-    if params.loss_name == "focal_loss":
-        return FocalLoss(gamma=params.loss_params.focal_gamma, label_smoothing=params.label_smoothing)
-    if params.loss_name == "cross_entropy":
+    if train_hyp.loss.name == "focal_loss":
+        return FocalLoss(gamma=train_hyp.fl_gamma, label_smoothing=train_hyp.label_smoothing)
+    if train_hyp.loss.name == "cross_entropy":
         return CrossEntropyClassificationLoss(label_smoothing=0.0)
-    return CrossEntropyClassificationLoss(label_smoothing=params.label_smoothing)
+    return CrossEntropyClassificationLoss(label_smoothing=train_hyp.label_smoothing)

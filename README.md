@@ -14,16 +14,25 @@ AutoVisionLab 是一个面向图像分类实验的自主训练 Web 平台。
 当前实现：
 
 - 任务类型：图像分类
+- `v1` base backbone：`MobileNetV3 Small`
 - 前端：`Streamlit`
 - 后端：`FastAPI`
 - 数据库：`SQLite`
 - 训练框架：`PyTorch`
+- 当前训练主配置已收敛到：
+  - `model_recipe`
+  - `train_hyp`
+  - `dataset_recipe`
+- 训练结果仍保留 `params` 摘要，作为现有结果存储与搜索策略的兼容输出
 - 可选模型：
-  - `MobileNetV2`
+  - `MobileNetV3 Small`
   - `GoogLeNet`
   - `ResNet18`
-  - `ResNet34`
-  - `DenseNet121`
+
+当前演进方向：
+
+- `v1` 先把分类 + `MobileNetV3 Small` 的 recipe 链路做完整
+- 底层 schema / parser / registry 从现在开始为后续目标检测和分割预留统一抽象
 
 ## 1. 环境要求
 
@@ -104,13 +113,18 @@ run 日志会聚合同一个 run 下的：
 ## 7. 常用文档
 
 - 项目计划：[docs/plan.md](docs/plan.md)
+- API 文档：[docs/api.md](docs/api.md)
 - 任务清单：[docs/tasks.md](docs/tasks.md)
-- Schema 说明：[docs/schemas.md](docs/schemas.md)
-- 运行规则：[docs/experiment_policy.md](docs/experiment_policy.md)
-- Ranking Policy：[docs/ranking_policy.md](docs/ranking_policy.md)
-- Run 晋级与回退规则：[docs/run_promotion_policy.md](docs/run_promotion_policy.md)
-- Auto Train 搜索策略：[docs/auto_train_search_policy.md](docs/auto_train_search_policy.md)
-- Auto Train 停止策略：[docs/auto_train_stop_policy.md](docs/auto_train_stop_policy.md)
+- Schema 总览：[docs/schemas/README.md](docs/schemas/README.md)
+- 策略总览：[docs/policies/README.md](docs/policies/README.md)
+- Model Recipe 设计：[docs/schemas/model_recipe_schema.md](docs/schemas/model_recipe_schema.md)
+- Train Hyp 设计：[docs/schemas/train_hyp_schema.md](docs/schemas/train_hyp_schema.md)
+- Dataset Recipe 设计：[docs/schemas/dataset_recipe_schema.md](docs/schemas/dataset_recipe_schema.md)
+- 运行规则：[docs/policies/experiment_policy.md](docs/policies/experiment_policy.md)
+- Ranking Policy：[docs/policies/ranking_policy.md](docs/policies/ranking_policy.md)
+- Run 晋级与回退规则：[docs/policies/run_promotion_policy.md](docs/policies/run_promotion_policy.md)
+- Auto Train 搜索策略：[docs/policies/auto_train_search_policy.md](docs/policies/auto_train_search_policy.md)
+- Auto Train 停止策略：[docs/policies/auto_train_stop_policy.md](docs/policies/auto_train_stop_policy.md)
 - 变更记录：[CHANGELOG.md](CHANGELOG.md)
 
 ## 8. 仓库结构
@@ -120,18 +134,18 @@ AutoVisionLab/
 ├── backend/
 │   └── app/
 │       ├── api/            # FastAPI 路由
-│       ├── config_spaces/  # 模型参数空间白名单
+│       ├── config_spaces/  # 当前模型参数空间白名单
 │       ├── db/             # 数据库配置与 session
 │       ├── models/         # SQLAlchemy ORM 模型
-│       ├── schemas/        # Pydantic schema
-│       ├── services/       # proposal、持久化、auto-train 等业务逻辑
-│       ├── trainers/       # 各分类模型 trainer
+│       ├── schemas/        # Pydantic schema，含 ExperimentConfig / recipe 相关对象
+│       ├── services/       # proposal、持久化、auto-train、run policy 等业务逻辑
+│       ├── trainers/       # 当前分类 trainer；训练主链路已切到 recipe / train_hyp 驱动
 │       └── workers/        # experiment 执行入口
 ├── frontend/
 │   └── streamlit_app.py    # Streamlit 前端入口
 ├── data/                   # 数据集与准备脚本
 ├── artifacts/              # 日志、checkpoint 和其他训练产物
-├── docs/                   # 补充说明文档
+├── docs/                   # 补充说明文档与 recipe 设计稿
 ├── scripts/                # 本地启动脚本
 ├── README.md
 ├── CHANGELOG.md

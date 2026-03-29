@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-RankingMetric = Literal["top1_acc", "val_loss", "training_seconds"]
+RankingMetric = Literal["top1_acc", "val_loss", "training_seconds", "latency_ms", "parameter_count_million"]
 RankingMetricMode = Literal["max", "min"]
 
 

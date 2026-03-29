@@ -7,7 +7,12 @@ from app.api.responses import build_success_response
 from app.db.session import get_db_session
 from app.schemas.ai import ResultSchema
 from app.schemas.api import ApiResponse
-from app.schemas.experiment import ExperimentCreateRequest, ExperimentDecisionRequest, ExperimentDetailResponse
+from app.schemas.experiment import (
+    ExperimentCreateRequest,
+    ExperimentDecisionRequest,
+    ExperimentDetailResponse,
+    ExperimentSuggestionTaskResponse,
+)
 from app.services.persistence import (
     create_experiment,
     discard_experiment,
@@ -16,6 +21,7 @@ from app.services.persistence import (
     save_experiment_result,
     update_experiment_decision,
 )
+from app.services.suggestion_service import get_experiment_suggestion_task, start_experiment_suggestion_task
 from app.services.training_runner import start_experiment_training, stop_experiment_training
 
 
@@ -117,3 +123,22 @@ def stop_experiment_endpoint(
         message="Experiment stop requested.",
         code=discarded_experiment.status,
     )
+
+
+@router.post("/{experiment_id}/suggestion", response_model=ApiResponse[ExperimentSuggestionTaskResponse], status_code=202)
+def start_experiment_suggestion_endpoint(experiment_id: str) -> ApiResponse[ExperimentSuggestionTaskResponse]:
+    """Start or reuse one background suggestion task for a completed experiment."""
+    try:
+        task = start_experiment_suggestion_task(experiment_id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return build_success_response(task, message="Experiment suggestion task started.", code=task.status)
+
+
+@router.get("/{experiment_id}/suggestion", response_model=ApiResponse[ExperimentSuggestionTaskResponse])
+def get_experiment_suggestion_endpoint(experiment_id: str) -> ApiResponse[ExperimentSuggestionTaskResponse]:
+    """Get the latest background suggestion task for one experiment."""
+    task = get_experiment_suggestion_task(experiment_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Experiment suggestion task not found")
+    return build_success_response(task, message="Experiment suggestion task loaded.", code=task.status)

@@ -8,22 +8,21 @@ import random
 import torch
 from torchvision.transforms import transforms
 
-from app.schemas.parameter_space import AugmentationParams
+from app.schemas.parameter_space import TrainHypAugmentation
 
 
 def build_train_transform(
     image_size: int,
-    augmentation_policy: str,
-    augmentation_params: AugmentationParams,
+    augmentation: TrainHypAugmentation,
 ) -> transforms.Compose:
     """Build the train transform pipeline from structured params."""
     steps: list[object] = [transforms.Resize((image_size, image_size))]
-    steps.extend(_build_policy_transforms(image_size, augmentation_policy))
+    steps.extend(_build_policy_transforms(image_size, augmentation.policy))
     steps.append(transforms.ToTensor())
-    if augmentation_params.random_erasing_prob > 0:
+    if augmentation.random_erasing > 0:
         steps.append(
             transforms.RandomErasing(
-                p=augmentation_params.random_erasing_prob,
+                p=augmentation.random_erasing,
                 scale=(0.02, 0.2),
                 ratio=(0.3, 3.3),
                 value="random",
@@ -47,11 +46,11 @@ def build_eval_transform(image_size: int) -> transforms.Compose:
 def apply_batch_augmentations(
     images: torch.Tensor,
     labels: torch.Tensor,
-    augmentation_params: AugmentationParams,
+    augmentation: TrainHypAugmentation,
 ) -> tuple[torch.Tensor, torch.Tensor | tuple[torch.Tensor, torch.Tensor, float]]:
     """Apply structured batch augmentations such as mixup and cutmix."""
-    mixup_alpha = augmentation_params.mixup_alpha
-    cutmix_alpha = augmentation_params.cutmix_alpha
+    mixup_alpha = augmentation.mixup
+    cutmix_alpha = augmentation.cutmix
     if mixup_alpha <= 0 and cutmix_alpha <= 0:
         return images, labels
 

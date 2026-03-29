@@ -23,7 +23,7 @@
 - `primary_metric_parity_epsilon`
   - 主指标落在该灰区内时，视为“近似持平”
 - `tie_breaker_metric`
-  - 当前支持：`val_loss`、`top1_acc`、`training_seconds`
+  - 当前支持：`val_loss`、`top1_acc`、`training_seconds`、`latency_ms`、`parameter_count_million`
 - `tie_breaker_mode`
   - 决定 tie-breaker 是越大越好还是越小越好
 - `min_tie_breaker_metric_improvement`
@@ -51,6 +51,17 @@
 - 若 `top1_acc` 近似持平，则再看 `val_loss`
 - 默认不额外限制 `image_size`
 
+当前前端对新 run 的推荐默认值更偏工业场景：
+
+- `primary_metric = top1_acc`
+- `tie_breaker_metric = latency_ms`
+
+这意味着：
+
+- 精度仍然是第一优先级
+- 当精度差距落在持平灰区内时，优先选择推理更快的模型
+- 如果后续需要更保守的学术式比较，可手动切回 `val_loss`
+
 ## 4. 当前比较顺序
 
 当前实现按以下顺序比较：
@@ -68,15 +79,17 @@
 当前真正与推理成本更直接相关的字段，主要是：
 
 - `image_size`
-- 后续可能开放的网络结构相关字段
+- 网络结构相关字段
+- `latency_ms`
+- `parameter_count_million`
 
 因此，V1 先把 `max_image_size` 作为成本 gate 接入。
 
 后续若结果中补充了更稳定的推理指标，可继续扩展：
 
-- `latency`
+- `latency_ms`
 - `flops`
-- `parameter_count`
+- `parameter_count_million`
 - `peak_inference_memory`
 
 ## 6. 前端开放策略

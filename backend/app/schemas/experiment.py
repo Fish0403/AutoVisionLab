@@ -49,3 +49,17 @@ class ExperimentDecisionRequest(BaseModel):
 
     decision: ExperimentDecision
     decision_reason: str | None = None
+
+
+class ExperimentSuggestionTaskResponse(BaseModel):
+    """Background suggestion task snapshot for one completed experiment."""
+
+    task_id: str
+    experiment_id: str
+    run_id: str
+    status: str
+    suggestion: ProposalSchema | None = None
+    error: str | None = None
+    latest_provider_prompt_tokens: int | None = None
+    latest_provider_completion_tokens: int | None = None
+    latest_provider_total_tokens: int | None = None

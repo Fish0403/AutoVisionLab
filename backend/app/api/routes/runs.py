@@ -9,7 +9,7 @@ from app.db.session import get_db_session
 from app.schemas.api import ApiResponse
 from app.schemas.ai import ProposalSchema
 from app.schemas.run import AutoTrainStartRequest, AutoTrainTaskResponse, RunCreateRequest, RunDetailResponse, RunListItem, RunMetricsResponse, RunSummaryResponse
-from app.services.auto_train_service import get_auto_train_task, start_auto_train_task, stop_auto_train_task
+from app.services.auto_train_service import get_active_auto_train_task, get_auto_train_task, start_auto_train_task, stop_auto_train_task
 from app.services.persistence import clear_all_records, clear_run_records, create_run, get_run_detail, get_run_metrics, get_run_summary, list_runs
 from app.services.proposal_service import generate_aihubmix_proposal, test_aihubmix_connection
 
@@ -111,6 +111,15 @@ def start_auto_train_endpoint(request: AutoTrainStartRequest) -> ApiResponse[Aut
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     return build_success_response(task, message="Auto-train task started.", code=task.status)
+
+
+@router.get("/auto-train/active", response_model=ApiResponse[AutoTrainTaskResponse])
+def get_active_auto_train_endpoint() -> ApiResponse[AutoTrainTaskResponse]:
+    """Get the currently active auto-train task when one exists."""
+    task = get_active_auto_train_task()
+    if task is None:
+        raise HTTPException(status_code=404, detail="No active auto train task")
+    return build_success_response(task, message="Active auto-train task loaded.", code=task.status)
 
 
 @router.get("/auto-train/{task_id}", response_model=ApiResponse[AutoTrainTaskResponse])
