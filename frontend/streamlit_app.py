@@ -4,21 +4,23 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
+import json
 import time
 from typing import Any
 
+import pandas as pd
 import requests
 import streamlit as st
 
 
 API_BASE_URL = "http://127.0.0.1:8000"
 SUPPORTED_MODELS = {
-    "mobilenet_v2": {
+    "mobilenet_v3_small": {
         "model_family": "mobilenet",
-        "parameter_space_version": "mobilenet_v2@v1",
+        "parameter_space_version": "mobilenet_v3_small@v1",
         "parameter_space": {
-            "model_name": "mobilenet_v2",
-            "version": "mobilenet_v2@v1",
+            "model_name": "mobilenet_v3_small",
+            "version": "mobilenet_v3_small@v1",
             "editable_params": {
                 "optimizer": {"type": "enum", "choices": ["sgd", "adam", "adamw"]},
                 "learning_rate": {"type": "number_range", "min": 0.0001, "max": 0.01},
@@ -34,6 +36,8 @@ SUPPORTED_MODELS = {
                 "loss_name": {"type": "enum", "choices": ["cross_entropy", "cross_entropy_with_label_smoothing", "focal_loss"]},
                 "focal_gamma": {"type": "number_range", "min": 0.5, "max": 5.0},
                 "label_smoothing": {"type": "number_range", "min": 0.0, "max": 0.2},
+                "neck_name": {"type": "enum", "choices": ["avg_pool", "gem_pool"]},
+                "head_name": {"type": "enum", "choices": ["native_classifier", "linear", "dropout_linear"]},
             },
         },
     },
@@ -86,61 +90,11 @@ SUPPORTED_MODELS = {
             },
         },
     },
-    "resnet34": {
-        "model_family": "resnet",
-        "parameter_space_version": "resnet34@v1",
-        "parameter_space": {
-            "model_name": "resnet34",
-            "version": "resnet34@v1",
-            "editable_params": {
-                "optimizer": {"type": "enum", "choices": ["sgd", "adam", "adamw"]},
-                "learning_rate": {"type": "number_range", "min": 0.0001, "max": 0.01},
-                "batch_size": {"type": "discrete_values", "choices": [32, 64, 128, 256]},
-                "image_size": {"type": "discrete_values", "choices": [32, 64, 96]},
-                "epochs": {"type": "discrete_values", "choices": [10, 20, 30, 50]},
-                "weight_decay": {"type": "number_range", "min": 0.0, "max": 0.01},
-                "scheduler": {"type": "enum", "choices": ["none", "step", "cosine"]},
-                "augmentation_policy": {"type": "enum", "choices": ["none", "basic"]},
-                "mixup_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
-                "cutmix_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
-                "random_erasing_prob": {"type": "number_range", "min": 0.0, "max": 0.5},
-                "loss_name": {"type": "enum", "choices": ["cross_entropy", "cross_entropy_with_label_smoothing", "focal_loss"]},
-                "focal_gamma": {"type": "number_range", "min": 0.5, "max": 5.0},
-                "label_smoothing": {"type": "number_range", "min": 0.0, "max": 0.2},
-            },
-        },
-    },
-    "densenet121": {
-        "model_family": "densenet",
-        "parameter_space_version": "densenet121@v1",
-        "parameter_space": {
-            "model_name": "densenet121",
-            "version": "densenet121@v1",
-            "editable_params": {
-                "optimizer": {"type": "enum", "choices": ["sgd", "adam", "adamw"]},
-                "learning_rate": {"type": "number_range", "min": 0.0001, "max": 0.01},
-                "batch_size": {"type": "discrete_values", "choices": [32, 64, 128, 256]},
-                "image_size": {"type": "discrete_values", "choices": [32, 64, 96]},
-                "epochs": {"type": "discrete_values", "choices": [10, 20, 30, 50]},
-                "weight_decay": {"type": "number_range", "min": 0.0, "max": 0.01},
-                "scheduler": {"type": "enum", "choices": ["none", "step", "cosine"]},
-                "augmentation_policy": {"type": "enum", "choices": ["none", "basic"]},
-                "mixup_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
-                "cutmix_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
-                "random_erasing_prob": {"type": "number_range", "min": 0.0, "max": 0.5},
-                "loss_name": {"type": "enum", "choices": ["cross_entropy", "cross_entropy_with_label_smoothing", "focal_loss"]},
-                "focal_gamma": {"type": "number_range", "min": 0.5, "max": 5.0},
-                "label_smoothing": {"type": "number_range", "min": 0.0, "max": 0.2},
-            },
-        },
-    },
 }
 MODEL_LABELS = {
-    "mobilenet_v2": "MobileNetV2",
+    "mobilenet_v3_small": "MobileNetV3 Small",
     "googlenet": "GoogLeNet",
     "resnet18": "ResNet18",
-    "resnet34": "ResNet34",
-    "densenet121": "DenseNet121",
 }
 FALLBACK_DATASET_CATALOG = [
     {
@@ -164,15 +118,19 @@ FALLBACK_DATASET_CATALOG = [
 LOG_LIMIT = 60
 LIVE_LOG_CONTAINER: Any | None = None
 LIVE_AI_PANEL_CONTAINER: Any | None = None
+REQUEST_CACHE_TTL_SECONDS = 0.2
+REQUEST_CACHE: dict[str, tuple[float, Any]] = {}
 AI_BLOCKED_CHANGE_FIELDS = {"epochs"}
 RANKING_METRIC_LABELS = {
     "top1_acc": "Top1 Acc",
     "val_loss": "Val Loss",
     "training_seconds": "Training Seconds",
+    "latency_ms": "Latency (ms)",
+    "parameter_count_million": "Params (M)",
 }
 
 
-def default_search_policy() -> dict[str, bool]:
+def default_search_policy() -> dict[str, Any]:
     """Return the default AI search policy for the UI."""
     return {
         "allow_basic_hparam_search": True,
@@ -187,6 +145,7 @@ def default_search_policy() -> dict[str, bool]:
         "allow_strategy_search": True,
         "allow_loss_search": True,
         "allow_augmentation_search": True,
+        "allow_model_module_search": False,
         "require_manual_approval_for_high_impact_changes": True,
     }
 
@@ -198,9 +157,9 @@ def default_ranking_policy() -> dict[str, Any]:
         "primary_metric_mode": "max",
         "min_primary_metric_improvement": 0.01,
         "primary_metric_parity_epsilon": 0.0005,
-        "tie_breaker_metric": "val_loss",
+        "tie_breaker_metric": "latency_ms",
         "tie_breaker_mode": "min",
-        "min_tie_breaker_metric_improvement": 0.01,
+        "min_tie_breaker_metric_improvement": 0.5,
         "max_image_size": None,
     }
 
@@ -352,6 +311,118 @@ def format_elapsed_seconds(elapsed_seconds: float) -> str:
     return f"{minutes}m {seconds}s"
 
 
+def format_token_estimate(token_count: int | None) -> str:
+    """Format one rough token estimate for compact UI display."""
+    if not isinstance(token_count, int) or token_count <= 0:
+        return "-"
+    if token_count >= 10000:
+        trimmed = f"{token_count / 10000:.1f}".rstrip("0").rstrip(".")
+        return f"{trimmed}w"
+    return f"{token_count}"
+
+
+def format_token_breakdown(
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    total_tokens: int | None,
+) -> str | None:
+    """Format one provider token usage triplet for compact UI display."""
+    if not any(
+        isinstance(token_count, int) and token_count > 0
+        for token_count in (prompt_tokens, completion_tokens, total_tokens)
+    ):
+        return None
+    prompt_label = format_token_estimate(prompt_tokens)
+    completion_label = format_token_estimate(completion_tokens)
+    total_label = format_token_estimate(total_tokens)
+    return f"input {prompt_label} / output {completion_label} / total {total_label}"
+
+
+def is_network_related_auto_train_error(error_message: str | None) -> bool:
+    """Return whether one auto-train task error looks like a network/provider failure."""
+    if not error_message:
+        return False
+    normalized_message = error_message.lower()
+    network_markers = (
+        "httpsconnectionpool",
+        "max retries exceeded",
+        "sslerror",
+        "ssleoferror",
+        "unexpected_eof_while_reading",
+        "connection aborted",
+        "connection reset",
+        "read timed out",
+        "connect timeout",
+        "temporary failure in name resolution",
+    )
+    return any(marker in normalized_message for marker in network_markers)
+
+
+def build_auto_train_terminal_message(
+    task_status: str | None,
+    *,
+    stop_reason: str | None = None,
+    task_error: str | None = None,
+) -> str:
+    """Build one user-facing terminal status message for auto train."""
+    if task_status == "stopped_by_policy":
+        return stop_reason or "自动训练已按停止策略结束。"
+    if task_status == "stopped":
+        return stop_reason or "自动训练已手动停止，当前实验已丢弃。"
+    if task_status == "failed":
+        if is_network_related_auto_train_error(task_error):
+            return (
+                "自动训练异常结束：生成下一轮 AI proposal 时网络或上游模型服务连接异常。"
+                f"{f' 原始错误：{task_error}' if task_error else ''}"
+            )
+        return f"自动训练异常结束：{task_error}" if task_error else "自动训练异常结束。"
+    return stop_reason or "自动训练已结束。"
+
+
+def get_experiment_training_time_label(experiment_detail: dict[str, Any]) -> str:
+    """Return the completed training duration label for one experiment."""
+    resource = (experiment_detail.get("result") or {}).get("resource") or {}
+    training_seconds = resource.get("training_seconds")
+    if isinstance(training_seconds, (int, float)) and training_seconds >= 0:
+        return format_elapsed_seconds(float(training_seconds))
+    return "-"
+
+
+def get_running_elapsed_seconds(run_id: str, experiment_id: str) -> float | None:
+    """Return the live elapsed seconds for the currently running experiment when available."""
+    auto_task_progress = st.session_state.get("auto_task_progress") or {}
+    if (
+        st.session_state.get("current_auto_task_id")
+        and auto_task_progress.get("current_experiment_id") == experiment_id
+        and st.session_state.get("selected_run_id") == run_id
+    ):
+        elapsed_seconds = auto_task_progress.get("elapsed_seconds")
+        return float(elapsed_seconds) if isinstance(elapsed_seconds, (int, float)) else None
+
+    started_at = st.session_state.get("training_started_at_timestamp")
+    active_experiment_id = st.session_state.get("training_experiment_id")
+    if active_experiment_id == experiment_id and isinstance(started_at, (int, float)):
+        return max(0.0, time.time() - float(started_at))
+    return None
+
+
+def build_running_result_placeholder(
+    run_id: str,
+    status: str,
+    *,
+    experiment_id: str | None = None,
+    elapsed_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Build a lightweight running result card payload when the task has started but no finished result exists yet."""
+    return {
+        "id": experiment_id or "pending",
+        "run_id": run_id,
+        "status": status,
+        "result": {"metrics": {}},
+        "_elapsed_seconds_override": elapsed_seconds,
+    }
+
+
 def get_allowed_basic_hparam_fields(dataset: str, model_name: str, image_size: int) -> list[str]:
     """Return the effective basic hyperparameter fields allowed for AI search."""
     fields = [
@@ -395,6 +466,7 @@ def summarize_effective_ai_search_fields(
     allow_strategy_search: bool,
     allow_loss_search: bool,
     allow_augmentation_search: bool,
+    allow_model_module_search: bool,
 ) -> str:
     """Build a user-facing summary of the current AI search scope."""
     field_labels: list[str] = []
@@ -406,6 +478,8 @@ def summarize_effective_ai_search_fields(
         field_labels.extend(["loss_name", "focal_gamma"])
     if allow_augmentation_search:
         field_labels.extend(["augmentation_policy", "mixup_alpha", "cutmix_alpha", "random_erasing_prob"])
+    if allow_model_module_search:
+        field_labels.extend(["neck_name", "head_name"])
 
     deduped_labels = list(dict.fromkeys(field_labels))
     if not deduped_labels:
@@ -415,11 +489,19 @@ def summarize_effective_ai_search_fields(
 
 def request_json(path: str, fallback: Any) -> Any:
     """Fetch JSON from the backend and fall back to local demo data."""
+    cached_entry = REQUEST_CACHE.get(path)
+    if cached_entry is not None:
+        cached_at, cached_payload = cached_entry
+        if time.monotonic() - cached_at <= REQUEST_CACHE_TTL_SECONDS:
+            return deepcopy(cached_payload)
     try:
         response = requests.get(f"{API_BASE_URL}{path}", timeout=0.8)
         response.raise_for_status()
-        return unwrap_api_response(response.json())
+        payload = unwrap_api_response(response.json())
+        REQUEST_CACHE[path] = (time.monotonic(), deepcopy(payload))
+        return payload
     except requests.RequestException:
+        REQUEST_CACHE[path] = (time.monotonic(), deepcopy(fallback))
         return fallback
 
 
@@ -510,7 +592,6 @@ def generate_aihubmix_proposal_request(run_id: str) -> tuple[bool, Any]:
 def start_auto_train_task_request(
     payload: dict[str, Any],
     selected_run_id: str,
-    max_wall_clock_minutes: int,
 ) -> tuple[bool, Any]:
     """Start one backend auto-train task."""
     request_payload = {
@@ -520,19 +601,39 @@ def start_auto_train_task_request(
         "model_name": payload["model_name"],
         "config": payload["config"],
         "parameter_space": payload["parameter_space"],
-        "max_wall_clock_minutes": max_wall_clock_minutes,
     }
     return post_json("/runs/auto-train", request_payload)
 
 
 def load_auto_train_task(task_id: str) -> tuple[bool, Any]:
     """Load one backend auto-train task."""
-    return True, request_json(f"/runs/auto-train/{task_id}", {"detail": "Auto train task not found"})
+    payload = request_json(f"/runs/auto-train/{task_id}", {"detail": "Auto train task not found"})
+    return isinstance(payload, dict) and "task_id" in payload, payload
+
+
+def load_active_auto_train_task() -> tuple[bool, Any]:
+    """Load the currently active auto-train task when one exists."""
+    payload = request_json("/runs/auto-train/active", {"detail": "No active auto train task"})
+    return isinstance(payload, dict) and "task_id" in payload, payload
 
 
 def stop_auto_train_task_request(task_id: str) -> tuple[bool, Any]:
     """Stop one backend auto-train task."""
     return post_without_body(f"/runs/auto-train/{task_id}/stop")
+
+
+def start_experiment_suggestion_task_request(experiment_id: str) -> tuple[bool, Any]:
+    """Start one background suggestion task for a completed experiment."""
+    return post_without_body(f"/experiments/{experiment_id}/suggestion")
+
+
+def load_experiment_suggestion_task(experiment_id: str) -> tuple[bool, Any]:
+    """Load the latest suggestion task for one experiment."""
+    payload = request_json(
+        f"/experiments/{experiment_id}/suggestion",
+        {"detail": "Experiment suggestion task not found"},
+    )
+    return isinstance(payload, dict) and "task_id" in payload, payload
 
 
 def load_runs() -> list[dict[str, Any]]:
@@ -544,7 +645,7 @@ def load_runs() -> list[dict[str, Any]]:
                 "id": "run_demo_001",
                 "name": "CIFAR-10 MobileNet baseline tuning",
                 "dataset": "cifar10",
-                "model_name": "mobilenet_v2",
+                "model_name": "mobilenet_v3_small",
                 "status": "active",
                 "experiment_count": 3,
             }
@@ -570,16 +671,16 @@ def load_run_detail(run_id: str) -> dict[str, Any]:
             "id": run_id,
             "name": "CIFAR-10 MobileNet baseline tuning",
             "dataset": "cifar10",
-            "model_name": "mobilenet_v2",
+            "model_name": "mobilenet_v3_small",
             "status": "active",
             "notes": "Using Streamlit fallback demo data because backend is not reachable.",
             "baseline_experiment_id": "exp_demo_001",
             "best_experiment_id": "exp_demo_002",
             "frontier_experiment_id": "exp_demo_002",
             "experiments": [
-                {"id": "exp_demo_001", "run_id": run_id, "status": "success", "model_name": "mobilenet_v2", "decision": "keep", "is_best_so_far": False},
-                {"id": "exp_demo_002", "run_id": run_id, "status": "success", "model_name": "mobilenet_v2", "decision": "keep", "is_best_so_far": True},
-                {"id": "exp_demo_003", "run_id": run_id, "status": "success", "model_name": "mobilenet_v2", "decision": "discard", "is_best_so_far": False},
+                {"id": "exp_demo_001", "run_id": run_id, "status": "success", "model_name": "mobilenet_v3_small", "decision": "keep", "is_best_so_far": False},
+                {"id": "exp_demo_002", "run_id": run_id, "status": "success", "model_name": "mobilenet_v3_small", "decision": "keep", "is_best_so_far": True},
+                {"id": "exp_demo_003", "run_id": run_id, "status": "success", "model_name": "mobilenet_v3_small", "decision": "discard", "is_best_so_far": False},
             ],
         },
     )
@@ -635,8 +736,8 @@ def load_experiment_detail(experiment_id: str) -> dict[str, Any]:
                 "task_type": "classification",
                 "dataset": "cifar10",
                 "model_family": "mobilenet",
-                "model_name": "mobilenet_v2",
-                "parameter_space_version": "mobilenet_v2@v1",
+                "model_name": "mobilenet_v3_small",
+                "parameter_space_version": "mobilenet_v3_small@v1",
                 "participates_in_ranking": True,
                 "params": {
                     "optimizer": "adamw",
@@ -652,17 +753,22 @@ def load_experiment_detail(experiment_id: str) -> dict[str, Any]:
                 },
             },
             "parameter_space": {
-                "model_name": "mobilenet_v2",
-                "version": "mobilenet_v2@v1",
+                "model_name": "mobilenet_v3_small",
+                "version": "mobilenet_v3_small@v1",
                 "editable_params": {},
             },
             "proposal": {
                 "task_type": "classification",
-                "model_name": "mobilenet_v2",
+                "model_name": "mobilenet_v3_small",
                 "based_on_experiment_ids": ["exp_demo_001"],
-                "hypothesis": "Slightly higher learning rate may improve early convergence.",
-                "changes": {"learning_rate": 0.004, "label_smoothing": 0.08},
-                "reason": "The previous baseline is still underfitting in early epochs.",
+                "hypothesis": "Add light mixup and slightly lower label smoothing for the next round.",
+                "changes": {"mixup_alpha": 0.2, "label_smoothing": 0.05},
+                "train_hyp_changes": {
+                    "augmentation": {"mixup": 0.2},
+                    "label_smoothing": 0.05
+                },
+                "recipe_changes": None,
+                "reason": "The previous baseline is stable enough to try one augmentation change plus one nearby regularization adjustment.",
                 "risk": "low",
             },
             "result": {
@@ -711,7 +817,19 @@ def refresh_activity_log_view() -> None:
     if LIVE_LOG_CONTAINER is None:
         return
     log_lines = st.session_state.get("activity_logs", [])
-    log_text = "\n".join(log_lines[-20:]) if log_lines else "Logs will appear here once training starts."
+    visible_log_lines: list[str] = []
+    for log_line in log_lines:
+        normalized_line = log_line.split("] ", 1)[-1]
+        if "AI suggestion:" in normalized_line or "Proposed changes:" in normalized_line:
+            continue
+        if normalized_line.startswith("Round ") and "AI suggested" in normalized_line:
+            continue
+        if normalized_line.startswith("Round ") and "top1_acc=" in normalized_line:
+            continue
+        if normalized_line.startswith("Baseline finished:"):
+            continue
+        visible_log_lines.append(log_line)
+    log_text = "\n".join(visible_log_lines[-20:]) if visible_log_lines else "Logs will appear here once training starts."
     LIVE_LOG_CONTAINER.code(log_text, language=None, wrap_lines=True, height=220)
 
 
@@ -742,6 +860,13 @@ def format_proposal_changes(changes: dict[str, Any]) -> str:
         if key not in AI_BLOCKED_CHANGE_FIELDS and value is not None
     ]
     return ", ".join(visible_changes) if visible_changes else "无参数变更"
+
+
+def format_structured_changes(changes: dict[str, Any] | None) -> str:
+    """Format one nested recipe-oriented change payload for display."""
+    if not changes:
+        return "-"
+    return json.dumps(changes, ensure_ascii=False, sort_keys=True)
 
 
 def clear_database_records() -> tuple[bool, Any]:
@@ -775,7 +900,6 @@ def reset_frontend_state_after_clear() -> None:
         "augmentation_policy",
         "label_smoothing",
         "aux_logits",
-        "auto_train_time_budget_minutes",
     }
     preserved_values = {key: st.session_state.get(key) for key in preserved_keys if key in st.session_state}
     for key in list(st.session_state.keys()):
@@ -845,19 +969,50 @@ def refresh_ai_panel_view() -> None:
                 rounds = suggestion_payload.get("rounds", [])
                 task_status = suggestion_payload.get("task_status")
                 stop_reason = suggestion_payload.get("stop_reason")
+                task_error = suggestion_payload.get("task_error")
                 progress = st.session_state.get("auto_task_progress") or {}
                 st.markdown("**Auto Train Summary**")
-                if progress and progress.get("status") in {"queued", "running", "stopping"}:
+                st.markdown("**Summary**")
+                if progress:
                     completed_rounds = len(rounds)
                     current_round = progress.get("current_round", 0)
                     elapsed_seconds = progress.get("elapsed_seconds", 0.0)
-                    max_wall_clock_minutes = progress.get("max_wall_clock_minutes", 0)
                     current_experiment_id = progress.get("current_experiment_id") or "-"
+                    latest_prompt_tokens_estimate = progress.get("latest_prompt_tokens_estimate")
+                    estimated_prompt_tokens_total = progress.get("estimated_prompt_tokens_total")
+                    latest_prompt_history_items = progress.get("latest_prompt_history_items")
+                    latest_provider_usage = format_token_breakdown(
+                        progress.get("latest_provider_prompt_tokens"),
+                        progress.get("latest_provider_completion_tokens"),
+                        progress.get("latest_provider_total_tokens"),
+                    )
+                    cumulative_provider_usage = format_token_breakdown(
+                        progress.get("provider_prompt_tokens_total"),
+                        progress.get("provider_completion_tokens_total"),
+                        progress.get("provider_total_tokens_total"),
+                    )
+                    progress_parts = [
+                        f"进度：已完成 {completed_rounds} 轮",
+                        f"当前轮次 {current_round}",
+                        f"已运行 {format_elapsed_seconds(elapsed_seconds)}",
+                        f"实验 {get_short_experiment_id(current_experiment_id)}",
+                    ]
+                    if latest_provider_usage:
+                        progress_parts.append(f"本轮 tokens {latest_provider_usage}")
+                    elif isinstance(latest_prompt_tokens_estimate, int) and latest_prompt_tokens_estimate > 0:
+                        progress_parts.append(
+                            f"本轮 proposal 约 {format_token_estimate(latest_prompt_tokens_estimate)} tokens"
+                        )
+                    if cumulative_provider_usage:
+                        progress_parts.append(f"累计 tokens {cumulative_provider_usage}")
+                    elif isinstance(estimated_prompt_tokens_total, int) and estimated_prompt_tokens_total > 0:
+                        progress_parts.append(
+                            f"累计约 {format_token_estimate(estimated_prompt_tokens_total)} tokens"
+                        )
+                    if isinstance(latest_prompt_history_items, int) and latest_prompt_history_items > 0:
+                        progress_parts.append(f"history {latest_prompt_history_items} 条")
                     st.caption(
-                        f"进度：已完成 {completed_rounds} 轮，"
-                        f"当前轮次 {current_round}，"
-                        f"已用 {format_elapsed_seconds(elapsed_seconds)} / {max_wall_clock_minutes}m，"
-                        f"实验 {get_short_experiment_id(current_experiment_id)}。"
+                        "，".join(progress_parts) + "。"
                     )
                 st.markdown(f"基线实验：`{get_short_experiment_id(baseline.get('experiment_id'))}`  ")
                 st.caption(baseline.get("summary", ""))
@@ -873,14 +1028,6 @@ def refresh_ai_panel_view() -> None:
                 )
                 for round_info in rounds:
                     round_metrics = round_info["result"].get("metrics", {})
-                    st.markdown(
-                        f"第 {round_info['round_index']} 轮："
-                        f"{format_proposal_changes(round_info['proposal']['changes'])}"
-                    )
-                    st.caption(
-                        f"{get_short_experiment_id(round_info['result']['experiment_id'])} | "
-                        f"{round_info['result']['summary']}"
-                    )
                     trend_rows.append(
                         {
                             "round_index": int(round_info["round_index"]),
@@ -891,19 +1038,69 @@ def refresh_ai_panel_view() -> None:
                     )
                 if len(trend_rows) > 0:
                     st.markdown("**Tuning Trend**")
-                    st.line_chart(
-                        trend_rows,
-                        x="round_index",
-                        y=["top1_acc", "val_loss", "train_loss"],
-                        use_container_width=True,
+                    trend_frame = pd.DataFrame(trend_rows).set_index("round_index")
+                    st.line_chart(trend_frame, use_container_width=True)
+                if rounds:
+                    keep_count = sum(1 for round_info in rounds if round_info["result"].get("decision") == "keep")
+                    discard_count = sum(1 for round_info in rounds if round_info["result"].get("decision") == "discard")
+                    with st.expander(
+                        f"Round History ({len(rounds)} rounds, {keep_count} keep, {discard_count} discard)",
+                        expanded=False,
+                    ):
+                        for round_info in reversed(rounds[-5:]):
+                            result_snapshot = round_info["result"]
+                            round_label = (
+                                f"第 {round_info['round_index']} 轮 | "
+                                f"{format_proposal_changes(round_info['proposal']['changes'])} | "
+                                f"{result_snapshot.get('decision') or result_snapshot.get('status')}"
+                            )
+                            with st.expander(round_label, expanded=False):
+                                st.caption(
+                                    f"实验 {get_short_experiment_id(result_snapshot.get('experiment_id'))} | "
+                                    f"{result_snapshot.get('summary')}"
+                                )
+                                st.markdown(f"**Hypothesis**  \n{round_info['proposal'].get('hypothesis', '-')}")
+                                st.caption(round_info["proposal"].get("reason", "-"))
+                                if round_info["proposal"].get("train_hyp_changes"):
+                                    st.markdown(
+                                        f"**Train Hyp Changes**  \n`{format_structured_changes(round_info['proposal'].get('train_hyp_changes'))}`"
+                                    )
+                                if round_info["proposal"].get("recipe_changes"):
+                                    st.markdown(
+                                        f"**Recipe Changes**  \n`{format_structured_changes(round_info['proposal'].get('recipe_changes'))}`"
+                                    )
+                                st.markdown(
+                                    f"**Based On**  \n{', '.join(round_info['proposal'].get('based_on_experiment_ids') or []) or '-'}"
+                                )
+                                st.markdown(
+                                    f"**Decision Reason**  \n{result_snapshot.get('decision_reason') or '-'}"
+                                )
+                if task_status in {"stopped", "stopped_by_policy", "failed"}:
+                    st.markdown("**Why It Stopped**")
+                    st.caption(
+                        build_auto_train_terminal_message(
+                            task_status,
+                            stop_reason=stop_reason,
+                            task_error=task_error,
+                        )
                     )
                 if final_proposal:
                     st.markdown("**Next Suggestion**")
                     st.markdown(final_proposal["hypothesis"])
                     st.caption(final_proposal["reason"])
                     st.markdown(f"`{format_proposal_changes(final_proposal['changes'])}`")
-                elif task_status in {"stopped", "stopped_by_budget", "stopped_by_policy", "failed"}:
-                    st.caption(stop_reason or "自动训练已经结束。")
+                    if final_proposal.get("train_hyp_changes"):
+                        st.markdown(
+                            f"**Train Hyp Changes**  \n`{format_structured_changes(final_proposal.get('train_hyp_changes'))}`"
+                        )
+                    if final_proposal.get("recipe_changes"):
+                        st.markdown(
+                            f"**Recipe Changes**  \n`{format_structured_changes(final_proposal.get('recipe_changes'))}`"
+                        )
+                elif task_status in {"stopped", "stopped_by_policy", "failed"}:
+                    final_suggestion_error = suggestion_payload.get("final_suggestion_error")
+                    if final_suggestion_error:
+                        st.caption(f"Next suggestion is not available: {final_suggestion_error}")
                 else:
                     st.caption("自动训练进行中。每完成一轮后，这里的趋势会自动更新。")
                 return
@@ -912,28 +1109,35 @@ def refresh_ai_panel_view() -> None:
             result = suggestion_payload["result"]
             st.markdown("**Single-Run Suggestion**")
             st.caption(f"实验 {get_short_experiment_id(result['experiment_id'])} | {result['summary']}")
+            suggestion_status = suggestion_payload.get("suggestion_status")
+            suggestion_error = suggestion_payload.get("suggestion_error")
+            token_usage = suggestion_payload.get("token_usage") or {}
+            token_usage_label = format_token_breakdown(
+                token_usage.get("prompt_tokens"),
+                token_usage.get("completion_tokens"),
+                token_usage.get("total_tokens"),
+            )
+            if suggestion_status in {"queued", "running"} and not proposal:
+                st.caption("AI suggestion is generating in the background.")
+                if token_usage_label:
+                    st.caption(f"当前 tokens: {token_usage_label}")
+                return
+            if suggestion_status == "failed" and not proposal:
+                st.caption(f"AI suggestion is not available: {suggestion_error or 'unknown error'}")
+                return
             st.markdown(f"**Suggestion**  \n{proposal['hypothesis']}")
             st.caption(proposal["reason"])
+            if token_usage_label:
+                st.caption(f"Token usage: {token_usage_label}")
             st.markdown(f"**Suggested Changes**  \n{format_proposal_changes(proposal['changes'])}")
-
-
-def generate_and_store_ai_suggestion(
-    run_id: str,
-    experiment_id: str,
-    experiment_detail: dict[str, Any],
-    log_prefix: str,
-) -> tuple[bool, dict[str, Any] | str]:
-    """Generate one AI suggestion for a completed experiment and store it."""
-    ok, proposal_response = generate_aihubmix_proposal_request(run_id)
-    if not ok:
-        error_message = f'AI suggestion failed: {proposal_response.get("detail", proposal_response)}'
-        append_activity_log(error_message)
-        return False, error_message
-    append_activity_log(f"{log_prefix} AI suggestion: {proposal_response['hypothesis']}")
-    append_activity_log(f"{log_prefix} Proposed changes: {format_proposal_changes(proposal_response['changes'])}")
-    store_manual_ai_suggestion(run_id, experiment_id, experiment_detail, proposal_response)
-    return True, proposal_response
-
+            if proposal.get("train_hyp_changes"):
+                st.markdown(
+                    f"**Train Hyp Changes**  \n`{format_structured_changes(proposal.get('train_hyp_changes'))}`"
+                )
+            if proposal.get("recipe_changes"):
+                st.markdown(
+                    f"**Recipe Changes**  \n`{format_structured_changes(proposal.get('recipe_changes'))}`"
+                )
 
 def set_ui_locked(is_locked: bool) -> None:
     """Lock or unlock all train actions."""
@@ -950,10 +1154,40 @@ def clear_training_state() -> None:
     st.session_state["ui_locked"] = False
     st.session_state["active_train_control"] = None
     st.session_state["training_experiment_id"] = None
+    st.session_state["training_started_at_timestamp"] = None
     st.session_state["last_running_experiment_id"] = None
     st.session_state["current_auto_task_id"] = None
     st.session_state["auto_task_progress"] = None
     st.session_state["skip_auto_poll_once"] = False
+    st.session_state["manual_stop_requested"] = False
+
+
+def clear_manual_suggestion_task_state() -> None:
+    """Clear transient frontend state for one manual suggestion task."""
+    st.session_state["manual_suggestion_task_id"] = None
+    st.session_state["manual_suggestion_experiment_id"] = None
+    st.session_state["manual_suggestion_status"] = None
+
+
+def recover_active_auto_train_task_state() -> None:
+    """Reattach frontend state to one backend auto-train task after a browser refresh."""
+    if st.session_state.get("current_auto_task_id"):
+        return
+    ok, active_task_response = load_active_auto_train_task()
+    if not ok:
+        return
+    st.session_state["current_auto_task_id"] = active_task_response["task_id"]
+    st.session_state["active_train_control"] = "auto"
+    st.session_state["ui_locked"] = active_task_response.get("status") in {"queued", "running", "stopping"}
+    st.session_state["active_ai_panel_mode"] = "auto"
+    existing_summary = st.session_state.get("auto_train_summary") or {}
+    if existing_summary.get("mode") != "auto" or existing_summary.get("run_id") != active_task_response.get("run_id"):
+        st.session_state["auto_train_summary"] = {
+            "mode": "auto",
+            "run_id": active_task_response.get("run_id"),
+            "baseline": {},
+            "rounds": [],
+        }
 
 
 def sync_auto_train_task_state() -> str | None:
@@ -973,6 +1207,7 @@ def sync_auto_train_task_state() -> str | None:
         summary = dict(summary)
         summary["task_status"] = auto_task_response.get("status")
         summary["stop_reason"] = auto_task_response.get("stop_reason")
+        summary["task_error"] = auto_task_response.get("error")
         st.session_state["auto_train_summary"] = summary
         st.session_state["active_ai_panel_mode"] = "auto"
         completed_rounds = len(summary.get("rounds", [])) if summary.get("mode") == "auto" else 0
@@ -986,9 +1221,17 @@ def sync_auto_train_task_state() -> str | None:
     st.session_state["auto_task_progress"] = {
         "status": auto_task_response.get("status"),
         "current_round": auto_task_response.get("current_round", 0),
-        "max_wall_clock_minutes": auto_task_response.get("max_wall_clock_minutes", 0),
         "elapsed_seconds": auto_task_response.get("elapsed_seconds", 0.0),
         "current_experiment_id": auto_task_response.get("current_experiment_id"),
+        "latest_prompt_tokens_estimate": auto_task_response.get("latest_prompt_tokens_estimate"),
+        "estimated_prompt_tokens_total": auto_task_response.get("estimated_prompt_tokens_total", 0),
+        "latest_prompt_history_items": auto_task_response.get("latest_prompt_history_items"),
+        "latest_provider_prompt_tokens": auto_task_response.get("latest_provider_prompt_tokens"),
+        "latest_provider_completion_tokens": auto_task_response.get("latest_provider_completion_tokens"),
+        "latest_provider_total_tokens": auto_task_response.get("latest_provider_total_tokens"),
+        "provider_prompt_tokens_total": auto_task_response.get("provider_prompt_tokens_total", 0),
+        "provider_completion_tokens_total": auto_task_response.get("provider_completion_tokens_total", 0),
+        "provider_total_tokens_total": auto_task_response.get("provider_total_tokens_total", 0),
     }
     if run_id:
         run_summary = load_run_summary(run_id)
@@ -1003,12 +1246,146 @@ def sync_auto_train_task_state() -> str | None:
     return auto_status
 
 
+def sync_manual_training_state() -> None:
+    """Sync one manually started experiment before rendering the main UI."""
+    training_experiment_id = st.session_state.get("training_experiment_id")
+    current_auto_task_id = st.session_state.get("current_auto_task_id")
+    active_train_control = st.session_state.get("active_train_control")
+    if not training_experiment_id or current_auto_task_id or active_train_control == "auto":
+        return
+
+    training_experiment_detail = load_experiment_detail(training_experiment_id)
+    training_status = training_experiment_detail.get("status")
+    if training_status == "running":
+        if st.session_state.get("manual_stop_requested"):
+            if st.session_state.get("last_stop_wait_experiment_id") != training_experiment_id:
+                append_activity_log(
+                    f"Stop requested for experiment {training_experiment_id}. Waiting for the worker to exit."
+                )
+                st.session_state["last_stop_wait_experiment_id"] = training_experiment_id
+            return
+        if st.session_state.get("last_running_experiment_id") != training_experiment_id:
+            append_activity_log(f"Experiment {training_experiment_id} is running.")
+            st.session_state["last_running_experiment_id"] = training_experiment_id
+        return
+
+    if st.session_state.get("last_finished_experiment_id") == training_experiment_id:
+        return
+
+    st.session_state["last_finished_experiment_id"] = training_experiment_id
+    st.session_state["selected_experiment_id"] = training_experiment_id
+    clear_training_state()
+    if training_status == "discarded":
+        clear_manual_suggestion_task_state()
+        append_activity_log(f"Experiment {training_experiment_id} was discarded.")
+        set_post_action_notice(f"Training stopped and discarded: {training_experiment_id}", "error")
+        st.rerun()
+
+    append_activity_log(
+        f"Experiment {training_experiment_id} finished with status {training_status} "
+        f"and {format_metric_summary(training_experiment_detail)}."
+    )
+    completed_run_id = training_experiment_detail.get("run_id")
+    if training_status == "success" and completed_run_id:
+        ok, suggestion_task_response = start_experiment_suggestion_task_request(training_experiment_id)
+        if ok:
+            st.session_state["manual_suggestion_task_id"] = suggestion_task_response["task_id"]
+            st.session_state["manual_suggestion_experiment_id"] = training_experiment_id
+            st.session_state["manual_suggestion_status"] = suggestion_task_response.get("status")
+            st.session_state["manual_ai_panel"] = {
+                "mode": "manual",
+                "run_id": completed_run_id,
+                "experiment_id": training_experiment_id,
+                "result": build_result_snapshot(training_experiment_id, training_experiment_detail),
+                "proposal": None,
+                "suggestion_status": suggestion_task_response.get("status"),
+            }
+            st.session_state["active_ai_panel_mode"] = "manual"
+            append_activity_log(
+                f"Post-train AI suggestion requested for experiment {training_experiment_id}."
+            )
+        else:
+            clear_manual_suggestion_task_state()
+            append_activity_log(
+                f'Post-train AI suggestion request failed: {suggestion_task_response.get("detail", suggestion_task_response)}'
+            )
+    else:
+        clear_manual_suggestion_task_state()
+    if training_status == "failed":
+        if is_oom_failure(training_experiment_detail):
+            set_post_action_notice(
+                "Training failed: CUDA out of memory. "
+                "Try a smaller batch size, or reduce image size if needed.",
+                "error",
+            )
+        else:
+            set_post_action_notice(f"Training failed with status: {training_status}", "error")
+    else:
+        set_post_action_notice(f"Training finished with status: {training_status}")
+    st.rerun()
+
+
+def sync_manual_suggestion_task_state() -> None:
+    """Sync one background post-train suggestion task for manual mode."""
+    experiment_id = st.session_state.get("manual_suggestion_experiment_id")
+    if not experiment_id:
+        return
+
+    ok, suggestion_task = load_experiment_suggestion_task(experiment_id)
+    if not ok:
+        return
+
+    previous_status = st.session_state.get("manual_suggestion_status")
+    current_status = suggestion_task.get("status")
+    st.session_state["manual_suggestion_task_id"] = suggestion_task.get("task_id")
+    st.session_state["manual_suggestion_status"] = current_status
+
+    manual_panel = dict(st.session_state.get("manual_ai_panel") or {})
+    if manual_panel.get("mode") != "manual" or manual_panel.get("experiment_id") != experiment_id:
+        experiment_detail = load_experiment_detail(experiment_id)
+        manual_panel = {
+            "mode": "manual",
+            "run_id": experiment_detail.get("run_id"),
+            "experiment_id": experiment_id,
+            "result": build_result_snapshot(experiment_id, experiment_detail),
+            "proposal": None,
+        }
+    manual_panel["suggestion_status"] = current_status
+    manual_panel["suggestion_error"] = suggestion_task.get("error")
+    manual_panel["token_usage"] = {
+        "prompt_tokens": suggestion_task.get("latest_provider_prompt_tokens"),
+        "completion_tokens": suggestion_task.get("latest_provider_completion_tokens"),
+        "total_tokens": suggestion_task.get("latest_provider_total_tokens"),
+    }
+
+    if current_status == "success" and suggestion_task.get("suggestion"):
+        experiment_detail = load_experiment_detail(experiment_id)
+        manual_panel["result"] = build_result_snapshot(experiment_id, experiment_detail)
+        manual_panel["proposal"] = suggestion_task["suggestion"]
+        st.session_state["manual_ai_panel"] = manual_panel
+        st.session_state["active_ai_panel_mode"] = "manual"
+        if previous_status != "success":
+            append_activity_log(f"Post-train AI suggestion is ready for experiment {experiment_id}.")
+        clear_manual_suggestion_task_state()
+        return
+
+    st.session_state["manual_ai_panel"] = manual_panel
+    st.session_state["active_ai_panel_mode"] = "manual"
+    if current_status == "failed":
+        if previous_status != "failed":
+            append_activity_log(
+                f'Post-train AI suggestion failed: {suggestion_task.get("error") or "unknown error"}'
+            )
+        clear_manual_suggestion_task_state()
+
+
 @st.fragment(run_every="2s")
 def render_live_training_monitor() -> None:
     """Keep the log and AI panel updated while training is active."""
     auto_task_id = st.session_state.get("current_auto_task_id")
     experiment_id = st.session_state.get("training_experiment_id")
-    if not auto_task_id and not experiment_id:
+    suggestion_experiment_id = st.session_state.get("manual_suggestion_experiment_id")
+    if not auto_task_id and not experiment_id and not suggestion_experiment_id:
         return
 
     if auto_task_id:
@@ -1017,30 +1394,57 @@ def render_live_training_monitor() -> None:
         refresh_ai_panel_view()
         if st.session_state.pop("auto_result_refresh_needed", False):
             st.rerun()
-        if auto_status in {"stopped", "stopped_by_budget", "stopped_by_policy", "failed"}:
+        if auto_status in {"stopped", "stopped_by_policy", "failed"}:
             task_snapshot = request_json(
                 f"/runs/auto-train/{auto_task_id}",
                 {"error": "unknown error"},
             )
             if auto_status == "stopped":
-                set_post_action_notice("Auto Train stopped and discarded the current experiment.", "success")
-            elif auto_status in {"stopped_by_budget", "stopped_by_policy"}:
                 set_post_action_notice(
-                    task_snapshot.get("stop_reason", "Auto Train stopped."),
+                    build_auto_train_terminal_message(
+                        auto_status,
+                        stop_reason=task_snapshot.get("stop_reason"),
+                        task_error=task_snapshot.get("error"),
+                    ),
+                    "success",
+                )
+            elif auto_status == "stopped_by_policy":
+                set_post_action_notice(
+                    build_auto_train_terminal_message(
+                        auto_status,
+                        stop_reason=task_snapshot.get("stop_reason"),
+                        task_error=task_snapshot.get("error"),
+                    ),
                     "success",
                 )
             elif auto_status == "failed":
                 set_post_action_notice(
-                    f"Auto Train failed: {task_snapshot.get('error', 'unknown error')}",
+                    build_auto_train_terminal_message(
+                        auto_status,
+                        stop_reason=task_snapshot.get("stop_reason"),
+                        task_error=task_snapshot.get("error"),
+                    ),
                     "error",
                 )
             clear_training_state()
             st.rerun()
         return
 
+    if suggestion_experiment_id and not experiment_id:
+        sync_manual_suggestion_task_state()
+        refresh_activity_log_view()
+        refresh_ai_panel_view()
+        return
+
     experiment_detail = load_experiment_detail(experiment_id)
     if experiment_detail.get("status") in {"success", "failed", "discarded"}:
         st.rerun()
+        return
+
+    if suggestion_experiment_id:
+        sync_manual_suggestion_task_state()
+        refresh_activity_log_view()
+        refresh_ai_panel_view()
 
 
 def queue_train_request(payload: dict[str, Any]) -> None:
@@ -1173,22 +1577,36 @@ def get_best_experiment_detail(run_id: str) -> dict[str, Any] | None:
     return best_detail or get_latest_experiment_detail(run_id)
 
 
+def get_baseline_experiment_detail(run_id: str) -> dict[str, Any] | None:
+    """Return the baseline experiment detail for one run."""
+    run_summary = load_run_summary(run_id)
+    baseline_experiment_id = run_summary.get("baseline_experiment_id")
+    if baseline_experiment_id:
+        return load_experiment_detail(baseline_experiment_id)
+
+    run_detail = load_run_detail(run_id)
+    experiments = run_detail.get("experiments", [])
+    if not experiments:
+        return None
+    return load_experiment_detail(experiments[0]["id"])
+
+
 def load_reference_config(selected_run_id: str) -> dict[str, Any]:
     """Load the latest config for the selected run or return defaults."""
     default_dataset = get_default_dataset_name()
     default_config = {
-        "run_name": build_auto_run_name(default_dataset, "mobilenet_v2"),
+        "run_name": build_auto_run_name(default_dataset, "mobilenet_v3_small"),
         "dataset": default_dataset,
-        "model_name": "mobilenet_v2",
-        "use_demo_mode": False,
+        "model_name": "mobilenet_v3_small",
+        "use_demo_mode": True,
         "participates_in_ranking": True,
         "search_policy": default_search_policy(),
         "ranking_policy": default_ranking_policy(),
         "params": {
             "optimizer": "adamw",
             "learning_rate": 0.003,
-            "batch_size": 128,
-            "image_size": get_original_image_size(default_dataset, "mobilenet_v2"),
+            "batch_size": 64,
+            "image_size": get_original_image_size(default_dataset, "mobilenet_v3_small"),
             "epochs": 10,
             "weight_decay": 0.0001,
             "scheduler": "cosine",
@@ -1315,6 +1733,7 @@ def create_run_and_first_experiment(payload: dict[str, Any]) -> tuple[bool, str]
     st.session_state["selected_run_id"] = run_response["id"]
     st.session_state["selected_experiment_id"] = experiment_response["id"]
     st.session_state["training_experiment_id"] = experiment_response["id"]
+    st.session_state["training_started_at_timestamp"] = time.time()
     return True, f'Started training for run {run_response["id"]} and experiment {experiment_response["id"]}.'
 
 
@@ -1350,18 +1769,64 @@ def append_experiment_to_run(run_id: str, payload: dict[str, Any]) -> tuple[bool
     st.session_state["selected_run_id"] = run_id
     st.session_state["selected_experiment_id"] = experiment_response["id"]
     st.session_state["training_experiment_id"] = experiment_response["id"]
+    st.session_state["training_started_at_timestamp"] = time.time()
     return True, f'Appended and started experiment {experiment_response["id"]} under run {run_id}.'
 
 
 def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_training_active: bool) -> None:
     """Render the left-side parameter and action panel."""
     st.subheader("Train")
-    st.caption("这里用于发起单次训练或自动连续调优。选中已有 run 时，新实验会追加到当前 run。")
+    st.caption("这里先训练 baseline；已有 baseline 的 run 再进入 Auto Train。")
     if is_training_active:
         st.warning("A training job is running. Actions are temporarily locked.")
 
+    selected_run = next((run for run in runs if run["id"] == selected_run_id), None)
+    has_existing_run = selected_run_id != "__all__" and selected_run is not None
+    experiment_count = int(selected_run.get("experiment_count", 0)) if selected_run else 0
+    selected_run_detail = load_run_detail(selected_run_id) if has_existing_run else None
+    successful_experiment_count = (
+        sum(1 for experiment in (selected_run_detail or {}).get("experiments", []) if experiment.get("status") == "success")
+        if selected_run_detail is not None
+        else 0
+    )
+    can_start_auto_train = has_existing_run and successful_experiment_count > 0
+
     reference_config = load_reference_config(selected_run_id)
-    if st.session_state.get("form_reference_run") != selected_run_id:
+    required_form_keys = {
+        "run_name",
+        "dataset",
+        "model_name",
+        "use_demo_mode",
+        "optimizer",
+        "learning_rate",
+        "batch_size",
+        "image_size",
+        "epochs",
+        "weight_decay",
+        "scheduler",
+        "augmentation_policy",
+        "label_smoothing",
+        "aux_logits",
+        "allow_basic_hparam_search",
+        "allow_strategy_search",
+        "allow_loss_search",
+        "allow_augmentation_search",
+        "allow_model_module_search",
+        "require_manual_approval_for_high_impact_changes",
+        "use_default_ranking_policy",
+        "ranking_primary_metric",
+        "ranking_min_primary_metric_improvement",
+        "ranking_primary_metric_parity_epsilon",
+        "ranking_tie_breaker_metric",
+        "ranking_min_tie_breaker_metric_improvement",
+        "ranking_max_image_size",
+        "based_on_experiment_ids",
+    }
+    should_reset_form_state = (
+        st.session_state.get("form_reference_run") != selected_run_id
+        or any(key not in st.session_state for key in required_form_keys)
+    )
+    if should_reset_form_state:
         st.session_state["run_name"] = reference_config["run_name"]
         st.session_state["dataset"] = reference_config["dataset"]
         st.session_state["model_name"] = reference_config["model_name"]
@@ -1389,6 +1854,7 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
         st.session_state["allow_strategy_search"] = search_policy["allow_strategy_search"]
         st.session_state["allow_loss_search"] = search_policy["allow_loss_search"]
         st.session_state["allow_augmentation_search"] = search_policy["allow_augmentation_search"]
+        st.session_state["allow_model_module_search"] = bool(search_policy.get("allow_model_module_search", False))
         st.session_state["require_manual_approval_for_high_impact_changes"] = search_policy[
             "require_manual_approval_for_high_impact_changes"
         ]
@@ -1422,8 +1888,6 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
     allowed_ranking_image_sizes = [None] + get_dataset_image_size_options(st.session_state["dataset"])
     if st.session_state.get("ranking_max_image_size") not in allowed_ranking_image_sizes:
         st.session_state["ranking_max_image_size"] = None
-    if "auto_train_time_budget_minutes" not in st.session_state:
-        st.session_state["auto_train_time_budget_minutes"] = 60
 
     with st.container(border=True):
         st.markdown("**Training Setup**")
@@ -1437,7 +1901,7 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
         with top_right:
             model_name = st.selectbox(
                 "Model",
-                options=["mobilenet_v2", "googlenet", "resnet18", "resnet34", "densenet121"],
+                options=["mobilenet_v3_small", "googlenet", "resnet18"],
                 format_func=get_model_label,
                 key="model_name",
                 on_change=sync_auto_run_name,
@@ -1455,13 +1919,7 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
         with row_two[0]:
             st.selectbox("Image Size", options=get_dataset_image_size_options(st.session_state["dataset"]), key="image_size")
         with row_two[1]:
-            auto_train_time_budget_minutes = st.number_input(
-                "Auto Train Budget (min)",
-                min_value=1,
-                max_value=24 * 60,
-                step=5,
-                key="auto_train_time_budget_minutes",
-            )
+            st.caption("Auto Train will keep running until you stop it or the run policy stops it.")
         with row_two[2]:
             st.checkbox("Use Demo Subset", key="use_demo_mode")
 
@@ -1489,12 +1947,18 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
                     st.session_state["allow_strategy_search"],
                     st.session_state["allow_loss_search"],
                     st.session_state["allow_augmentation_search"],
+                    st.session_state["allow_model_module_search"],
                 )
             )
             st.caption(
                 f"补充说明：image_size 保持原图大小时不搜索；当你手动改成非原图大小时，只在原图大小和当前设置之间搜索。"
                 f"当前原图大小：{original_image_size}；当前 image_size 搜索范围："
                 + ", ".join(str(choice) for choice in image_size_choices)
+            )
+            st.caption(
+                "Model module search 正在向 component-level 搜索收口。"
+                "当前 `MobileNetV3 Small` 已开放 `neck_name=avg_pool|gem_pool` 和 "
+                "`head_name=native_classifier|linear|dropout_linear`。"
             )
             st.checkbox(
                 "Allow basic hyperparameter search",
@@ -1504,6 +1968,7 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
             st.checkbox("Allow strategy search", key="allow_strategy_search", disabled=is_training_active)
             st.checkbox("Allow loss search", key="allow_loss_search", disabled=is_training_active)
             st.checkbox("Allow augmentation search", key="allow_augmentation_search", disabled=is_training_active)
+            st.checkbox("Allow model module search", key="allow_model_module_search", disabled=is_training_active)
             st.checkbox(
                 "Require manual approval for high-impact changes",
                 key="require_manual_approval_for_high_impact_changes",
@@ -1550,7 +2015,7 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
                 with ranking_columns[1]:
                     st.selectbox(
                         "Tie Breaker",
-                        options=["val_loss", "top1_acc", "training_seconds"],
+                        options=["latency_ms", "parameter_count_million", "val_loss", "top1_acc", "training_seconds"],
                         format_func=lambda metric: RANKING_METRIC_LABELS.get(metric, metric),
                         key="ranking_tie_breaker_metric",
                         disabled=is_training_active,
@@ -1598,6 +2063,7 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
                 "allow_strategy_search": st.session_state["allow_strategy_search"],
                 "allow_loss_search": st.session_state["allow_loss_search"],
                 "allow_augmentation_search": st.session_state["allow_augmentation_search"],
+                "allow_model_module_search": st.session_state["allow_model_module_search"],
                 "require_manual_approval_for_high_impact_changes": st.session_state[
                     "require_manual_approval_for_high_impact_changes"
                 ],
@@ -1622,31 +2088,50 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
         }
     )
 
-    is_appending_to_existing_run = selected_run_id != "__all__"
-    train_button_label = "Append Train" if is_appending_to_existing_run else "Train"
-    auto_train_button_label = "Append Auto Train" if is_appending_to_existing_run else "Auto Train"
+    train_button_label = "Train One Round" if has_existing_run else "Train Baseline"
+    auto_train_history_count = max(experiment_count - 1, 0)
+    auto_train_button_label = "Continue Auto Train" if auto_train_history_count > 0 else "Auto Train"
     active_train_control = st.session_state.get("active_train_control")
+    manual_stop_requested = bool(st.session_state.get("manual_stop_requested"))
+    auto_task_status = str((st.session_state.get("auto_task_progress") or {}).get("status") or "")
+    auto_stop_requested = auto_task_status == "stopping"
     action_left, action_right = st.columns(2)
     with action_left:
-        left_label = "Stop Training" if is_training_active and active_train_control == "manual" else train_button_label
-        left_disabled = is_training_active and active_train_control != "manual"
+        left_label = (
+            "Stopping..."
+            if is_training_active and active_train_control == "manual" and manual_stop_requested
+            else "Stop Training"
+            if is_training_active and active_train_control == "manual"
+            else train_button_label
+        )
+        left_disabled = manual_stop_requested or (is_training_active and active_train_control != "manual")
         if st.button(left_label, disabled=left_disabled, use_container_width=True):
             if is_training_active and active_train_control == "manual":
                 running_experiment_id = st.session_state.get("training_experiment_id") or find_running_experiment_id(runs)
                 if running_experiment_id:
                     ok, response = stop_current_experiment(running_experiment_id)
                     if ok:
-                        clear_training_state()
-                        append_activity_log(f"Experiment {running_experiment_id} was stopped and discarded.")
-                        set_post_action_notice(f"Stopped and discarded experiment {running_experiment_id}.", "success")
+                        st.session_state["manual_stop_requested"] = True
+                        st.session_state["ui_locked"] = True
+                        st.session_state["active_train_control"] = "manual"
+                        append_activity_log(f"Stop requested for experiment {running_experiment_id}.")
                         st.rerun()
                     else:
                         st.error(f'Stop training failed: {response.get("detail", response)}')
             else:
+                clear_manual_suggestion_task_state()
                 queue_train_request(payload)
     with action_right:
-        right_label = "Stop Training" if is_training_active and active_train_control == "auto" else auto_train_button_label
-        right_disabled = is_training_active and active_train_control != "auto"
+        right_label = (
+            "Stopping..."
+            if is_training_active and active_train_control == "auto" and auto_stop_requested
+            else "Stop Training"
+            if is_training_active and active_train_control == "auto"
+            else auto_train_button_label
+        )
+        right_disabled = auto_stop_requested or (is_training_active and active_train_control != "auto") or (
+            not is_training_active and not can_start_auto_train
+        )
         if st.button(right_label, disabled=right_disabled, use_container_width=True):
             if is_training_active and active_train_control == "auto":
                 current_auto_task_id = st.session_state.get("current_auto_task_id")
@@ -1659,29 +2144,38 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
                         st.error(f'Stop training failed: {response.get("detail", response)}')
             else:
                 st.session_state["active_train_control"] = "auto"
-                ok, response = start_auto_train_task_request(
-                    payload,
-                    selected_run_id,
-                    int(auto_train_time_budget_minutes),
-                )
+                ok, response = start_auto_train_task_request(payload, selected_run_id)
                 if ok:
                     st.session_state["current_auto_task_id"] = response["task_id"]
+                    st.session_state["training_experiment_id"] = response.get("current_experiment_id")
                     st.session_state["ui_locked"] = True
                     st.session_state["skip_auto_poll_once"] = True
-                    append_activity_log(
-                        f"Auto Train task started: {response['task_id']} | "
-                        f"time budget={int(auto_train_time_budget_minutes)}m"
-                    )
+                    st.session_state["active_ai_panel_mode"] = "auto"
+                    st.session_state["auto_train_summary"] = {
+                        "mode": "auto",
+                        "run_id": response.get("run_id"),
+                        "baseline": {},
+                        "rounds": [],
+                        "task_status": response.get("status"),
+                    }
+                    append_activity_log(f"Auto Train task started: {response['task_id']}")
                     st.rerun()
                 else:
                     st.session_state["active_train_control"] = None
                     st.error(f'Auto Train failed to start: {response.get("detail", response)}')
+    if not has_existing_run:
+        st.caption("先用 `Train Baseline` 创建并跑完一个 run，然后在该 run 上启动 `Auto Train`。")
+    elif not can_start_auto_train:
+        st.caption("当前 run 还没有可用 baseline，先手动训练一轮。")
+    else:
+        st.caption("`Auto Train` 会基于当前 run 的已有实验继续搜索，不会重新创建 baseline。")
 
 
 def render_activity_log() -> None:
     """Render the training activity log."""
     global LIVE_LOG_CONTAINER
     st.subheader("Execution Log")
+    st.caption("这里保留执行、重试、停止和异常事件；每轮策略细节放到右侧查看。")
     LIVE_LOG_CONTAINER = st.empty()
     refresh_activity_log_view()
 
@@ -1752,6 +2246,7 @@ def render_run_list(runs: list[dict[str, Any]]) -> str:
 def render_training_records_workspace(runs: list[dict[str, Any]], selected_run_id: str) -> None:
     """Render a single-table training records workspace."""
     st.subheader("Training Records")
+    st.caption("这里用于横向比较实验结果和参数；上面的 Round History 用于解释每轮为什么这样改。")
     st.caption("这里汇总当前范围内的实验记录。勾选记录后可以参与趋势图对比，并在右侧查看详情。")
     all_rows = build_all_training_records(runs, selected_run_id)
     if not all_rows:
@@ -1862,87 +2357,133 @@ def render_training_records_workspace(runs: list[dict[str, Any]], selected_run_i
         st.caption("Metrics trend is shown only when a single run is selected.")
 
 
+def render_result_summary(selected_run_id: str) -> None:
+    """Render the result summary cards for one selected run."""
+    def render_result_card(
+        title: str,
+        experiment_detail: dict[str, Any] | None,
+        *,
+        emphasize_best: bool = False,
+    ) -> None:
+        with st.container(border=True):
+            st.markdown(f"**{title}**")
+            if experiment_detail is None:
+                st.caption("No experiment yet.")
+                return
+
+            experiment_id = experiment_detail.get("id")
+            status = experiment_detail.get("status", "-")
+            metrics = (experiment_detail.get("result") or {}).get("metrics") or {}
+            elapsed_seconds_override = experiment_detail.get("_elapsed_seconds_override")
+            running_elapsed_seconds = get_running_elapsed_seconds(
+                str(experiment_detail.get("run_id") or ""),
+                str(experiment_id or ""),
+            )
+            if isinstance(elapsed_seconds_override, (int, float)):
+                running_elapsed_seconds = float(elapsed_seconds_override)
+            timing_label = (
+                format_elapsed_seconds(running_elapsed_seconds)
+                if status in {"running", "queued", "stopping"} and running_elapsed_seconds is not None
+                else get_experiment_training_time_label(experiment_detail)
+            )
+            time_label = "Running Time" if status in {"running", "queued", "stopping"} else "Training Time"
+
+            metric_row = st.columns(6)
+            metric_row[0].metric("Experiment", get_short_experiment_id(experiment_id))
+            metric_row[1].metric("Status", status)
+            metric_row[2].metric(time_label, timing_label)
+            metric_row[3].metric("Top1 Acc", metrics.get("top1_acc", "-"))
+            metric_row[4].metric("Val Loss", metrics.get("val_loss", "-"))
+            metric_row[5].metric("Best Epoch", metrics.get("best_epoch", "-"))
+
+            if emphasize_best:
+                st.caption("This card tracks the current best experiment in the run.")
+
+    if selected_run_id in {"", "__all__"}:
+        st.caption("Select or create a run to inspect results.")
+    else:
+        baseline_experiment_detail = get_baseline_experiment_detail(selected_run_id)
+        best_experiment_detail = get_best_experiment_detail(selected_run_id)
+
+        is_baseline_running = (
+            baseline_experiment_detail is not None
+            and baseline_experiment_detail.get("status") == "running"
+            and st.session_state.get("training_experiment_id") == baseline_experiment_detail.get("id")
+        )
+        should_show_best_card = (
+            best_experiment_detail is not None
+            and baseline_experiment_detail is not None
+            and best_experiment_detail.get("id") != baseline_experiment_detail.get("id")
+        )
+
+        render_result_card("Baseline", baseline_experiment_detail)
+        if not is_baseline_running and should_show_best_card:
+            render_result_card("Best", best_experiment_detail, emphasize_best=True)
+
+
+def should_refresh_result_summary(selected_run_id: str) -> bool:
+    """Return whether the summary cards should refresh automatically."""
+    if selected_run_id in {"", "__all__"}:
+        return False
+    auto_task_progress = st.session_state.get("auto_task_progress") or {}
+    auto_task_status = str(auto_task_progress.get("status") or "")
+    if (
+        st.session_state.get("current_auto_task_id")
+        and st.session_state.get("selected_run_id") == selected_run_id
+        and auto_task_status in {"queued", "running", "stopping"}
+    ):
+        return True
+    training_experiment_id = st.session_state.get("training_experiment_id")
+    if not training_experiment_id:
+        return False
+    training_experiment_detail = load_experiment_detail(training_experiment_id)
+    return (
+        training_experiment_detail.get("run_id") == selected_run_id
+        and training_experiment_detail.get("status") == "running"
+    )
+
+
+@st.fragment(run_every="2s")
+def render_live_result_summary(selected_run_id: str) -> None:
+    """Refresh the result summary cards while training is active."""
+    render_result_summary(selected_run_id)
+
+
 def render_result_workspace(runs: list[dict[str, Any]], selected_run_id: str) -> None:
     """Render the right-side result workspace."""
     st.subheader("Results")
-    st.caption("这里展示当前选中 run 或实验的结果、指标、参数快照和搜索策略。")
-    selected_experiment_id = st.session_state.get("selected_experiment_id")
-    best_experiment_detail = None
-    run_summary = None
-    if selected_run_id not in {"", "__all__"}:
-        run_summary = load_run_summary(selected_run_id)
-        best_experiment_detail = get_best_experiment_detail(selected_run_id)
-        if not selected_experiment_id and best_experiment_detail is not None:
-            selected_experiment_id = best_experiment_detail["id"]
-            st.session_state["selected_experiment_id"] = selected_experiment_id
-
-    inspected_experiment_detail = load_experiment_detail(selected_experiment_id) if selected_experiment_id else None
-    summary_experiment_detail = best_experiment_detail or inspected_experiment_detail
-
-    if summary_experiment_detail:
-        result = summary_experiment_detail.get("result") or {}
-        metrics = result.get("metrics") or {}
-        metric_columns = st.columns(4)
-        metric_columns[0].metric("Status", summary_experiment_detail.get("status", "-"))
-        metric_columns[1].metric("Top1 Acc", metrics.get("top1_acc", "-"))
-        metric_columns[2].metric("Val Loss", metrics.get("val_loss", "-"))
-        metric_columns[3].metric("Train Loss", metrics.get("train_loss", "-"))
-        if run_summary is not None:
-            st.caption(
-                " / ".join(
-                    [
-                        f"baseline={get_short_experiment_id(run_summary.get('baseline_experiment_id'))}",
-                        f"best={get_short_experiment_id(run_summary.get('best_experiment_id'))}",
-                        f"frontier={get_short_experiment_id(run_summary.get('frontier_experiment_id'))}",
-                    ]
-                )
-            )
-
-        config = summary_experiment_detail.get("config") or {}
-        search_policy = config.get("search_policy") or {}
-        ranking_policy = config.get("ranking_policy") or {}
-        if search_policy:
-            st.caption(
-                "AI search: "
-                + ", ".join(
-                    [
-                        f"basic_hparams={search_policy.get('allow_basic_hparam_search')}",
-                        f"strategy={search_policy.get('allow_strategy_search')}",
-                        f"loss={search_policy.get('allow_loss_search')}",
-                        f"augmentation={search_policy.get('allow_augmentation_search')}",
-                        f"manual_approval={search_policy.get('require_manual_approval_for_high_impact_changes')}",
-                    ]
-                )
-            )
-        if ranking_policy:
-            st.caption("Ranking policy: " + summarize_ranking_policy(ranking_policy))
-
-        with st.container(border=True):
-            title = "Best Experiment Detail" if best_experiment_detail is not None else "Experiment Detail"
-            st.markdown(f"**{title}**")
-            st.json(
-                {
-                    "experiment_id": summary_experiment_detail.get("id"),
-                    "run_id": summary_experiment_detail.get("run_id"),
-                    "decision": summary_experiment_detail.get("decision"),
-                    "decision_reason": summary_experiment_detail.get("decision_reason"),
-                    "baseline_experiment_id": summary_experiment_detail.get("baseline_experiment_id"),
-                    "is_best_so_far": summary_experiment_detail.get("is_best_so_far"),
-                    "config": summary_experiment_detail.get("config"),
-                    "result": summary_experiment_detail.get("result"),
-                    "reflection": summary_experiment_detail.get("reflection"),
-                },
-                expanded=False,
-            )
+    if should_refresh_result_summary(selected_run_id):
+        render_live_result_summary(selected_run_id)
     else:
-        st.caption("Select or create a run to inspect results.")
+        render_result_summary(selected_run_id)
 
     render_ai_suggestion_panel()
-    render_training_records_workspace(runs, selected_run_id)
+    auto_task_progress = st.session_state.get("auto_task_progress") or {}
+    auto_task_status = str(auto_task_progress.get("status") or "")
+    current_auto_run_id = st.session_state.get("selected_run_id")
+    is_selected_run_auto_training = (
+        selected_run_id not in {"", "__all__"}
+        and current_auto_run_id == selected_run_id
+        and st.session_state.get("current_auto_task_id")
+        and auto_task_status in {"queued", "running", "stopping"}
+    )
+    selected_run = next((run for run in runs if run["id"] == selected_run_id), None)
+    selected_run_experiment_count = int(selected_run.get("experiment_count", 0)) if selected_run else 0
+    has_auto_train_history = selected_run_experiment_count > 1
+    if is_selected_run_auto_training:
+        st.subheader("Training Records")
+        st.caption("Auto Train 进行中时先隐藏训练记录表，结束后再统一查看和比较。")
+    elif selected_run_id not in {"", "__all__"} and not has_auto_train_history:
+        st.subheader("Training Records")
+        st.caption("当前只有 baseline，暂不显示训练记录表；进入 Auto Train 后再展示历史对比。")
+    else:
+        render_training_records_workspace(runs, selected_run_id)
 
 
 def main() -> None:
     """Render the Streamlit demo UI."""
+    global REQUEST_CACHE
+    REQUEST_CACHE = {}
     st.set_page_config(page_title="AutoVisionLab Demo", layout="wide")
     st.title("AutoVisionLab Demo")
     st.caption("左侧训练，右侧看结果。`Train` 单次执行后给建议；`Auto Train` 自动连续调优并总结本轮优化结果。")
@@ -1954,7 +2495,9 @@ def main() -> None:
         else:
             st.error(post_action_notice["message"])
 
+    recover_active_auto_train_task_state()
     sync_auto_train_task_state()
+    sync_manual_training_state()
 
     runs = load_runs()
     is_training_active = has_running_experiment(runs) or bool(st.session_state.get("ui_locked"))
@@ -1972,49 +2515,6 @@ def main() -> None:
 
     render_live_training_monitor()
     process_pending_train_request()
-
-    training_experiment_id = st.session_state.get("training_experiment_id")
-    current_auto_task_id = st.session_state.get("current_auto_task_id")
-    active_train_control = st.session_state.get("active_train_control")
-    if training_experiment_id and not current_auto_task_id and active_train_control != "auto":
-        training_experiment_detail = load_experiment_detail(training_experiment_id)
-        training_status = training_experiment_detail.get("status")
-        if training_status == "running":
-            if st.session_state.get("last_running_experiment_id") != training_experiment_id:
-                append_activity_log(f"Experiment {training_experiment_id} is running.")
-                st.session_state["last_running_experiment_id"] = training_experiment_id
-        elif st.session_state.get("last_finished_experiment_id") != training_experiment_id:
-            st.session_state["last_finished_experiment_id"] = training_experiment_id
-            st.session_state["selected_experiment_id"] = training_experiment_id
-            clear_training_state()
-            if training_status == "discarded":
-                append_activity_log(f"Experiment {training_experiment_id} was discarded.")
-                st.warning(f"Training stopped and discarded: {training_experiment_id}")
-                return
-            append_activity_log(
-                f"Experiment {training_experiment_id} finished with status {training_status} "
-                f"and {format_metric_summary(training_experiment_detail)}."
-            )
-            completed_run_id = training_experiment_detail.get("run_id")
-            if completed_run_id:
-                ok, suggestion_message = generate_and_store_ai_suggestion(
-                    completed_run_id,
-                    training_experiment_id,
-                    training_experiment_detail,
-                    "Post-train",
-                )
-                if not ok:
-                    append_activity_log(suggestion_message)
-            if training_status == "failed":
-                if is_oom_failure(training_experiment_detail):
-                    st.error(
-                        "Training failed: CUDA out of memory. "
-                        "Try a smaller batch size, or reduce image size if needed."
-                    )
-                else:
-                    st.error(f"Training failed with status: {training_status}")
-            else:
-                st.success(f"Training finished with status: {training_status}")
 
 
 if __name__ == "__main__":

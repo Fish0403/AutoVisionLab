@@ -1,0 +1,105 @@
+version: model_recipe@v1
+task_type: classification
+model_family: mobilenet
+base_model: mobilenet_v3_small
+input_channels: 3
+width_multiple: 1.0
+components:
+  backbone:
+    name: mobilenet_v3_small_native
+    params: {}
+  neck:
+    name: avg_pool
+    params: {}
+  head:
+    name: native_classifier
+    params: {}
+backbone_config:
+  stem_variant: standard
+  attention_module: none
+  last_channel_multiplier: 1.0
+head_config:
+  pooling_type: avg
+  classifier_dropout: 0.2
+  classifier_type: linear
+backbone:
+  - from: -1
+    repeat: 1
+    module: stem_conv
+    args: [16, 3, 2, hardswish]
+    tag: stem
+  - from: -1
+    repeat: 1
+    module: inverted_residual
+    args: [16, 3, 16, 16, true, RE, 2, 1]
+    tag: C1
+  - from: -1
+    repeat: 1
+    module: inverted_residual
+    args: [16, 3, 72, 24, false, RE, 2, 1]
+    tag: C2
+  - from: -1
+    repeat: 1
+    module: inverted_residual
+    args: [24, 3, 88, 24, false, RE, 1, 1]
+    tag: C2
+  - from: -1
+    repeat: 1
+    module: inverted_residual
+    args: [24, 5, 96, 40, true, HS, 2, 1]
+    tag: C3
+  - from: -1
+    repeat: 1
+    module: inverted_residual
+    args: [40, 5, 240, 40, true, HS, 1, 1]
+    tag: C3
+  - from: -1
+    repeat: 1
+    module: inverted_residual
+    args: [40, 5, 240, 40, true, HS, 1, 1]
+    tag: C3
+  - from: -1
+    repeat: 1
+    module: inverted_residual
+    args: [40, 5, 120, 48, true, HS, 1, 1]
+    tag: C3
+  - from: -1
+    repeat: 1
+    module: inverted_residual
+    args: [48, 5, 144, 48, true, HS, 1, 1]
+    tag: C3
+  - from: -1
+    repeat: 1
+    module: inverted_residual
+    args: [48, 5, 288, 96, true, HS, 2, 1]
+    tag: C4
+  - from: -1
+    repeat: 1
+    module: inverted_residual
+    args: [96, 5, 576, 96, true, HS, 1, 1]
+    tag: C4
+  - from: -1
+    repeat: 1
+    module: inverted_residual
+    args: [96, 5, 576, 96, true, HS, 1, 1]
+    tag: C4
+neck: []
+head:
+  - from: -1
+    repeat: 1
+    module: pointwise_tail
+    args: [6, hardswish]
+    tag: tail
+  - from: -1
+    repeat: 1
+    module: global_pool
+    args: []
+    tag: pool
+  - from: -1
+    repeat: 1
+    module: classifier
+    args: [1024]
+    tag: cls
+modules: {}
+metadata:
+  notes: Mirrors torchvision.models.mobilenet_v3_small block layout.

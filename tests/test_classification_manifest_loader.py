@@ -17,7 +17,8 @@ sys.path.insert(0, str(VENV_SITE_PACKAGES))
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 from app.schemas.parameter_space import ExperimentConfig
-from app.trainers.classification.base_trainer import BaseClassificationTrainer, ManifestClassificationDataset
+from app.trainers.classification.base_trainer import BaseClassificationTrainer
+from app.trainers.classification.data_loading import ManifestClassificationDataset, resolve_classification_dataset_files
 
 
 def _build_config(dataset_name: str) -> ExperimentConfig:
@@ -27,7 +28,7 @@ def _build_config(dataset_name: str) -> ExperimentConfig:
             "task_type": "classification",
             "dataset": dataset_name,
             "model_family": "mobilenet",
-            "model_name": "mobilenet_v2",
+            "model_name": "mobilenet_v3_small",
             "parameter_space_version": "test-v1",
             "params": {
                 "optimizer": "adamw",
@@ -88,7 +89,7 @@ class ClassificationManifestLoaderTest(unittest.TestCase):
             self.assertEqual(image.size, (16, 16))
             self.assertEqual(label, 0)
 
-    def test_trainer_resolves_manifest_and_raw_roots_case_insensitively(self) -> None:
+    def test_resolver_finds_manifest_and_raw_roots_case_insensitively(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root_dir = Path(temp_dir)
             raw_root = root_dir / "raw" / "KDSC"
@@ -105,15 +106,13 @@ class ClassificationManifestLoaderTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            trainer = _DummyTrainer(config=_build_config("kdsc"), experiment_id="exp_1", run_id="run_1")
-            trainer.data_root = root_dir
-            train_manifest, val_manifest, source_root = trainer.resolve_classification_dataset_files("kdsc")
+            train_manifest, val_manifest, source_root = resolve_classification_dataset_files(root_dir, "kdsc")
 
             self.assertEqual(train_manifest, classification_root / "train.txt")
             self.assertEqual(val_manifest, classification_root / "val.txt")
             self.assertEqual(source_root, raw_root)
 
-    def test_trainer_uses_prepared_source_for_neu(self) -> None:
+    def test_resolver_uses_prepared_source_for_neu(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root_dir = Path(temp_dir)
             raw_root = root_dir / "raw" / "neu"
@@ -131,9 +130,7 @@ class ClassificationManifestLoaderTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            trainer = _DummyTrainer(config=_build_config("neu"), experiment_id="exp_1", run_id="run_1")
-            trainer.data_root = root_dir
-            train_manifest, val_manifest, source_root = trainer.resolve_classification_dataset_files("neu")
+            train_manifest, val_manifest, source_root = resolve_classification_dataset_files(root_dir, "neu")
 
             self.assertEqual(train_manifest, classification_root / "train.txt")
             self.assertEqual(val_manifest, classification_root / "val.txt")

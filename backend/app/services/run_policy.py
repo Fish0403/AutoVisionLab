@@ -12,13 +12,14 @@ from app.services.parameter_space import (
     AUGMENTATION_SEARCH_FIELDS,
     BASIC_HPARAM_SEARCH_FIELDS,
     LOSS_SEARCH_FIELDS,
+    MODEL_MODULE_SEARCH_FIELDS,
     STRATEGY_SEARCH_FIELDS,
     get_allowed_ai_search_fields,
 )
 
 
-ALL_SEARCH_DIMENSIONS = {"basic", "augmentation", "loss", "strategy"}
-NON_BASIC_SEARCH_DIMENSIONS = {"augmentation", "loss", "strategy"}
+ALL_SEARCH_DIMENSIONS = {"basic", "augmentation", "loss", "strategy", "model_module"}
+NON_BASIC_SEARCH_DIMENSIONS = {"augmentation", "loss", "strategy", "model_module"}
 
 
 def get_default_run_policy() -> RunPolicy:
@@ -58,8 +59,8 @@ def _get_effective_history_change_fields(experiment: dict[str, Any]) -> set[str]
     """Return concrete changed fields recorded in one experiment proposal."""
     source_experiment = _resolve_source_experiment(experiment, history_index=None)
     if source_experiment is not None:
-        current_params = _flatten_search_params(_extract_experiment_params(experiment))
-        source_params = _flatten_search_params(_extract_experiment_params(source_experiment))
+        current_params = _extract_experiment_search_values(experiment)
+        source_params = _extract_experiment_search_values(source_experiment)
         return {
             field_name
             for field_name, current_value in current_params.items()
@@ -82,6 +83,59 @@ def _extract_experiment_params(experiment: dict[str, Any]) -> dict[str, Any]:
     config_payload = experiment.get("config") or {}
     params_payload = config_payload.get("params")
     return params_payload if isinstance(params_payload, dict) else {}
+
+
+def _extract_experiment_search_values(experiment: dict[str, Any]) -> dict[str, Any]:
+    """Return one normalized search payload from recipes or legacy params."""
+    if isinstance(experiment.get("train_hyp"), dict):
+        train_hyp_payload = experiment["train_hyp"]
+        model_recipe_payload = experiment.get("model_recipe") or {}
+    else:
+        config_payload = experiment.get("config") or {}
+        train_hyp_payload = config_payload.get("train_hyp") or {}
+        model_recipe_payload = config_payload.get("model_recipe") or {}
+
+    if isinstance(train_hyp_payload, dict) and train_hyp_payload:
+        augmentation_payload = train_hyp_payload.get("augmentation") or {}
+        loss_payload = train_hyp_payload.get("loss") or {}
+        modules_payload = model_recipe_payload.get("modules") or {}
+        legacy_head_payload = model_recipe_payload.get("head")
+        head_config_payload = model_recipe_payload.get("head_config") or (
+            legacy_head_payload if isinstance(legacy_head_payload, dict) else {}
+        )
+        components_payload = model_recipe_payload.get("components") or {}
+        backbone_component_payload = components_payload.get("backbone") or {}
+        neck_component_payload = components_payload.get("neck") or {}
+        head_component_payload = components_payload.get("head") or {}
+        flattened_payload = {
+            "optimizer": train_hyp_payload.get("optimizer"),
+            "learning_rate": train_hyp_payload.get("lr0"),
+            "batch_size": train_hyp_payload.get("batch_size"),
+            "weight_decay": train_hyp_payload.get("weight_decay"),
+            "scheduler": train_hyp_payload.get("scheduler"),
+            "label_smoothing": train_hyp_payload.get("label_smoothing"),
+            "image_size": train_hyp_payload.get("image_size"),
+            "augmentation_policy": augmentation_payload.get("policy"),
+            "mixup_alpha": augmentation_payload.get("mixup"),
+            "cutmix_alpha": augmentation_payload.get("cutmix"),
+            "random_erasing_prob": augmentation_payload.get("random_erasing"),
+            "loss_name": loss_payload.get("name"),
+            "focal_gamma": train_hyp_payload.get("fl_gamma"),
+            "aux_logits": modules_payload.get("aux_logits"),
+            "width_multiple": model_recipe_payload.get("width_multiple"),
+            "pooling_type": head_config_payload.get("pooling_type"),
+            "classifier_dropout": head_config_payload.get("classifier_dropout"),
+            "backbone_name": backbone_component_payload.get("name"),
+            "neck_name": neck_component_payload.get("name"),
+            "head_name": head_component_payload.get("name"),
+        }
+        return {
+            field_name: value
+            for field_name, value in flattened_payload.items()
+            if value is not None
+        }
+
+    return _flatten_search_params(_extract_experiment_params(experiment))
 
 
 def _flatten_search_params(params_payload: dict[str, Any]) -> dict[str, Any]:
@@ -146,6 +200,8 @@ def get_field_dimension(field_name: str) -> str | None:
         return "loss"
     if field_name in STRATEGY_SEARCH_FIELDS:
         return "strategy"
+    if field_name in MODEL_MODULE_SEARCH_FIELDS:
+        return "model_module"
     return None
 
 
@@ -256,8 +312,8 @@ def _get_effective_history_change_fields_with_index(
     """Return changed fields using both source-diffing and proposal fallbacks."""
     source_experiment = _resolve_source_experiment(experiment, history_index)
     if source_experiment is not None:
-        current_params = _flatten_search_params(_extract_experiment_params(experiment))
-        source_params = _flatten_search_params(_extract_experiment_params(source_experiment))
+        current_params = _extract_experiment_search_values(experiment)
+        source_params = _extract_experiment_search_values(source_experiment)
         return {
             field_name
             for field_name, current_value in current_params.items()
@@ -383,19 +439,14 @@ def should_stop_after_dimension_coverage(
     )
 
 
-def require_non_basic_change_for_elapsed_budget(
-    elapsed_seconds: float,
-    max_wall_clock_minutes: int,
+def require_non_basic_change_after_warmup_rounds(
+    current_round: int,
     *,
     policy: RunPolicy | None = None,
 ) -> bool:
-    """Return whether the current round must include augmentation/loss/strategy changes."""
-    if max_wall_clock_minutes <= 0:
-        return False
+    """Return whether the current round should prioritize augmentation/loss/strategy changes."""
     effective_policy = policy or get_default_run_policy()
-    total_budget_seconds = max_wall_clock_minutes * 60
-    threshold_seconds = total_budget_seconds * effective_policy.auto_train_non_basic_change_after_budget_ratio
-    return elapsed_seconds > threshold_seconds
+    return current_round > effective_policy.auto_train_non_basic_change_after_round
 
 
 def extract_ranking_metrics(experiment: ExperimentModel) -> tuple[float | None, float | None]:
@@ -423,8 +474,8 @@ def _get_ranking_metric_value(experiment: ExperimentModel, metric_name: str) -> 
     metrics_payload = result_payload.get("metrics") or {}
     resource_payload = result_payload.get("resource") or {}
 
-    if metric_name == "training_seconds":
-        metric_value = resource_payload.get("training_seconds")
+    if metric_name in {"training_seconds", "latency_ms", "parameter_count_million"}:
+        metric_value = resource_payload.get(metric_name)
     else:
         metric_value = metrics_payload.get(metric_name)
 
@@ -436,8 +487,11 @@ def _get_ranking_metric_value(experiment: ExperimentModel, metric_name: str) -> 
 def _get_experiment_image_size(experiment: ExperimentModel) -> int | None:
     """Return image_size from one persisted experiment config."""
     config_payload = experiment.experiment_config or {}
-    params_payload = config_payload.get("params") or {}
-    image_size = params_payload.get("image_size")
+    train_hyp_payload = config_payload.get("train_hyp") or {}
+    image_size = train_hyp_payload.get("image_size")
+    if not isinstance(image_size, int):
+        params_payload = config_payload.get("params") or {}
+        image_size = params_payload.get("image_size")
     return int(image_size) if isinstance(image_size, int) else None
 
 

@@ -33,6 +33,7 @@ from app.services.persistence import (
     create_experiment,
     create_run,
     get_run_detail,
+    get_run_summary,
     save_experiment_result,
     clear_all_records,
     clear_run_records,
@@ -47,7 +48,7 @@ from app.services.run_policy import (
     get_default_run_policy,
     get_preferred_fields,
     proposal_switches_dimension,
-    require_non_basic_change_for_elapsed_budget,
+    require_non_basic_change_after_warmup_rounds,
     should_stop_after_dimension_coverage,
 )
 
@@ -64,7 +65,7 @@ def _build_experiment_config(
             "task_type": "classification",
             "dataset": "cifar10",
             "model_family": "mobilenet",
-            "model_name": "mobilenet_v2",
+            "model_name": "mobilenet_v3_small",
             "parameter_space_version": parameter_space_version,
             "participates_in_ranking": True,
             "search_policy": {
@@ -166,7 +167,7 @@ class RunPromotionPolicyTest(unittest.TestCase):
         candidate_image_size: int = 32,
     ) -> tuple[dict[str, str], str]:
         """Create one run and two successful experiments for promotion checks."""
-        parameter_space = get_parameter_space("mobilenet_v2")
+        parameter_space = get_parameter_space("mobilenet_v3_small")
         assert parameter_space is not None
         experiment_config = _build_experiment_config(
             parameter_space.version,
@@ -175,6 +176,10 @@ class RunPromotionPolicyTest(unittest.TestCase):
         candidate_config = ExperimentConfig.model_validate(
             {
                 **experiment_config.model_dump(),
+                "train_hyp": {
+                    **experiment_config.train_hyp.model_dump(),
+                    "image_size": candidate_image_size,
+                },
                 "params": {
                     **experiment_config.params.model_dump(),
                     "image_size": candidate_image_size,
@@ -188,7 +193,7 @@ class RunPromotionPolicyTest(unittest.TestCase):
                 RunCreateRequest(
                     name=f"promotion-test-{uuid4().hex[:8]}",
                     dataset="cifar10",
-                    model_name="mobilenet_v2",
+                    model_name="mobilenet_v3_small",
                     base_config=experiment_config,
                     notes=None,
                 ),
@@ -258,12 +263,50 @@ class RunPromotionPolicyTest(unittest.TestCase):
 
         self.assertEqual(best_experiment_id, ids["baseline_id"])
 
-        with SessionLocal() as db:
-            candidate_detail = get_run_detail(db, ids["run_id"])
-            assert candidate_detail is not None
-            latest_experiment = candidate_detail.experiments[-1]
-            self.assertEqual(latest_experiment.id, ids["candidate_id"])
-            self.assertEqual(latest_experiment.decision, "discard")
+    def test_dimension_attempt_count_reads_train_hyp_history(self) -> None:
+        experiment_history = [
+            {
+                "id": "exp_keep",
+                "status": "success",
+                "decision": "keep",
+                "train_hyp": {
+                    "optimizer": "adamw",
+                    "lr0": 0.003,
+                    "batch_size": 32,
+                    "image_size": 32,
+                    "weight_decay": 0.0001,
+                    "scheduler": "cosine",
+                    "label_smoothing": 0.1,
+                    "augmentation": {"policy": "basic", "mixup": 0.0, "cutmix": 0.0, "random_erasing": 0.0},
+                    "loss": {"name": "cross_entropy_with_label_smoothing"},
+                    "fl_gamma": 0.0,
+                },
+                "model_recipe": {"modules": {}},
+            },
+            {
+                "id": "exp_aug",
+                "status": "success",
+                "decision": "discard",
+                "train_hyp": {
+                    "optimizer": "adamw",
+                    "lr0": 0.003,
+                    "batch_size": 32,
+                    "image_size": 32,
+                    "weight_decay": 0.0001,
+                    "scheduler": "cosine",
+                    "label_smoothing": 0.1,
+                    "augmentation": {"policy": "basic", "mixup": 0.3, "cutmix": 0.0, "random_erasing": 0.0},
+                    "loss": {"name": "cross_entropy_with_label_smoothing"},
+                    "fl_gamma": 0.0,
+                },
+                "model_recipe": {"modules": {}},
+                "proposal": {"based_on_experiment_ids": ["exp_keep"], "changes": {"mixup_alpha": 0.3}},
+            },
+        ]
+
+        dimension_attempt_count = get_dimension_attempt_count(experiment_history)
+
+        self.assertEqual(dimension_attempt_count["augmentation"], 1)
 
     def test_significant_top1_acc_gain_promotes(self) -> None:
         ids, best_experiment_id = self._create_run_with_two_results(
@@ -284,6 +327,177 @@ class RunPromotionPolicyTest(unittest.TestCase):
         )
 
         self.assertEqual(best_experiment_id, ids["candidate_id"])
+
+    def test_latency_gain_at_top1_parity_promotes(self) -> None:
+        parameter_space = get_parameter_space("mobilenet_v3_small")
+        assert parameter_space is not None
+        ranking_policy = RankingPolicy(
+            primary_metric="top1_acc",
+            primary_metric_mode="max",
+            min_primary_metric_improvement=0.01,
+            primary_metric_parity_epsilon=0.0005,
+            tie_breaker_metric="latency_ms",
+            tie_breaker_mode="min",
+            min_tie_breaker_metric_improvement=1.0,
+        )
+        experiment_config = _build_experiment_config(
+            parameter_space.version,
+            ranking_policy=ranking_policy,
+        )
+
+        with SessionLocal() as db:
+            run = create_run(
+                db,
+                RunCreateRequest(
+                    name=f"latency-promotion-test-{uuid4().hex[:8]}",
+                    dataset="cifar10",
+                    model_name="mobilenet_v3_small",
+                    base_config=experiment_config,
+                    notes=None,
+                ),
+            )
+            baseline = create_experiment(
+                db,
+                ExperimentCreateRequest(
+                    run_id=run.id,
+                    config=experiment_config,
+                    parameter_space=parameter_space,
+                    proposal=None,
+                ),
+            )
+            assert baseline is not None
+            baseline_result = _build_result(
+                top1_acc=0.8000,
+                val_loss=0.5000,
+                experiment_config=experiment_config,
+                run_id=run.id,
+                experiment_id=baseline.id,
+            ).model_dump()
+            baseline_result["resource"]["latency_ms"] = 8.4
+            save_experiment_result(db, baseline.id, ResultSchema.model_validate(baseline_result))
+
+            candidate = create_experiment(
+                db,
+                ExperimentCreateRequest(
+                    run_id=run.id,
+                    config=experiment_config,
+                    parameter_space=parameter_space,
+                    proposal=None,
+                ),
+            )
+            assert candidate is not None
+            candidate_result = _build_result(
+                top1_acc=0.8003,
+                val_loss=0.5010,
+                experiment_config=experiment_config,
+                run_id=run.id,
+                experiment_id=candidate.id,
+            ).model_dump()
+            candidate_result["resource"]["latency_ms"] = 6.9
+            save_experiment_result(db, candidate.id, ResultSchema.model_validate(candidate_result))
+
+            run_detail = get_run_detail(db, run.id)
+            assert run_detail is not None
+
+        self.assertEqual(run_detail.best_experiment_id, candidate.id)
+
+    def test_run_summary_exposes_efficiency_and_tradeoff_anchors(self) -> None:
+        parameter_space = get_parameter_space("mobilenet_v3_small")
+        assert parameter_space is not None
+        ranking_policy = RankingPolicy(
+            primary_metric="top1_acc",
+            primary_metric_mode="max",
+            min_primary_metric_improvement=0.005,
+            primary_metric_parity_epsilon=0.0005,
+            tie_breaker_metric="latency_ms",
+            tie_breaker_mode="min",
+            min_tie_breaker_metric_improvement=0.5,
+        )
+        experiment_config = _build_experiment_config(
+            parameter_space.version,
+            ranking_policy=ranking_policy,
+        )
+
+        with SessionLocal() as db:
+            run = create_run(
+                db,
+                RunCreateRequest(
+                    name=f"anchor-test-{uuid4().hex[:8]}",
+                    dataset="cifar10",
+                    model_name="mobilenet_v3_small",
+                    base_config=experiment_config,
+                    notes=None,
+                ),
+            )
+
+            def create_success_experiment(
+                *,
+                top1_acc: float,
+                val_loss: float,
+                latency_ms: float,
+                parameter_count_million: float,
+            ) -> str:
+                experiment = create_experiment(
+                    db,
+                    ExperimentCreateRequest(
+                        run_id=run.id,
+                        config=experiment_config,
+                        parameter_space=parameter_space,
+                        proposal=None,
+                    ),
+                )
+                assert experiment is not None
+                result_payload = _build_result(
+                    top1_acc=top1_acc,
+                    val_loss=val_loss,
+                    experiment_config=experiment_config,
+                    run_id=run.id,
+                    experiment_id=experiment.id,
+                ).model_dump()
+                result_payload["resource"]["latency_ms"] = latency_ms
+                result_payload["resource"]["parameter_count_million"] = parameter_count_million
+                save_experiment_result(db, experiment.id, ResultSchema.model_validate(result_payload))
+                return experiment.id
+
+            baseline_id = create_success_experiment(
+                top1_acc=0.8000,
+                val_loss=0.5000,
+                latency_ms=8.0,
+                parameter_count_million=2.0,
+            )
+            fast_id = create_success_experiment(
+                top1_acc=0.7998,
+                val_loss=0.5050,
+                latency_ms=5.2,
+                parameter_count_million=1.6,
+            )
+            accurate_id = create_success_experiment(
+                top1_acc=0.8100,
+                val_loss=0.4950,
+                latency_ms=9.3,
+                parameter_count_million=2.8,
+            )
+            tradeoff_id = create_success_experiment(
+                top1_acc=0.8097,
+                val_loss=0.4940,
+                latency_ms=6.1,
+                parameter_count_million=2.1,
+            )
+
+            run_detail = get_run_detail(db, run.id)
+            run_summary = get_run_summary(db, run.id)
+            assert run_detail is not None
+            assert run_summary is not None
+
+        self.assertEqual(run_detail.baseline_experiment_id, baseline_id)
+        self.assertEqual(run_detail.best_quality_experiment_id, accurate_id)
+        self.assertEqual(run_detail.best_experiment_id, tradeoff_id)
+        self.assertEqual(run_detail.best_efficiency_experiment_id, fast_id)
+        self.assertEqual(run_detail.best_tradeoff_experiment_id, tradeoff_id)
+        self.assertEqual(run_summary.best_quality_experiment_id, accurate_id)
+        self.assertEqual(run_summary.best_experiment_id, tradeoff_id)
+        self.assertEqual(run_summary.best_efficiency_experiment_id, fast_id)
+        self.assertEqual(run_summary.best_tradeoff_experiment_id, tradeoff_id)
 
     def test_change_budget_stays_single_variable_without_stagnation(self) -> None:
         stagnation_rounds, max_changed_fields = determine_change_budget(
@@ -331,11 +545,11 @@ class RunPromotionPolicyTest(unittest.TestCase):
 
         self.assertEqual(best_experiment_id, ids["baseline_id"])
 
-    def test_non_basic_change_phase_uses_budget_ratio(self) -> None:
+    def test_non_basic_change_phase_uses_warmup_rounds(self) -> None:
         run_policy = get_default_run_policy()
 
-        self.assertFalse(require_non_basic_change_for_elapsed_budget(300, 10, policy=run_policy))
-        self.assertTrue(require_non_basic_change_for_elapsed_budget(301, 10, policy=run_policy))
+        self.assertFalse(require_non_basic_change_after_warmup_rounds(3, policy=run_policy))
+        self.assertTrue(require_non_basic_change_after_warmup_rounds(4, policy=run_policy))
 
     def test_repeated_failed_field_enters_temporary_cooldown(self) -> None:
         run_policy = get_default_run_policy()
@@ -463,6 +677,23 @@ class RunPromotionPolicyTest(unittest.TestCase):
         self.assertEqual(
             get_available_dimensions(search_policy),
             {"basic", "loss", "augmentation"},
+        )
+
+    def test_available_dimensions_include_model_module_when_enabled(self) -> None:
+        search_policy = SearchPolicy.model_validate(
+            {
+                "allow_basic_hparam_search": False,
+                "allow_strategy_search": False,
+                "allow_loss_search": False,
+                "allow_augmentation_search": False,
+                "allow_model_module_search": True,
+                "require_manual_approval_for_high_impact_changes": True,
+            }
+        )
+
+        self.assertEqual(
+            get_available_dimensions(search_policy),
+            {"model_module"},
         )
 
     def test_preferred_fields_fall_back_when_soft_preferences_would_empty_space(self) -> None:
@@ -611,7 +842,7 @@ class RunPromotionPolicyTest(unittest.TestCase):
 
         self.assertEqual(
             get_dimension_attempt_count(experiment_history),
-            {"basic": 3, "augmentation": 3, "loss": 0, "strategy": 0},
+            {"basic": 3, "augmentation": 3, "loss": 0, "strategy": 0, "model_module": 0},
         )
         should_stop, _ = should_stop_after_dimension_coverage(experiment_history, search_policy)
         self.assertTrue(should_stop)

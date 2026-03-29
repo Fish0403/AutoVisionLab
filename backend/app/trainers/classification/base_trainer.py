@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import gc
 import random
 import time
-from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Callable
 
@@ -13,21 +13,28 @@ from torch import nn
 from torch.optim import Adam, AdamW, SGD
 from torch.optim.lr_scheduler import CosineAnnealingLR, StepLR
 from torch.utils.data import DataLoader, Dataset, Subset
-from torchvision.datasets.folder import default_loader
 
 from app.core.settings import get_settings
 from app.schemas.ai import ResultSchema
 from app.schemas.common import ArtifactPaths, MetricsSnapshot, ResourceUsage
 from app.schemas.parameter_space import ExperimentConfig
+from app.trainers.classification.data_loading import (
+    ManifestClassificationDataset,
+    build_class_index,
+    resolve_classification_dataset_files,
+)
 from app.trainers.classification.components import (
     apply_batch_augmentations,
     build_eval_transform,
     build_loss,
     build_train_transform,
 )
+from app.trainers.classification.model_adapters import (
+    ClassificationModelAdapter,
+    get_classification_model_adapter,
+)
 
 
-PREPARED_SOURCE_DIRNAME = "classification_source"
 DEMO_SUBSET_SEED = 42
 
 
@@ -35,73 +42,8 @@ class TrainingInterruptedError(RuntimeError):
     """Raised when the current experiment is stopped and discarded."""
 
 
-class ManifestClassificationDataset(Dataset):
-    """Classification dataset backed by a split manifest file."""
-
-    def __init__(
-        self,
-        manifest_path: Path,
-        source_root: Path,
-        class_to_idx: dict[str, int],
-        transform=None,
-    ) -> None:
-        self.manifest_path = manifest_path
-        self.source_root = source_root
-        self.class_to_idx = class_to_idx
-        self.transform = transform
-        self.classes = [class_name for class_name, _ in sorted(class_to_idx.items(), key=lambda item: item[1])]
-        self.samples = self._load_samples()
-        self.targets = [target for _, target in self.samples]
-
-    def _load_samples(self) -> list[tuple[Path, int]]:
-        """Load manifest lines into path and class index tuples."""
-        if not self.manifest_path.exists():
-            raise FileNotFoundError(f"Classification manifest not found: {self.manifest_path}")
-
-        samples: list[tuple[Path, int]] = []
-        for line_number, raw_line in enumerate(self.manifest_path.read_text(encoding="utf-8").splitlines(), start=1):
-            line = raw_line.strip()
-            if not line:
-                continue
-            if "\t" in line:
-                relative_path_text, class_name = line.rsplit("\t", maxsplit=1)
-            else:
-                parts = line.split(maxsplit=1)
-                if len(parts) != 2:
-                    raise ValueError(
-                        f"Invalid manifest line at {self.manifest_path}:{line_number}: {raw_line!r}"
-                    )
-                relative_path_text, class_name = parts
-            if class_name not in self.class_to_idx:
-                raise ValueError(
-                    f"Unknown class {class_name!r} found in manifest {self.manifest_path}:{line_number}"
-                )
-            image_path = self.source_root / Path(relative_path_text)
-            if not image_path.exists():
-                raise FileNotFoundError(
-                    f"Manifest points to a missing image: {image_path} "
-                    f"(from {self.manifest_path}:{line_number})"
-                )
-            samples.append((image_path, self.class_to_idx[class_name]))
-        if not samples:
-            raise ValueError(f"Classification manifest is empty: {self.manifest_path}")
-        return samples
-
-    def __len__(self) -> int:
-        """Return sample count."""
-        return len(self.samples)
-
-    def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
-        """Load one sample from the manifest."""
-        image_path, label = self.samples[index]
-        image = default_loader(str(image_path))
-        if self.transform is not None:
-            image = self.transform(image)
-        return image, label
-
-
-class BaseClassificationTrainer(ABC):
-    """Abstract trainer that only accepts structured experiment config."""
+class BaseClassificationTrainer:
+    """Generic classification trainer driven by one model adapter."""
 
     def __init__(
         self,
@@ -109,11 +51,13 @@ class BaseClassificationTrainer(ABC):
         experiment_id: str,
         run_id: str,
         should_stop: Callable[[], bool] | None = None,
+        model_adapter: ClassificationModelAdapter | None = None,
     ) -> None:
         self.config = config
         self.experiment_id = experiment_id
         self.run_id = run_id
         self.should_stop = should_stop or (lambda: False)
+        self.model_adapter = model_adapter or get_classification_model_adapter(config.model_name)
         self.settings = get_settings()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.artifact_root = Path(self.settings.artifact_root)
@@ -124,76 +68,134 @@ class BaseClassificationTrainer(ABC):
         self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         self.data_root.mkdir(parents=True, exist_ok=True)
 
-    @abstractmethod
     def create_model(self) -> nn.Module:
         """Create the model for this trainer."""
+        return self.model_adapter.create_model(self.config)
+
+    def count_model_parameters_million(self, model: nn.Module) -> float:
+        """Return trainable parameter count in millions."""
+        parameter_count = sum(parameter.numel() for parameter in model.parameters())
+        return round(parameter_count / 1_000_000, 4)
+
+    def measure_inference_latency_ms(self, model: nn.Module) -> float:
+        """Run a tiny inference benchmark on the current device."""
+        input_channels = self.config.model_recipe.input_channels if self.config.model_recipe is not None else 3
+        image_size = self.config.train_hyp.image_size
+        dummy_input = torch.randn(1, input_channels, image_size, image_size, device=self.device)
+        warmup_steps = 2
+        timed_steps = 5
+
+        was_training = model.training
+        model.eval()
+        with torch.inference_mode():
+            for _ in range(warmup_steps):
+                _ = model(dummy_input)
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize()
+
+            started_at = time.perf_counter()
+            for _ in range(timed_steps):
+                _ = model(dummy_input)
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize()
+            elapsed_ms = (time.perf_counter() - started_at) * 1000.0 / timed_steps
+        if was_training:
+            model.train()
+        return round(elapsed_ms, 4)
 
     def train(self) -> ResultSchema:
         """Execute training and return a structured result."""
-        train_loader, val_loader = self.build_dataloaders()
-        model = self.create_model().to(self.device)
-        criterion = build_loss(self.config.params)
-        optimizer = self.build_optimizer(model)
-        scheduler = self.build_scheduler(optimizer)
+        train_loader = None
+        val_loader = None
+        model = None
+        criterion = None
+        optimizer = None
+        scheduler = None
+        torch.cuda.reset_peak_memory_stats() if torch.cuda.is_available() else None
+        try:
+            train_loader, val_loader = self.build_dataloaders()
+            model = self.create_model().to(self.device)
+            criterion = build_loss(self.config.train_hyp)
+            optimizer = self.build_optimizer(model)
+            scheduler = self.build_scheduler(optimizer)
 
-        best_val_loss = float("inf")
-        best_epoch = 1
-        best_top1_acc = 0.0
-        final_train_loss = 0.0
-        started_at = time.time()
+            best_val_loss = float("inf")
+            best_epoch = 1
+            best_top1_acc = 0.0
+            final_train_loss = 0.0
+            started_at = time.time()
 
-        with self.log_path.open("a", encoding="utf-8") as log_file:
-            self.write_log(log_file, f"Starting training on device={self.device}")
-            for epoch in range(1, self.config.params.epochs + 1):
-                self.raise_if_stopped(log_file)
-                final_train_loss = self.train_one_epoch(model, train_loader, optimizer, criterion)
-                val_loss, top1_acc = self.evaluate(model, val_loader, criterion)
-                if scheduler is not None:
-                    scheduler.step()
+            with self.log_path.open("a", encoding="utf-8") as log_file:
+                self.write_log(log_file, f"Starting training on device={self.device}")
+                for epoch in range(1, self.config.train_hyp.epochs + 1):
+                    self.raise_if_stopped(log_file)
+                    final_train_loss = self.train_one_epoch(model, train_loader, optimizer, criterion)
+                    val_loss, top1_acc = self.evaluate(model, val_loader, criterion)
+                    if scheduler is not None:
+                        scheduler.step()
 
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    best_epoch = epoch
-                    best_top1_acc = top1_acc
-                    torch.save({"model_state_dict": model.state_dict()}, self.checkpoint_path)
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        best_epoch = epoch
+                        best_top1_acc = top1_acc
+                        torch.save({"model_state_dict": model.state_dict()}, self.checkpoint_path)
 
-                self.write_log(
-                    log_file,
-                    (
-                        f"epoch={epoch} train_loss={final_train_loss:.4f} "
-                        f"val_loss={val_loss:.4f} top1_acc={top1_acc:.4f}"
-                    ),
-                )
-        training_seconds = int(time.time() - started_at)
-        gpu_memory_mb = int(torch.cuda.max_memory_allocated() / 1024 / 1024) if torch.cuda.is_available() else 0
+                    self.write_log(
+                        log_file,
+                        (
+                            f"epoch={epoch} train_loss={final_train_loss:.4f} "
+                            f"val_loss={val_loss:.4f} top1_acc={top1_acc:.4f}"
+                        ),
+                    )
+            training_seconds = int(time.time() - started_at)
+            gpu_memory_mb = int(torch.cuda.max_memory_allocated() / 1024 / 1024) if torch.cuda.is_available() else 0
+            parameter_count_million = self.count_model_parameters_million(model)
+            latency_ms = self.measure_inference_latency_ms(model)
 
-        return ResultSchema(
-            status="success",
-            metrics=MetricsSnapshot(
-                train_loss=round(final_train_loss, 4),
-                val_loss=round(best_val_loss, 4),
-                top1_acc=round(best_top1_acc, 4),
-                best_epoch=best_epoch,
-            ),
-            resource=ResourceUsage(gpu_memory_mb=gpu_memory_mb, training_seconds=training_seconds),
-            params=self.config.params,
-            artifacts=ArtifactPaths(
-                log_path=str(self.log_path),
-                checkpoint_path=str(self.checkpoint_path),
-            ),
-        )
+            return ResultSchema(
+                status="success",
+                metrics=MetricsSnapshot(
+                    train_loss=round(final_train_loss, 4),
+                    val_loss=round(best_val_loss, 4),
+                    top1_acc=round(best_top1_acc, 4),
+                    best_epoch=best_epoch,
+                ),
+                resource=ResourceUsage(
+                    gpu_memory_mb=gpu_memory_mb,
+                    training_seconds=training_seconds,
+                    latency_ms=latency_ms,
+                    parameter_count_million=parameter_count_million,
+                ),
+                params=self.config.result_params(),
+                artifacts=ArtifactPaths(
+                    log_path=str(self.log_path),
+                    checkpoint_path=str(self.checkpoint_path),
+                ),
+            )
+        finally:
+            del scheduler
+            del optimizer
+            del criterion
+            del model
+            del train_loader
+            del val_loader
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def build_dataloaders(self) -> tuple[DataLoader, DataLoader]:
         """Build dataloaders for the configured classification dataset."""
-        image_size = self.config.params.image_size
+        image_size = self.config.train_hyp.image_size
         train_transform = build_train_transform(
             image_size=image_size,
-            augmentation_policy=self.config.params.augmentation_policy,
-            augmentation_params=self.config.params.augmentation_params,
+            augmentation=self.config.train_hyp.augmentation,
         )
         eval_transform = build_eval_transform(image_size)
-        train_manifest, val_manifest, source_root = self.resolve_classification_dataset_files(self.config.dataset.strip())
-        class_to_idx = self.build_class_index(train_manifest, val_manifest)
+        train_manifest, val_manifest, source_root = resolve_classification_dataset_files(
+            self.data_root,
+            self.config.dataset.strip(),
+        )
+        class_to_idx = build_class_index(train_manifest, val_manifest)
         train_dataset = ManifestClassificationDataset(
             manifest_path=train_manifest,
             source_root=source_root,
@@ -217,7 +219,7 @@ class BaseClassificationTrainer(ABC):
                 max_samples=self.settings.demo_val_samples,
                 seed=DEMO_SUBSET_SEED + 1,
             )
-        batch_size = self.config.params.batch_size
+        batch_size = self.config.train_hyp.batch_size
         return (
             DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0),
             DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0),
@@ -269,93 +271,25 @@ class BaseClassificationTrainer(ABC):
                     return selected_indices
         return selected_indices[:max_samples]
 
-    def build_class_index(self, train_manifest: Path, val_manifest: Path) -> dict[str, int]:
-        """Build a stable class index from the train and val manifests."""
-        class_names = sorted(self.collect_manifest_classes(train_manifest) | self.collect_manifest_classes(val_manifest))
-        if not class_names:
-            raise ValueError(
-                f"No classes found in manifests: train={train_manifest}, val={val_manifest}"
-            )
-        return {class_name: index for index, class_name in enumerate(class_names)}
-
-    def collect_manifest_classes(self, manifest_path: Path) -> set[str]:
-        """Collect class names from one manifest file."""
-        if not manifest_path.exists():
-            raise FileNotFoundError(f"Classification manifest not found: {manifest_path}")
-
-        class_names: set[str] = set()
-        for line_number, raw_line in enumerate(manifest_path.read_text(encoding="utf-8").splitlines(), start=1):
-            line = raw_line.strip()
-            if not line:
-                continue
-            if "\t" in line:
-                _, class_name = line.rsplit("\t", maxsplit=1)
-            else:
-                parts = line.split(maxsplit=1)
-                if len(parts) != 2:
-                    raise ValueError(
-                        f"Invalid manifest line at {manifest_path}:{line_number}: {raw_line!r}"
-                    )
-                _, class_name = parts
-            class_names.add(class_name)
-        return class_names
-
-    def resolve_classification_dataset_files(self, dataset_name: str) -> tuple[Path, Path, Path]:
-        """Resolve manifest files and source root for one classification dataset."""
-        manifest_root = self.resolve_dataset_dir(parent_dir=self.data_root / "classification", dataset_name=dataset_name)
-        train_manifest = manifest_root / "train.txt"
-        val_manifest = manifest_root / "val.txt"
-        if not train_manifest.exists() or not val_manifest.exists():
-            raise FileNotFoundError(
-                "Classification manifests not found. Expected: "
-                f"{train_manifest} and {val_manifest}"
-            )
-
-        raw_root = self.resolve_dataset_dir(parent_dir=self.data_root / "raw", dataset_name=dataset_name)
-        prepared_source_root = raw_root / PREPARED_SOURCE_DIRNAME
-        source_root = prepared_source_root if prepared_source_root.exists() else raw_root
-        return train_manifest, val_manifest, source_root
-
-    def resolve_dataset_dir(self, parent_dir: Path, dataset_name: str) -> Path:
-        """Resolve one dataset directory with alias and case-insensitive fallback."""
-        if not parent_dir.exists():
-            raise FileNotFoundError(f"Dataset parent directory not found: {parent_dir}")
-
-        candidate_names = [dataset_name]
-
-        for candidate_name in candidate_names:
-            candidate_dir = parent_dir / candidate_name
-            if candidate_dir.exists():
-                return candidate_dir
-
-        normalized_candidates = {self.normalize_dataset_name(name) for name in candidate_names}
-        for child_dir in sorted(path for path in parent_dir.iterdir() if path.is_dir()):
-            if self.normalize_dataset_name(child_dir.name) in normalized_candidates:
-                return child_dir
-
-        raise FileNotFoundError(
-            f"Dataset directory not found under {parent_dir} for dataset={dataset_name!r}"
-        )
-
-    def normalize_dataset_name(self, dataset_name: str) -> str:
-        """Normalize one dataset name for tolerant directory lookup."""
-        return dataset_name.strip().lower().replace("_", "-")
-
     def build_optimizer(self, model: nn.Module) -> torch.optim.Optimizer:
         """Build the optimizer from structured params."""
-        common_kwargs = {"lr": self.config.params.learning_rate, "weight_decay": self.config.params.weight_decay}
-        if self.config.params.optimizer == "sgd":
-            return SGD(model.parameters(), momentum=0.9, **common_kwargs)
-        if self.config.params.optimizer == "adam":
+        common_kwargs = {"lr": self.config.train_hyp.lr0, "weight_decay": self.config.train_hyp.weight_decay}
+        if self.config.train_hyp.optimizer == "sgd":
+            return SGD(model.parameters(), momentum=self.config.train_hyp.momentum, **common_kwargs)
+        if self.config.train_hyp.optimizer == "adam":
             return Adam(model.parameters(), **common_kwargs)
         return AdamW(model.parameters(), **common_kwargs)
 
     def build_scheduler(self, optimizer: torch.optim.Optimizer):
         """Build the scheduler from structured params."""
-        if self.config.params.scheduler == "step":
-            return StepLR(optimizer, step_size=max(self.config.params.epochs // 3, 1), gamma=0.1)
-        if self.config.params.scheduler == "cosine":
-            return CosineAnnealingLR(optimizer, T_max=self.config.params.epochs)
+        if self.config.train_hyp.scheduler == "step":
+            return StepLR(optimizer, step_size=max(self.config.train_hyp.epochs // 3, 1), gamma=0.1)
+        if self.config.train_hyp.scheduler == "cosine":
+            return CosineAnnealingLR(
+                optimizer,
+                T_max=self.config.train_hyp.epochs,
+                eta_min=self.config.train_hyp.lr0 * self.config.train_hyp.lrf,
+            )
         return None
 
     def train_one_epoch(
@@ -373,11 +307,13 @@ class BaseClassificationTrainer(ABC):
             self.raise_if_stopped()
             images = images.to(self.device)
             labels = labels.to(self.device)
-            images, labels = apply_batch_augmentations(images, labels, self.config.params.augmentation_params)
+            images, labels = apply_batch_augmentations(images, labels, self.config.train_hyp.augmentation)
             optimizer.zero_grad()
             outputs = self.forward_train(model, images)
             loss = self.compute_loss(outputs, labels, criterion)
             loss.backward()
+            if self.config.train_hyp.runtime.grad_clip_norm is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=self.config.train_hyp.runtime.grad_clip_norm)
             optimizer.step()
             batch_size = images.size(0)
             total_loss += loss.item() * batch_size
@@ -415,7 +351,13 @@ class BaseClassificationTrainer(ABC):
 
     def compute_loss(self, outputs, labels: torch.Tensor, criterion: nn.Module) -> torch.Tensor:
         """Compute the loss for one training step."""
-        return criterion(self.unwrap_logits(outputs), labels)
+        return self.model_adapter.compute_loss(
+            self.config,
+            outputs,
+            labels,
+            criterion,
+            self.unwrap_logits,
+        )
 
     def unwrap_logits(self, outputs) -> torch.Tensor:
         """Normalize model-specific outputs into logits."""

@@ -45,7 +45,7 @@ def _build_experiment_config(parameter_space_version: str) -> dict[str, object]:
         "task_type": "classification",
         "dataset": "cifar10",
         "model_family": "mobilenet",
-        "model_name": "mobilenet_v2",
+        "model_name": "mobilenet_v3_small",
         "parameter_space_version": parameter_space_version,
         "participates_in_ranking": True,
         "search_policy": {
@@ -118,17 +118,17 @@ class ApiResponseEnvelopeTest(unittest.TestCase):
         self.assertIn("meta", payload)
 
     def test_model_parameter_space_uses_api_response_envelope(self) -> None:
-        response = read_parameter_space("mobilenet_v2")
+        response = read_parameter_space("mobilenet_v3_small")
 
         self.assertIsInstance(response, ApiResponse)
         payload = response.model_dump()
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["message"], "Parameter space loaded.")
-        self.assertEqual(payload["data"]["model_name"], "mobilenet_v2")
+        self.assertEqual(payload["data"]["model_name"], "mobilenet_v3_small")
         self.assertIn("editable_params", payload["data"])
 
     def test_experiment_endpoints_use_api_response_envelope(self) -> None:
-        parameter_space_response = read_parameter_space("mobilenet_v2")
+        parameter_space_response = read_parameter_space("mobilenet_v3_small")
         parameter_space = parameter_space_response.data.model_dump()
         experiment_config = _build_experiment_config(parameter_space["version"])
 
@@ -137,7 +137,7 @@ class ApiResponseEnvelopeTest(unittest.TestCase):
                 request=RunCreateRequest(
                     name=f"api-envelope-test-{uuid4().hex[:8]}",
                     dataset="cifar10",
-                    model_name="mobilenet_v2",
+                    model_name="mobilenet_v3_small",
                     base_config=ExperimentConfig.model_validate(experiment_config),
                     notes="Envelope smoke test.",
                 ),
@@ -209,6 +209,44 @@ class ApiResponseEnvelopeTest(unittest.TestCase):
             self.assertEqual(decision_response.code, "updated")
             self.assertEqual(decision_response.message, "Experiment decision saved.")
             self.assertEqual(decision_response.data.decision, "keep")
+
+    def test_create_experiment_uses_server_parameter_space_snapshot(self) -> None:
+        stale_parameter_space = {
+            "model_name": "mobilenet_v3_small",
+            "version": "mobilenet_v3_small@v1",
+            "editable_params": {
+                "optimizer": {
+                    "type": "enum",
+                    "choices": ["sgd", "adam", "adamw"],
+                }
+            },
+        }
+        experiment_config = _build_experiment_config("mobilenet_v3_small@v1")
+
+        with SessionLocal() as db:
+            run_response = create_run_endpoint(
+                request=RunCreateRequest(
+                    name=f"api-envelope-test-{uuid4().hex[:8]}",
+                    dataset="cifar10",
+                    model_name="mobilenet_v3_small",
+                    base_config=ExperimentConfig.model_validate(experiment_config),
+                    notes="Server parameter-space snapshot test.",
+                ),
+                db=db,
+            )
+
+            create_response = create_experiment_endpoint(
+                request=ExperimentCreateRequest(
+                    run_id=run_response.data.id,
+                    config=ExperimentConfig.model_validate(experiment_config),
+                    parameter_space=EditableParameterSpace.model_validate(stale_parameter_space),
+                    proposal=None,
+                ),
+                db=db,
+            )
+
+        self.assertIn("neck_name", create_response.data.parameter_space.editable_params)
+        self.assertIn("head_name", create_response.data.parameter_space.editable_params)
 
 
 if __name__ == "__main__":

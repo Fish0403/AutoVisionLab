@@ -1,8 +1,9 @@
 """Editable parameter space schemas."""
 
-from typing import Literal
+from copy import deepcopy
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.schemas.ranking_policy import RankingPolicy
 
@@ -15,6 +16,8 @@ DEFAULT_BASIC_HPARAM_SEARCH_FIELDS = [
     "scheduler",
     "label_smoothing",
 ]
+
+RecipeTaskType = Literal["classification", "detection", "segmentation"]
 
 
 class EnumParamDefinition(BaseModel):
@@ -92,7 +95,245 @@ class SearchPolicy(BaseModel):
     allow_strategy_search: bool = False
     allow_loss_search: bool = False
     allow_augmentation_search: bool = False
+    allow_model_module_search: bool = False
     require_manual_approval_for_high_impact_changes: bool = True
+
+
+class ModelRecipeBackbone(BaseModel):
+    """Structured backbone-level recipe config."""
+
+    stem_variant: str = "standard"
+    attention_module: str = "none"
+    last_channel_multiplier: float = Field(default=1.0, gt=0)
+
+
+class ModelRecipeHead(BaseModel):
+    """Structured head-level recipe config."""
+
+    pooling_type: str = "avg"
+    classifier_dropout: float = Field(default=0.0, ge=0, le=1)
+    classifier_type: str = "linear"
+
+
+class ModelRecipeMetadata(BaseModel):
+    """Human-readable metadata for one model recipe."""
+
+    notes: str | None = None
+
+
+class ModelRecipeComponentSlot(BaseModel):
+    """One named component slot in the higher-level recipe view."""
+
+    name: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelRecipeComponents(BaseModel):
+    """Coarse component slots exposed to search and UI layers."""
+
+    backbone: ModelRecipeComponentSlot
+    neck: ModelRecipeComponentSlot
+    head: ModelRecipeComponentSlot
+
+
+class ModelRecipeArchitectureLayer(BaseModel):
+    """One YOLO-style architecture layer entry."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_indices: int | list[int] = Field(alias="from", serialization_alias="from")
+    repeat: int = Field(default=1, gt=0)
+    module: str
+    args: list[Any] = Field(default_factory=list)
+    tag: str | None = None
+
+
+class ModelRecipe(BaseModel):
+    """Structured model recipe attached to one experiment config."""
+
+    version: str = "model_recipe@v1"
+    task_type: RecipeTaskType = "classification"
+    model_family: str
+    base_model: str
+    nc: int | None = Field(default=None, gt=0)
+    input_channels: int = Field(default=3, gt=0)
+    width_multiple: float = Field(default=1.0, gt=0)
+    components: ModelRecipeComponents | None = None
+    backbone_config: ModelRecipeBackbone = Field(default_factory=ModelRecipeBackbone)
+    backbone: list[ModelRecipeArchitectureLayer] = Field(default_factory=list)
+    neck: list[ModelRecipeArchitectureLayer] = Field(default_factory=list)
+    head_config: ModelRecipeHead = Field(default_factory=ModelRecipeHead)
+    head: list[ModelRecipeArchitectureLayer] = Field(default_factory=list)
+    modules: dict[str, Any] = Field(default_factory=dict)
+    metadata: ModelRecipeMetadata = Field(default_factory=ModelRecipeMetadata)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_layout(cls, payload: Any) -> Any:
+        """Migrate legacy model recipe payloads into the flattened YOLO-style layout."""
+        if not isinstance(payload, dict):
+            return payload
+
+        normalized_payload = deepcopy(payload)
+        base_model = str(normalized_payload.get("base_model") or "")
+        legacy_backbone_payload = normalized_payload.get("backbone")
+        if "backbone_config" not in normalized_payload and isinstance(legacy_backbone_payload, dict):
+            normalized_payload["backbone_config"] = normalized_payload.pop("backbone")
+
+        legacy_head_payload = normalized_payload.get("head")
+        if "head_config" not in normalized_payload and isinstance(legacy_head_payload, dict):
+            normalized_payload["head_config"] = normalized_payload.pop("head")
+
+        architecture_payload = normalized_payload.pop("architecture", None)
+        if isinstance(architecture_payload, dict):
+            migrated_backbone_layers = list(architecture_payload.get("backbone") or [])
+            migrated_neck_layers = list(architecture_payload.get("neck") or [])
+            migrated_head_layers = list(architecture_payload.get("head") or [])
+            legacy_stem_payload = architecture_payload.get("stem")
+            if isinstance(legacy_stem_payload, dict):
+                migrated_backbone_layers = [
+                    {
+                        "from": -1,
+                        "repeat": 1,
+                        "module": "stem_conv",
+                        "args": [
+                            legacy_stem_payload.get("out_channels"),
+                            legacy_stem_payload.get("kernel_size"),
+                            legacy_stem_payload.get("stride"),
+                            legacy_stem_payload.get("activation_type", "hardswish"),
+                        ],
+                        "tag": "stem",
+                    },
+                    *migrated_backbone_layers,
+                ]
+
+            if not isinstance(normalized_payload.get("backbone"), list):
+                normalized_payload["backbone"] = migrated_backbone_layers
+            if not isinstance(normalized_payload.get("neck"), list):
+                normalized_payload["neck"] = migrated_neck_layers
+            if not isinstance(normalized_payload.get("head"), list):
+                normalized_payload["head"] = migrated_head_layers
+        if normalized_payload.get("components") is None and base_model:
+            pooling_type = (
+                ((normalized_payload.get("head_config") or {}).get("pooling_type"))
+                or ((normalized_payload.get("head") or {}).get("pooling_type"))
+                or "avg"
+            )
+            normalized_payload["components"] = build_default_model_recipe_components(
+                base_model=base_model,
+                pooling_type=str(pooling_type),
+            )
+        return normalized_payload
+
+
+class TrainHypAugmentation(BaseModel):
+    """Structured augmentation block for one train hyp recipe."""
+
+    policy: str = "basic"
+    mixup: float = Field(default=0.0, ge=0)
+    cutmix: float = Field(default=0.0, ge=0)
+    random_erasing: float = Field(default=0.0, ge=0, le=1)
+
+
+class TrainHypLoss(BaseModel):
+    """Structured loss block for one train hyp recipe."""
+
+    name: str = "cross_entropy_with_label_smoothing"
+
+
+class TrainHypRuntime(BaseModel):
+    """Structured runtime flags for one train hyp recipe."""
+
+    amp: bool = False
+    grad_clip_norm: float | None = Field(default=None, gt=0)
+
+
+class TrainHypMetadata(BaseModel):
+    """Human-readable metadata for one train hyp recipe."""
+
+    notes: str | None = None
+
+
+class TrainHyp(BaseModel):
+    """Structured training hyperparameter recipe."""
+
+    version: str = "train_hyp@v1"
+    task_type: RecipeTaskType = "classification"
+    optimizer: str
+    lr0: float = Field(gt=0)
+    lrf: float = Field(default=0.01, ge=0)
+    momentum: float = Field(default=0.9, ge=0)
+    weight_decay: float = Field(ge=0)
+    warmup_epochs: float = Field(default=0.0, ge=0)
+    scheduler: str
+    epochs: int = Field(gt=0)
+    batch_size: int = Field(gt=0)
+    image_size: int = Field(gt=0)
+    dropout: float = Field(default=0.0, ge=0, le=1)
+    label_smoothing: float = Field(default=0.0, ge=0, le=0.2)
+    fl_gamma: float = Field(default=0.0, ge=0)
+    augmentation: TrainHypAugmentation = Field(default_factory=TrainHypAugmentation)
+    loss: TrainHypLoss = Field(default_factory=TrainHypLoss)
+    runtime: TrainHypRuntime = Field(default_factory=TrainHypRuntime)
+    metadata: TrainHypMetadata = Field(default_factory=TrainHypMetadata)
+
+    def to_experiment_params(self, *, aux_logits: bool | None = None) -> "ExperimentParams":
+        """Convert the training recipe into the legacy result payload shape."""
+        return ExperimentParams(
+            optimizer=self.optimizer,
+            learning_rate=self.lr0,
+            batch_size=self.batch_size,
+            image_size=self.image_size,
+            epochs=self.epochs,
+            weight_decay=self.weight_decay,
+            scheduler=self.scheduler,
+            augmentation_policy=self.augmentation.policy,
+            augmentation_params=AugmentationParams(
+                mixup_alpha=self.augmentation.mixup,
+                cutmix_alpha=self.augmentation.cutmix,
+                random_erasing_prob=self.augmentation.random_erasing,
+            ),
+            loss_name=self.loss.name,
+            loss_params=LossParams(
+                focal_gamma=self.fl_gamma if self.loss.name == "focal_loss" else 2.0,
+            ),
+            label_smoothing=self.label_smoothing,
+            aux_logits=aux_logits,
+        )
+
+
+class DatasetRecipeSource(BaseModel):
+    """Structured source paths for one dataset recipe."""
+
+    root_dir: str
+    prepared_source_dir: str | None = None
+
+
+class DatasetRecipeSplits(BaseModel):
+    """Structured split paths for one dataset recipe."""
+
+    train_manifest: str
+    val_manifest: str
+    test_manifest: str | None = None
+
+
+class DatasetRecipeMetadata(BaseModel):
+    """Human-readable metadata for one dataset recipe."""
+
+    image_size_options: list[int] = Field(default_factory=list)
+    notes: str | None = None
+
+
+class DatasetRecipe(BaseModel):
+    """Structured dataset recipe for one experiment config."""
+
+    version: str = "dataset_recipe@v1"
+    task_type: RecipeTaskType = "classification"
+    dataset_name: str
+    class_names: list[str] = Field(default_factory=list)
+    source: DatasetRecipeSource
+    splits: DatasetRecipeSplits
+    metadata: DatasetRecipeMetadata = Field(default_factory=DatasetRecipeMetadata)
 
 
 class ExperimentConfig(BaseModel):
@@ -100,11 +341,324 @@ class ExperimentConfig(BaseModel):
 
     task_type: Literal["classification"]
     dataset: str
-    model_family: Literal["mobilenet", "googlenet", "resnet", "densenet"]
-    model_name: Literal["mobilenet_v2", "googlenet", "resnet18", "resnet34", "densenet121"]
+    model_family: Literal["mobilenet", "googlenet", "resnet"]
+    model_name: Literal["mobilenet_v3_small", "googlenet", "resnet18"]
     parameter_space_version: str
     use_demo_mode: bool = False
     participates_in_ranking: bool = True
     search_policy: SearchPolicy = Field(default_factory=SearchPolicy)
     ranking_policy: RankingPolicy = Field(default_factory=RankingPolicy)
     params: ExperimentParams
+    model_recipe: ModelRecipe | None = None
+    train_hyp: TrainHyp | None = None
+    dataset_recipe: DatasetRecipe | None = None
+
+    def use_aux_logits(self) -> bool:
+        """Return whether GoogLeNet auxiliary heads should be enabled."""
+        if self.model_name != "googlenet" or self.model_recipe is None:
+            return False
+        return bool(self.model_recipe.modules.get("aux_logits", False))
+
+    def result_params(self) -> ExperimentParams:
+        """Return the legacy result payload derived from the active recipes."""
+        if self.train_hyp is None:
+            return self.params
+        return self.train_hyp.to_experiment_params(aux_logits=self.use_aux_logits())
+
+    @model_validator(mode="after")
+    def populate_default_recipes(self) -> "ExperimentConfig":
+        """Backfill default recipe objects for legacy payloads."""
+        if self.model_recipe is None:
+            self.model_recipe = build_default_model_recipe(
+                model_name=self.model_name,
+                task_type=self.task_type,
+                model_family=self.model_family,
+            )
+        else:
+            self.model_recipe = hydrate_model_recipe(self.model_recipe)
+        if self.train_hyp is None:
+            self.train_hyp = TrainHyp(
+                task_type=self.task_type,
+                optimizer=self.params.optimizer,
+                lr0=self.params.learning_rate,
+                weight_decay=self.params.weight_decay,
+                scheduler=self.params.scheduler,
+                epochs=self.params.epochs,
+                batch_size=self.params.batch_size,
+                image_size=self.params.image_size,
+                label_smoothing=self.params.label_smoothing,
+                fl_gamma=self.params.loss_params.focal_gamma if self.params.loss_name == "focal_loss" else 0.0,
+                augmentation=TrainHypAugmentation(
+                    policy=self.params.augmentation_policy,
+                    mixup=self.params.augmentation_params.mixup_alpha,
+                    cutmix=self.params.augmentation_params.cutmix_alpha,
+                    random_erasing=self.params.augmentation_params.random_erasing_prob,
+                ),
+                loss=TrainHypLoss(name=self.params.loss_name),
+            )
+        if self.dataset_recipe is None:
+            dataset_root = self.dataset.strip()
+            self.dataset_recipe = DatasetRecipe(
+                task_type=self.task_type,
+                dataset_name=self.dataset,
+                source=DatasetRecipeSource(root_dir=f"data/raw/{dataset_root}"),
+                splits=DatasetRecipeSplits(
+                    train_manifest=f"data/classification/{dataset_root}/train.txt",
+                    val_manifest=f"data/classification/{dataset_root}/val.txt",
+                    test_manifest=f"data/classification/{dataset_root}/test.txt",
+                ),
+            )
+        return self
+
+
+def apply_proposal_changes_to_train_hyp(train_hyp_payload: dict[str, Any], proposal_changes: dict[str, Any]) -> TrainHyp:
+    """Apply legacy proposal fields onto one train_hyp payload."""
+    updated_payload = deepcopy(train_hyp_payload)
+    for field_name, value in proposal_changes.items():
+        if value is None:
+            continue
+        if field_name == "optimizer":
+            updated_payload["optimizer"] = value
+        elif field_name == "learning_rate":
+            updated_payload["lr0"] = value
+        elif field_name == "batch_size":
+            updated_payload["batch_size"] = value
+        elif field_name == "image_size":
+            updated_payload["image_size"] = value
+        elif field_name == "epochs":
+            updated_payload["epochs"] = value
+        elif field_name == "weight_decay":
+            updated_payload["weight_decay"] = value
+        elif field_name == "scheduler":
+            updated_payload["scheduler"] = value
+        elif field_name == "augmentation_policy":
+            updated_payload.setdefault("augmentation", {})["policy"] = value
+        elif field_name == "mixup_alpha":
+            updated_payload.setdefault("augmentation", {})["mixup"] = value
+        elif field_name == "cutmix_alpha":
+            updated_payload.setdefault("augmentation", {})["cutmix"] = value
+        elif field_name == "random_erasing_prob":
+            updated_payload.setdefault("augmentation", {})["random_erasing"] = value
+        elif field_name == "loss_name":
+            updated_payload.setdefault("loss", {})["name"] = value
+        elif field_name == "focal_gamma":
+            updated_payload["fl_gamma"] = value
+        elif field_name == "label_smoothing":
+            updated_payload["label_smoothing"] = value
+    return TrainHyp.model_validate(updated_payload)
+
+
+def build_train_hyp_change_payload(proposal_changes: dict[str, Any]) -> dict[str, Any]:
+    """Project legacy proposal fields into a partial train_hyp payload."""
+    train_hyp_changes: dict[str, Any] = {}
+    augmentation_changes: dict[str, Any] = {}
+    loss_changes: dict[str, Any] = {}
+
+    for field_name, value in proposal_changes.items():
+        if value is None:
+            continue
+        if field_name == "optimizer":
+            train_hyp_changes["optimizer"] = value
+        elif field_name == "learning_rate":
+            train_hyp_changes["lr0"] = value
+        elif field_name == "batch_size":
+            train_hyp_changes["batch_size"] = value
+        elif field_name == "image_size":
+            train_hyp_changes["image_size"] = value
+        elif field_name == "epochs":
+            train_hyp_changes["epochs"] = value
+        elif field_name == "weight_decay":
+            train_hyp_changes["weight_decay"] = value
+        elif field_name == "scheduler":
+            train_hyp_changes["scheduler"] = value
+        elif field_name == "augmentation_policy":
+            augmentation_changes["policy"] = value
+        elif field_name == "mixup_alpha":
+            augmentation_changes["mixup"] = value
+        elif field_name == "cutmix_alpha":
+            augmentation_changes["cutmix"] = value
+        elif field_name == "random_erasing_prob":
+            augmentation_changes["random_erasing"] = value
+        elif field_name == "loss_name":
+            loss_changes["name"] = value
+        elif field_name == "focal_gamma":
+            train_hyp_changes["fl_gamma"] = value
+        elif field_name == "label_smoothing":
+            train_hyp_changes["label_smoothing"] = value
+
+    if augmentation_changes:
+        train_hyp_changes["augmentation"] = augmentation_changes
+    if loss_changes:
+        train_hyp_changes["loss"] = loss_changes
+    return train_hyp_changes
+
+
+def _merge_partial_payload(base_payload: dict[str, Any], partial_changes: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge one partial structured payload onto a base payload."""
+    merged_payload = deepcopy(base_payload)
+    for field_name, value in partial_changes.items():
+        if isinstance(value, dict) and isinstance(merged_payload.get(field_name), dict):
+            merged_payload[field_name] = _merge_partial_payload(merged_payload.get(field_name) or {}, value)
+        else:
+            merged_payload[field_name] = value
+    return merged_payload
+
+
+def build_default_model_recipe(*, model_name: str, task_type: str, model_family: str) -> ModelRecipe:
+    """Build one default model recipe, using a built-in template when available."""
+    from app.trainers.templates import has_builtin_model_recipe, load_builtin_model_recipe_payload
+
+    if has_builtin_model_recipe(model_name):
+        recipe_payload = load_builtin_model_recipe_payload(model_name)
+        recipe_payload["task_type"] = task_type
+        recipe_payload["model_family"] = model_family
+        recipe_payload["base_model"] = model_name
+        return ModelRecipe.model_validate(recipe_payload)
+
+    return ModelRecipe(
+        task_type=task_type,
+        model_family=model_family,
+        base_model=model_name,
+        components=ModelRecipeComponents.model_validate(build_default_model_recipe_components(base_model=model_name)),
+        backbone_config=ModelRecipeBackbone(),
+    )
+
+
+def hydrate_model_recipe(model_recipe: ModelRecipe) -> ModelRecipe:
+    """Fill one partial model recipe with the built-in architecture template when available."""
+    from app.trainers.templates import has_builtin_model_recipe, load_builtin_model_recipe_payload
+
+    if not has_builtin_model_recipe(model_recipe.base_model):
+        return model_recipe
+    builtin_payload = load_builtin_model_recipe_payload(model_recipe.base_model)
+    merged_payload = _merge_partial_payload(
+        builtin_payload,
+        model_recipe.model_dump(exclude_none=True, exclude_unset=True),
+    )
+    return ModelRecipe.model_validate(merged_payload)
+
+
+def build_default_model_recipe_components(base_model: str, *, pooling_type: str = "avg") -> dict[str, Any]:
+    """Return the default component slots for one base model."""
+    if base_model == "mobilenet_v3_small":
+        neck_name = "gem_pool" if pooling_type == "gem" else "avg_pool"
+        return {
+            "backbone": {"name": "mobilenet_v3_small_native", "params": {}},
+            "neck": {"name": neck_name, "params": {}},
+            "head": {"name": "native_classifier", "params": {}},
+        }
+    if base_model == "googlenet":
+        return {
+            "backbone": {"name": "googlenet_native", "params": {}},
+            "neck": {"name": "avg_pool", "params": {}},
+            "head": {"name": "native_classifier", "params": {}},
+        }
+    if base_model == "resnet18":
+        return {
+            "backbone": {"name": "resnet18_native", "params": {}},
+            "neck": {"name": "avg_pool", "params": {}},
+            "head": {"name": "native_classifier", "params": {}},
+        }
+    return {
+        "backbone": {"name": f"{base_model}_native", "params": {}},
+        "neck": {"name": "identity", "params": {}},
+        "head": {"name": "native_classifier", "params": {}},
+    }
+
+
+def apply_train_hyp_change_payload(train_hyp_payload: dict[str, Any], train_hyp_changes: dict[str, Any]) -> TrainHyp:
+    """Apply a partial structured train_hyp payload onto one base train_hyp object."""
+    return TrainHyp.model_validate(_merge_partial_payload(train_hyp_payload, train_hyp_changes))
+
+
+def _build_head_component_compatibility_payload(head_name: str) -> dict[str, Any]:
+    """Return one compatibility patch for component-level head choices."""
+    if head_name == "linear":
+        return {"head_config": {"classifier_type": "linear", "classifier_dropout": 0.0}}
+    if head_name == "dropout_linear":
+        return {"head_config": {"classifier_type": "linear", "classifier_dropout": 0.2}}
+    if head_name == "native_classifier":
+        return {"head_config": {"classifier_type": "linear"}}
+    return {}
+
+
+def apply_proposal_changes_to_model_recipe(
+    model_recipe_payload: dict[str, Any],
+    proposal_changes: dict[str, Any],
+) -> ModelRecipe:
+    """Apply legacy proposal fields onto one model_recipe payload."""
+    updated_payload = deepcopy(model_recipe_payload)
+    for field_name, value in proposal_changes.items():
+        if value is None:
+            continue
+        if field_name == "width_multiple":
+            updated_payload["width_multiple"] = value
+        elif field_name == "pooling_type":
+            updated_payload.setdefault("head_config", {})["pooling_type"] = value
+            updated_payload.setdefault("components", {}).setdefault("neck", {})["name"] = "gem_pool" if value == "gem" else "avg_pool"
+        elif field_name == "classifier_dropout":
+            updated_payload.setdefault("head_config", {})["classifier_dropout"] = value
+        elif field_name == "backbone_name":
+            updated_payload.setdefault("components", {}).setdefault("backbone", {})["name"] = value
+        elif field_name == "neck_name":
+            updated_payload.setdefault("components", {}).setdefault("neck", {})["name"] = value
+            if value == "gem_pool":
+                updated_payload.setdefault("head_config", {})["pooling_type"] = "gem"
+            elif value == "avg_pool":
+                updated_payload.setdefault("head_config", {})["pooling_type"] = "avg"
+        elif field_name == "head_name":
+            updated_payload.setdefault("components", {}).setdefault("head", {})["name"] = value
+            updated_payload = _merge_partial_payload(
+                updated_payload,
+                _build_head_component_compatibility_payload(str(value)),
+            )
+        elif field_name == "aux_logits":
+            updated_payload.setdefault("modules", {})["aux_logits"] = value
+    return ModelRecipe.model_validate(updated_payload)
+
+
+def build_model_recipe_change_payload(proposal_changes: dict[str, Any]) -> dict[str, Any]:
+    """Project legacy proposal fields into a partial model_recipe payload."""
+    recipe_changes: dict[str, Any] = {}
+    modules_changes: dict[str, Any] = {}
+
+    for field_name, value in proposal_changes.items():
+        if value is None:
+            continue
+        if field_name == "width_multiple":
+            recipe_changes["width_multiple"] = value
+        elif field_name == "pooling_type":
+            recipe_changes.setdefault("head_config", {})["pooling_type"] = value
+            recipe_changes.setdefault("components", {}).setdefault("neck", {})["name"] = (
+                "gem_pool" if value == "gem" else "avg_pool"
+            )
+        elif field_name == "classifier_dropout":
+            recipe_changes.setdefault("head_config", {})["classifier_dropout"] = value
+        elif field_name == "backbone_name":
+            recipe_changes.setdefault("components", {}).setdefault("backbone", {})["name"] = value
+        elif field_name == "neck_name":
+            recipe_changes.setdefault("components", {}).setdefault("neck", {})["name"] = value
+            if value == "gem_pool":
+                recipe_changes.setdefault("head_config", {})["pooling_type"] = "gem"
+            elif value == "avg_pool":
+                recipe_changes.setdefault("head_config", {})["pooling_type"] = "avg"
+        elif field_name == "head_name":
+            recipe_changes.setdefault("components", {}).setdefault("head", {})["name"] = value
+            recipe_changes = _merge_partial_payload(
+                recipe_changes,
+                _build_head_component_compatibility_payload(str(value)),
+            )
+        elif field_name == "aux_logits":
+            modules_changes["aux_logits"] = value
+
+    if modules_changes:
+        recipe_changes["modules"] = modules_changes
+    return recipe_changes
+
+
+def apply_model_recipe_change_payload(
+    model_recipe_payload: dict[str, Any],
+    recipe_changes: dict[str, Any],
+) -> ModelRecipe:
+    """Apply a partial structured model_recipe payload onto one base model recipe object."""
+    return ModelRecipe.model_validate(_merge_partial_payload(model_recipe_payload, recipe_changes))

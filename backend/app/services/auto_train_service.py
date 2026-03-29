@@ -8,15 +8,27 @@ from threading import Lock
 import time
 from uuid import uuid4
 
+import requests
+
 from app.db.session import SessionLocal
+from app.llm.aihubmix_client import AIHubMixRequestError
 from app.schemas.experiment import ExperimentCreateRequest
-from app.schemas.parameter_space import SearchPolicy
+from app.schemas.parameter_space import (
+    ExperimentConfig,
+    SearchPolicy,
+    apply_model_recipe_change_payload,
+    apply_proposal_changes_to_model_recipe,
+    apply_train_hyp_change_payload,
+    apply_proposal_changes_to_train_hyp,
+    build_model_recipe_change_payload,
+    build_train_hyp_change_payload,
+)
 from app.schemas.run import AutoTrainStartRequest, AutoTrainTaskResponse, RunCreateRequest
 from app.services.persistence import create_experiment, create_run, get_experiment_detail, get_run_detail
 from app.services.proposal_service import generate_aihubmix_proposal, get_run_history_payload
 from app.services.run_policy import (
     get_default_run_policy,
-    require_non_basic_change_for_elapsed_budget,
+    require_non_basic_change_after_warmup_rounds,
     should_stop_after_dimension_coverage,
 )
 from app.services.training_runner import start_experiment_training, stop_experiment_training
@@ -25,6 +37,9 @@ from app.services.training_runner import start_experiment_training, stop_experim
 AUTO_TRAIN_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="autovisionlab-auto-train")
 AUTO_TRAIN_TASKS: dict[str, dict] = {}
 AUTO_TRAIN_LOCK = Lock()
+AUTO_TRAIN_PROPOSAL_RETRY_DELAYS_SECONDS = (3, 6, 10)
+AUTO_TRAIN_INVALID_PROPOSAL_RETRY_DELAY_SECONDS = 2
+AUTO_TRAIN_MAX_CONSECUTIVE_INVALID_PROPOSALS = 3
 
 
 class AutoTrainStoppedError(RuntimeError):
@@ -50,6 +65,37 @@ def _append_task_log(task_id: str, message: str) -> None:
             return
         task["logs"].append(message)
         task["logs"] = task["logs"][-200:]
+
+
+def _record_prompt_token_estimate(task_id: str, prompt_metadata: dict) -> None:
+    """Update task-level token counters from one proposal prompt estimate."""
+    prompt_tokens_estimate = int(prompt_metadata.get("prompt_tokens_estimate") or 0)
+    history_items = prompt_metadata.get("history_items")
+    with AUTO_TRAIN_LOCK:
+        task = AUTO_TRAIN_TASKS.get(task_id)
+        if task is None:
+            return
+        task["latest_prompt_tokens_estimate"] = prompt_tokens_estimate
+        task["estimated_prompt_tokens_total"] = int(task.get("estimated_prompt_tokens_total") or 0) + prompt_tokens_estimate
+        task["latest_prompt_history_items"] = int(history_items) if isinstance(history_items, int) else None
+
+
+def _record_provider_usage(task_id: str, provider_metadata: dict) -> None:
+    """Update task-level token counters from one provider usage payload."""
+    usage = provider_metadata.get("usage") or {}
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    completion_tokens = int(usage.get("completion_tokens") or 0)
+    total_tokens = int(usage.get("total_tokens") or 0)
+    with AUTO_TRAIN_LOCK:
+        task = AUTO_TRAIN_TASKS.get(task_id)
+        if task is None:
+            return
+        task["latest_provider_prompt_tokens"] = prompt_tokens or None
+        task["latest_provider_completion_tokens"] = completion_tokens or None
+        task["latest_provider_total_tokens"] = total_tokens or None
+        task["provider_prompt_tokens_total"] = int(task.get("provider_prompt_tokens_total") or 0) + prompt_tokens
+        task["provider_completion_tokens_total"] = int(task.get("provider_completion_tokens_total") or 0) + completion_tokens
+        task["provider_total_tokens_total"] = int(task.get("provider_total_tokens_total") or 0) + total_tokens
 
 
 def _update_task(task_id: str, **updates) -> None:
@@ -100,6 +146,68 @@ def _build_summary_snapshot(experiment_detail: dict) -> dict:
     }
 
 
+def _is_retryable_proposal_error(error: Exception) -> bool:
+    """Return whether one proposal error is worth retrying after a short delay."""
+    if isinstance(error, requests.RequestException):
+        return True
+    if isinstance(error, AIHubMixRequestError):
+        error_text = str(error)
+        return any(f"status={status_code}" in error_text for status_code in ("500", "502", "503", "504"))
+    return False
+
+
+def _sleep_with_stop_check(task_id: str, seconds: int) -> None:
+    """Sleep in short intervals so user stop requests can interrupt retry waits."""
+    for _ in range(max(0, seconds)):
+        task = _snapshot_task(task_id)
+        if task is None or task.stop_requested:
+            raise AutoTrainStoppedError("Auto train stopped by user request")
+        time.sleep(1)
+
+
+def _generate_auto_train_proposal(
+    task_id: str,
+    run_id: str,
+    *,
+    require_non_basic_change: bool,
+) -> object:
+    """Generate one proposal with retry-on-network behavior for transient provider failures."""
+    total_attempts = len(AUTO_TRAIN_PROPOSAL_RETRY_DELAYS_SECONDS) + 1
+    for attempt_index in range(total_attempts):
+        db = SessionLocal()
+        try:
+            return generate_aihubmix_proposal(
+                db,
+                run_id,
+                require_non_basic_change=require_non_basic_change,
+                on_prompt_metadata=lambda prompt_metadata: _record_prompt_token_estimate(
+                    task_id,
+                    prompt_metadata,
+                ),
+                on_provider_metadata=lambda provider_metadata: _record_provider_usage(
+                    task_id,
+                    provider_metadata,
+                ),
+            )
+        except ValueError:
+            raise
+        except Exception as error:
+            if not _is_retryable_proposal_error(error) or attempt_index >= total_attempts - 1:
+                raise
+            retry_delay_seconds = AUTO_TRAIN_PROPOSAL_RETRY_DELAYS_SECONDS[attempt_index]
+            _append_task_log(
+                task_id,
+                (
+                    f"Proposal request failed ({attempt_index + 1}/{total_attempts}) | "
+                    f"{error} | retrying in {retry_delay_seconds}s"
+                ),
+            )
+            _sleep_with_stop_check(task_id, retry_delay_seconds)
+        finally:
+            db.close()
+    raise RuntimeError("Proposal retry loop exited unexpectedly")
+
+
 def _wait_for_experiment_terminal(task_id: str, experiment_id: str, *, started_at_monotonic: float) -> dict:
     while True:
         _update_elapsed_seconds(task_id, started_at_monotonic)
@@ -125,21 +233,67 @@ def _wait_for_experiment_terminal(task_id: str, experiment_id: str, *, started_a
         time.sleep(1)
 
 
-def _build_followup_config(latest_experiment: dict, proposal_changes: dict) -> dict:
+def _resolve_structured_train_hyp_changes(proposal_payload: dict) -> dict:
+    """Return the structured train_hyp change payload for one proposal."""
+    if isinstance(proposal_payload.get("train_hyp_changes"), dict):
+        return proposal_payload["train_hyp_changes"]
+    return build_train_hyp_change_payload(proposal_payload.get("changes") or {})
+
+
+def _resolve_structured_recipe_changes(proposal_payload: dict) -> dict:
+    """Return the structured model_recipe change payload for one proposal."""
+    if isinstance(proposal_payload.get("recipe_changes"), dict):
+        return proposal_payload["recipe_changes"]
+    return build_model_recipe_change_payload(proposal_payload.get("changes") or {})
+
+
+def _build_followup_config(latest_experiment: dict, proposal_payload: dict) -> dict:
+    latest_config = ExperimentConfig.model_validate(latest_experiment["config"])
+    train_hyp_changes = _resolve_structured_train_hyp_changes(proposal_payload)
+    recipe_changes = _resolve_structured_recipe_changes(proposal_payload)
+    if train_hyp_changes:
+        updated_train_hyp = apply_train_hyp_change_payload(
+            latest_config.train_hyp.model_dump(),
+            train_hyp_changes,
+        )
+    else:
+        updated_train_hyp = apply_proposal_changes_to_train_hyp(
+            latest_config.train_hyp.model_dump(),
+            proposal_payload.get("changes") or {},
+        )
+    if recipe_changes:
+        updated_model_recipe = apply_model_recipe_change_payload(
+            latest_config.model_recipe.model_dump(),
+            recipe_changes,
+        )
+    else:
+        updated_model_recipe = apply_proposal_changes_to_model_recipe(
+            latest_config.model_recipe.model_dump(),
+            proposal_payload.get("changes") or {},
+        )
+    updated_config = latest_config.model_copy(
+        update={
+            "train_hyp": updated_train_hyp,
+            "model_recipe": updated_model_recipe,
+            "params": updated_train_hyp.to_experiment_params(
+                aux_logits=bool(updated_model_recipe.modules.get("aux_logits", False)),
+            ),
+        }
+    )
     return {
-        "task_type": latest_experiment["config"]["task_type"],
-        "dataset": latest_experiment["config"]["dataset"],
-        "model_family": latest_experiment["config"]["model_family"],
-        "model_name": latest_experiment["config"]["model_name"],
-        "parameter_space_version": latest_experiment["config"]["parameter_space_version"],
-        "use_demo_mode": latest_experiment["config"].get("use_demo_mode", False),
-        "participates_in_ranking": latest_experiment["config"].get("participates_in_ranking", True),
-        "search_policy": latest_experiment["config"].get("search_policy") or {},
-        "ranking_policy": latest_experiment["config"].get("ranking_policy") or {},
-        "params": {
-            **latest_experiment["config"]["params"],
-            **{key: value for key, value in proposal_changes.items() if value is not None},
-        },
+        "task_type": updated_config.task_type,
+        "dataset": updated_config.dataset,
+        "model_family": updated_config.model_family,
+        "model_name": updated_config.model_name,
+        "parameter_space_version": updated_config.parameter_space_version,
+        "use_demo_mode": updated_config.use_demo_mode,
+        "participates_in_ranking": updated_config.participates_in_ranking,
+        "search_policy": updated_config.search_policy.model_dump(),
+        "ranking_policy": updated_config.ranking_policy.model_dump(),
+        "params": updated_config.params.model_dump(),
+        "model_recipe": updated_config.model_recipe.model_dump(),
+        "train_hyp": updated_config.train_hyp.model_dump(),
+        "dataset_recipe": updated_config.dataset_recipe.model_dump(),
     }
 
 
@@ -184,12 +338,61 @@ def _load_latest_search_policy_for_run(db: SessionLocal, run_id: str) -> SearchP
     return experiment_config.search_policy
 
 
+def _load_auto_train_seed_experiment(db: SessionLocal, run_id: str) -> dict:
+    """Return the persisted experiment that auto-train should continue from."""
+    source_experiment_detail = _resolve_followup_source_experiment(
+        db,
+        run_id,
+        {"based_on_experiment_ids": []},
+    )
+    if source_experiment_detail["status"] != "success":
+        raise ValueError("Auto train requires one successful experiment in the selected run")
+    return source_experiment_detail
+
+
+def _try_attach_final_proposal(
+    task_id: str,
+    *,
+    run_id: str,
+    round_index: int,
+    summary: dict | None,
+    policy_stop_reason: str | None = None,
+) -> None:
+    """Attach one next-step proposal to the task summary when auto-train stops."""
+    if summary is None:
+        return
+
+    db = SessionLocal()
+    try:
+        proposal = generate_aihubmix_proposal(
+            db,
+            run_id,
+            require_non_basic_change=require_non_basic_change_after_warmup_rounds(round_index),
+        )
+    except Exception as error:
+        fallback_summary = deepcopy(summary)
+        fallback_summary["final_proposal"] = None
+        fallback_summary["final_suggestion_error"] = str(error)
+        if policy_stop_reason:
+            fallback_summary["stop_reason"] = policy_stop_reason
+        _update_task(task_id, summary=fallback_summary)
+        _append_task_log(task_id, f"Final suggestion generation failed: {error}")
+    else:
+        updated_summary = deepcopy(summary)
+        updated_summary["final_proposal"] = proposal.model_dump()
+        if policy_stop_reason:
+            updated_summary["stop_reason"] = policy_stop_reason
+        _update_task(task_id, summary=updated_summary)
+        _append_task_log(task_id, "Final next-step suggestion generated")
+    finally:
+        db.close()
+
+
 def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
     try:
         _update_task(task_id, status="running")
         started_at_monotonic = time.monotonic()
         run_policy = get_default_run_policy()
-        total_budget_seconds = request.max_wall_clock_minutes * 60
         db = SessionLocal()
         try:
             if request.run_id:
@@ -216,24 +419,11 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
         if request.run_id:
             db = SessionLocal()
             try:
-                parent_run = get_run_detail(db, run_id)
-                based_on_experiment_ids = [parent_run.experiments[-1].id] if parent_run and parent_run.experiments else []
+                baseline_detail = _load_auto_train_seed_experiment(db, run_id)
             finally:
                 db.close()
-            baseline_request = ExperimentCreateRequest(
-                run_id=run_id,
-                config=request.config,
-                parameter_space=request.parameter_space,
-                proposal={
-                    "task_type": "classification",
-                    "model_name": request.model_name,
-                    "based_on_experiment_ids": based_on_experiment_ids,
-                    "hypothesis": "Auto Train baseline appended to the selected run.",
-                    "changes": request.config.params.model_dump(),
-                    "reason": "Use the current parameter panel as the baseline before AI follow-up rounds.",
-                    "risk": "low",
-                },
-            )
+            _update_task(task_id, current_experiment_id=baseline_detail["id"], current_round=0)
+            _append_task_log(task_id, f"Reusing existing baseline: {baseline_detail['id']}")
         else:
             baseline_request = ExperimentCreateRequest(
                 run_id=run_id,
@@ -241,27 +431,26 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                 parameter_space=request.parameter_space,
                 proposal=None,
             )
-
-        db = SessionLocal()
-        try:
-            baseline_experiment = create_experiment(db, baseline_request)
-            if baseline_experiment is None:
-                raise ValueError("Failed to create baseline experiment")
-        finally:
-            db.close()
-        _update_task(task_id, current_experiment_id=baseline_experiment.id, current_round=0)
-        _append_task_log(task_id, f"Baseline created: {baseline_experiment.id}")
-        start_experiment_training(baseline_experiment.id)
-        _append_task_log(task_id, f"Baseline training started: {baseline_experiment.id}")
-        baseline_detail = _wait_for_experiment_terminal(
-            task_id,
-            baseline_experiment.id,
-            started_at_monotonic=started_at_monotonic,
-        )
-        if baseline_detail["status"] == "discarded":
-            raise AutoTrainStoppedError("Baseline experiment was discarded")
-        if baseline_detail["status"] != "success":
-            raise ValueError(f"Baseline experiment failed with status {baseline_detail['status']}")
+            db = SessionLocal()
+            try:
+                baseline_experiment = create_experiment(db, baseline_request)
+                if baseline_experiment is None:
+                    raise ValueError("Failed to create baseline experiment")
+            finally:
+                db.close()
+            _update_task(task_id, current_experiment_id=baseline_experiment.id, current_round=0)
+            _append_task_log(task_id, f"Baseline created: {baseline_experiment.id}")
+            start_experiment_training(baseline_experiment.id)
+            _append_task_log(task_id, f"Baseline training started: {baseline_experiment.id}")
+            baseline_detail = _wait_for_experiment_terminal(
+                task_id,
+                baseline_experiment.id,
+                started_at_monotonic=started_at_monotonic,
+            )
+            if baseline_detail["status"] == "discarded":
+                raise AutoTrainStoppedError("Baseline experiment was discarded")
+            if baseline_detail["status"] != "success":
+                raise ValueError(f"Baseline experiment failed with status {baseline_detail['status']}")
 
         summary = {
             "mode": "auto",
@@ -275,20 +464,7 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
         round_index = 0
         consecutive_invalid_proposals = 0
         while True:
-            elapsed_seconds = _update_elapsed_seconds(task_id, started_at_monotonic)
-            if elapsed_seconds >= total_budget_seconds:
-                stop_reason = (
-                    f"Stopped by time budget after {elapsed_seconds:.1f}s "
-                    f"(budget {request.max_wall_clock_minutes} minutes)."
-                )
-                _update_task(
-                    task_id,
-                    status="stopped_by_budget",
-                    current_experiment_id=None,
-                    stop_reason=stop_reason,
-                )
-                _append_task_log(task_id, stop_reason)
-                return
+            _update_elapsed_seconds(task_id, started_at_monotonic)
 
             db = SessionLocal()
             try:
@@ -303,6 +479,13 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                 db.close()
 
             if should_stop:
+                _try_attach_final_proposal(
+                    task_id,
+                    run_id=run_id,
+                    round_index=round_index + 1,
+                    summary=summary,
+                    policy_stop_reason=stop_reason,
+                )
                 _update_task(
                     task_id,
                     status="stopped_by_policy",
@@ -317,35 +500,40 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                 raise AutoTrainStoppedError("Auto train stopped by user request")
             round_index += 1
             _update_task(task_id, current_round=round_index)
-            require_non_basic_change = require_non_basic_change_for_elapsed_budget(
-                elapsed_seconds,
-                request.max_wall_clock_minutes,
-                policy=run_policy,
-            )
+            require_non_basic_change = require_non_basic_change_after_warmup_rounds(round_index, policy=run_policy)
             if require_non_basic_change:
                 _append_task_log(
                     task_id,
-                    f"Round {round_index}: stage policy requires at least one augmentation/loss/strategy change",
+                    f"Round {round_index}: warmup is complete, prioritize augmentation/loss/strategy changes",
                 )
             _append_task_log(task_id, f"Round {round_index}: generating AI proposal")
 
-            db = SessionLocal()
             try:
-                try:
-                    proposal = generate_aihubmix_proposal(
-                        db,
-                        run_id,
-                        require_non_basic_change=require_non_basic_change,
-                    )
-                except ValueError as error:
-                    consecutive_invalid_proposals += 1
-                    _append_task_log(
-                        task_id,
-                        f"Round {round_index}: invalid proposal ({consecutive_invalid_proposals} consecutive) | {error}",
-                    )
-                    continue
-            finally:
-                db.close()
+                proposal = _generate_auto_train_proposal(
+                    task_id,
+                    run_id,
+                    require_non_basic_change=require_non_basic_change,
+                )
+            except ValueError as error:
+                consecutive_invalid_proposals += 1
+                _append_task_log(
+                    task_id,
+                    f"Round {round_index}: invalid proposal ({consecutive_invalid_proposals} consecutive) | {error}",
+                )
+                if consecutive_invalid_proposals >= AUTO_TRAIN_MAX_CONSECUTIVE_INVALID_PROPOSALS:
+                    raise ValueError(
+                        "Auto train stopped after repeated invalid proposals. "
+                        f"Last error: {error}"
+                    ) from error
+                _append_task_log(
+                    task_id,
+                    (
+                        f"Round {round_index}: waiting "
+                        f"{AUTO_TRAIN_INVALID_PROPOSAL_RETRY_DELAY_SECONDS}s before retrying proposal generation"
+                    ),
+                )
+                _sleep_with_stop_check(task_id, AUTO_TRAIN_INVALID_PROPOSAL_RETRY_DELAY_SECONDS)
+                continue
             consecutive_invalid_proposals = 0
 
             proposal_payload = proposal.model_dump()
@@ -361,7 +549,7 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                 f"Round {round_index}: branching from {source_experiment_detail['id']} for the next experiment",
             )
 
-            followup_config = _build_followup_config(source_experiment_detail, proposal_payload["changes"])
+            followup_config = _build_followup_config(source_experiment_detail, proposal_payload)
             db = SessionLocal()
             try:
                 next_experiment = create_experiment(
@@ -414,6 +602,16 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                     f"{current_experiment_detail.get('decision_reason')}",
                 )
     except AutoTrainStoppedError:
+        task_snapshot = _snapshot_task(task_id)
+        current_summary = task_snapshot.summary if task_snapshot is not None else None
+        current_run_id = task_snapshot.run_id if task_snapshot is not None else None
+        if current_run_id:
+            _try_attach_final_proposal(
+                task_id,
+                run_id=current_run_id,
+                round_index=round_index + 1,
+                summary=current_summary.model_dump() if hasattr(current_summary, "model_dump") else current_summary,
+            )
         _update_task(task_id, status="stopped", current_experiment_id=None, stop_reason="Stopped by user request.")
         _append_task_log(task_id, "Auto train stopped and current experiment discarded")
     except Exception as error:
@@ -433,7 +631,6 @@ def start_auto_train_task(request: AutoTrainStartRequest) -> AutoTrainTaskRespon
         "status": "queued",
         "run_id": request.run_id,
         "current_round": 0,
-        "max_wall_clock_minutes": request.max_wall_clock_minutes,
         "elapsed_seconds": 0.0,
         "current_experiment_id": None,
         "logs": [],
@@ -441,6 +638,15 @@ def start_auto_train_task(request: AutoTrainStartRequest) -> AutoTrainTaskRespon
         "error": None,
         "stop_requested": False,
         "stop_reason": None,
+        "latest_prompt_tokens_estimate": None,
+        "estimated_prompt_tokens_total": 0,
+        "latest_prompt_history_items": None,
+        "latest_provider_prompt_tokens": None,
+        "latest_provider_completion_tokens": None,
+        "latest_provider_total_tokens": None,
+        "provider_prompt_tokens_total": 0,
+        "provider_completion_tokens_total": 0,
+        "provider_total_tokens_total": 0,
     }
     with AUTO_TRAIN_LOCK:
         AUTO_TRAIN_TASKS[task_id] = task_payload
@@ -451,6 +657,23 @@ def start_auto_train_task(request: AutoTrainStartRequest) -> AutoTrainTaskRespon
 def get_auto_train_task(task_id: str) -> AutoTrainTaskResponse | None:
     """Return one auto-train task snapshot."""
     return _snapshot_task(task_id)
+
+
+def get_active_auto_train_task() -> AutoTrainTaskResponse | None:
+    """Return the current active auto-train task when one is running."""
+    with AUTO_TRAIN_LOCK:
+        active_task = next(
+            (
+                task
+                for task in AUTO_TRAIN_TASKS.values()
+                if task["status"] in {"queued", "running", "stopping"}
+            ),
+            None,
+        )
+        if active_task is None:
+            return None
+        payload = deepcopy(active_task)
+    return AutoTrainTaskResponse.model_validate(payload)
 
 
 def stop_auto_train_task(task_id: str) -> AutoTrainTaskResponse | None:

@@ -1,11 +1,9 @@
 """Parameter space access and validation helpers."""
 
 from app.config_spaces.classification import (
-    DENSENET121_PARAMETER_SPACE,
     GOOGLENET_PARAMETER_SPACE,
-    MOBILENET_V2_PARAMETER_SPACE,
+    MOBILENET_V3_SMALL_PARAMETER_SPACE,
     RESNET18_PARAMETER_SPACE,
-    RESNET34_PARAMETER_SPACE,
 )
 from app.schemas.ai import ProposalSchema
 from app.schemas.parameter_space import (
@@ -18,11 +16,9 @@ from app.schemas.parameter_space import (
 
 
 PARAMETER_SPACES = {
-    "mobilenet_v2": MOBILENET_V2_PARAMETER_SPACE,
+    "mobilenet_v3_small": MOBILENET_V3_SMALL_PARAMETER_SPACE,
     "googlenet": GOOGLENET_PARAMETER_SPACE,
     "resnet18": RESNET18_PARAMETER_SPACE,
-    "resnet34": RESNET34_PARAMETER_SPACE,
-    "densenet121": DENSENET121_PARAMETER_SPACE,
 }
 
 AI_BLOCKED_PROPOSAL_FIELDS = {"epochs"}
@@ -38,6 +34,11 @@ BASIC_HPARAM_SEARCH_FIELDS = {
 STRATEGY_SEARCH_FIELDS = {"aux_logits"}
 LOSS_SEARCH_FIELDS = {"loss_name", "focal_gamma"}
 AUGMENTATION_SEARCH_FIELDS = {"augmentation_policy", "mixup_alpha", "cutmix_alpha", "random_erasing_prob"}
+MODEL_MODULE_SEARCH_FIELDS = {
+    "backbone_name",
+    "neck_name",
+    "head_name",
+}
 
 
 def get_parameter_space(model_name: str) -> EditableParameterSpace | None:
@@ -45,7 +46,11 @@ def get_parameter_space(model_name: str) -> EditableParameterSpace | None:
     return PARAMETER_SPACES.get(model_name)
 
 
-def get_allowed_ai_search_fields(search_policy: SearchPolicy | None) -> set[str]:
+def get_allowed_ai_search_fields(
+    search_policy: SearchPolicy | None,
+    *,
+    parameter_space: EditableParameterSpace | None = None,
+) -> set[str]:
     """Return the effective field-level AI search white-list."""
     policy = search_policy or SearchPolicy()
     allowed_fields: set[str] = set()
@@ -57,6 +62,11 @@ def get_allowed_ai_search_fields(search_policy: SearchPolicy | None) -> set[str]
         allowed_fields.update(LOSS_SEARCH_FIELDS)
     if policy.allow_augmentation_search:
         allowed_fields.update(AUGMENTATION_SEARCH_FIELDS)
+    if policy.allow_model_module_search:
+        if parameter_space is not None:
+            allowed_fields.update(MODEL_MODULE_SEARCH_FIELDS & set(parameter_space.editable_params.keys()))
+        else:
+            allowed_fields.update(MODEL_MODULE_SEARCH_FIELDS)
     return allowed_fields - AI_BLOCKED_PROPOSAL_FIELDS
 
 
@@ -82,7 +92,7 @@ def explain_proposal_rejection(
     if effective_parameter_space is None:
         return f"parameter space is missing for model {proposal.model_name}"
 
-    allowed_fields = get_allowed_ai_search_fields(search_policy)
+    allowed_fields = get_allowed_ai_search_fields(search_policy, parameter_space=effective_parameter_space)
     proposal_changes = proposal.changes.model_dump()
     changed_fields = {field_name: value for field_name, value in proposal_changes.items() if value is not None}
     if any(field_name in AI_BLOCKED_PROPOSAL_FIELDS for field_name in changed_fields):

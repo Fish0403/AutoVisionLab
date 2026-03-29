@@ -8,10 +8,13 @@ from PIL import Image
 
 from app.core.settings import get_settings
 from app.schemas.dataset import LocalDatasetSummary
+from app.services.dataset_paths import (
+    normalize_dataset_name,
+    resolve_classification_dataset_layout,
+)
 
 
 SUPPORTED_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff"}
-PREPARED_SOURCE_DIRNAME = "classification_source"
 
 
 def list_local_datasets() -> list[LocalDatasetSummary]:
@@ -47,10 +50,10 @@ def collect_dataset_names(raw_root: Path, classification_root: Path) -> list[str
 
 def build_local_dataset_summary(data_root: Path, dataset_name: str) -> LocalDatasetSummary:
     """Build one dataset readiness snapshot."""
-    raw_dir = resolve_dataset_dir(data_root / "raw", dataset_name)
-    prepared_source_dir = raw_dir / PREPARED_SOURCE_DIRNAME
-    source_dir = prepared_source_dir if prepared_source_dir.exists() else raw_dir
-    classification_dir = resolve_dataset_dir(data_root / "classification", dataset_name)
+    raw_dir, prepared_source_dir, source_dir, classification_dir = resolve_classification_dataset_layout(
+        data_root,
+        dataset_name,
+    )
     train_manifest = classification_dir / "train.txt"
     val_manifest = classification_dir / "val.txt"
     test_manifest = classification_dir / "test.txt"
@@ -89,25 +92,6 @@ def build_local_dataset_summary(data_root: Path, dataset_name: str) -> LocalData
         image_size_options=image_size_options,
         message=message,
     )
-
-
-def resolve_dataset_dir(parent_dir: Path, dataset_name: str) -> Path:
-    """Resolve one dataset directory with case-insensitive matching."""
-    direct_dir = parent_dir / dataset_name
-    if direct_dir.exists():
-        return direct_dir
-    if not parent_dir.exists():
-        return direct_dir
-    normalized_name = normalize_dataset_name(dataset_name)
-    for child_dir in sorted(path for path in parent_dir.iterdir() if path.is_dir()):
-        if normalize_dataset_name(child_dir.name) == normalized_name:
-            return child_dir
-    return direct_dir
-
-
-def normalize_dataset_name(dataset_name: str) -> str:
-    """Normalize one dataset name for tolerant matching."""
-    return dataset_name.strip().lower()
 
 
 def detect_original_image_size(source_dir: Path) -> int | None:

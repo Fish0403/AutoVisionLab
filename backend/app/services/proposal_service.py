@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+import math
+from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -24,7 +25,7 @@ from app.services.run_policy import (
     get_preferred_fields,
     get_default_run_policy,
 )
-from app.services.run_logging import append_run_log
+from app.services.run_logging import append_run_llm_event, append_run_log
 
 
 def _get_effective_change_map(proposal: ProposalSchema) -> dict[str, Any]:
@@ -39,6 +40,13 @@ def _get_effective_change_map(proposal: ProposalSchema) -> dict[str, Any]:
 def _count_effective_changes(proposal: ProposalSchema) -> int:
     """Return the number of concrete parameter changes in the proposal."""
     return len(_get_effective_change_map(proposal))
+
+
+def _estimate_text_tokens(text: str) -> int:
+    """Return a rough token estimate for mixed JSON, English, and Chinese text."""
+    ascii_chars = sum(1 for char in text if ord(char) < 128)
+    non_ascii_chars = len(text) - ascii_chars
+    return max(1, math.ceil(ascii_chars / 4 + non_ascii_chars / 1.8))
 
 
 def _contains_unsupported_text_hint(
@@ -71,6 +79,9 @@ def _contains_non_basic_change(proposal: ProposalSchema) -> bool:
         "loss_name",
         "focal_gamma",
         "aux_logits",
+        "backbone_name",
+        "neck_name",
+        "head_name",
     }
     proposal_changes = proposal.changes.model_dump()
     return any(proposal_changes.get(field_name) is not None for field_name in non_basic_fields)
@@ -129,6 +140,8 @@ def _summarize_experiment_for_prompt(experiment: ExperimentModel, run: RunModel)
     proposal_payload = experiment.proposal or {}
     config_payload = experiment.experiment_config or {}
     params_payload = config_payload.get("params") or {}
+    train_hyp_payload = config_payload.get("train_hyp") or {}
+    model_recipe_payload = config_payload.get("model_recipe") or {}
 
     return {
         "id": experiment.id,
@@ -150,10 +163,14 @@ def _summarize_experiment_for_prompt(experiment: ExperimentModel, run: RunModel)
             "training_seconds": resource_payload.get("training_seconds"),
         },
         "params": params_payload,
+        "train_hyp": train_hyp_payload,
+        "model_recipe": model_recipe_payload,
         "proposal": {
             "based_on_experiment_ids": proposal_payload.get("based_on_experiment_ids"),
             "hypothesis": proposal_payload.get("hypothesis"),
             "changes": (proposal_payload.get("changes") or {}),
+            "train_hyp_changes": proposal_payload.get("train_hyp_changes"),
+            "recipe_changes": proposal_payload.get("recipe_changes"),
             "reason": proposal_payload.get("reason"),
             "risk": proposal_payload.get("risk"),
         }
@@ -195,10 +212,15 @@ def _load_latest_parameter_space(db: Session, run_id: str) -> EditableParameterS
     return EditableParameterSpace.model_validate(latest_experiment.editable_parameter_space or {})
 
 
-def sanitize_disallowed_proposal_fields(proposal: ProposalSchema, search_policy: SearchPolicy) -> ProposalSchema:
+def sanitize_disallowed_proposal_fields(
+    proposal: ProposalSchema,
+    search_policy: SearchPolicy,
+    *,
+    parameter_space: EditableParameterSpace | None = None,
+) -> ProposalSchema:
     """Clear disallowed AI-controlled fields instead of failing the whole proposal."""
     changes_payload = proposal.changes.model_dump()
-    allowed_fields = get_allowed_ai_search_fields(search_policy)
+    allowed_fields = get_allowed_ai_search_fields(search_policy, parameter_space=parameter_space)
     sanitized_changes = {
         key: (value if key in allowed_fields else None)
         for key, value in changes_payload.items()
@@ -212,6 +234,8 @@ def generate_aihubmix_proposal(
     *,
     require_non_basic_change: bool = False,
     max_changed_fields: int | None = None,
+    on_prompt_metadata: Callable[[dict[str, Any]], None] | None = None,
+    on_provider_metadata: Callable[[dict[str, Any]], None] | None = None,
 ) -> ProposalSchema:
     """Generate a structured proposal using AIHubMix."""
     run = db.get(RunModel, run_id)
@@ -242,7 +266,7 @@ def generate_aihubmix_proposal(
     }
     search_policy = _load_latest_search_policy(db, run_id)
     parameter_space = _load_latest_parameter_space(db, run_id)
-    allowed_fields = sorted(get_allowed_ai_search_fields(search_policy))
+    allowed_fields = sorted(get_allowed_ai_search_fields(search_policy, parameter_space=parameter_space))
     preferred_fields, preference_notes = get_preferred_fields(
         set(allowed_fields),
         blocked_fields=blocked_fields,
@@ -269,9 +293,12 @@ def generate_aihubmix_proposal(
         '"batch_size":"number|null","image_size":"number|null","epochs":"number|null","weight_decay":"number|null",'
         '"scheduler":"string|null","augmentation_policy":"string|null","mixup_alpha":"number|null",'
         '"cutmix_alpha":"number|null","random_erasing_prob":"number|null","loss_name":"string|null",'
-        '"focal_gamma":"number|null","label_smoothing":"number|null","aux_logits":"boolean|null"},'
+        '"focal_gamma":"number|null","label_smoothing":"number|null","aux_logits":"boolean|null",'
+        '"backbone_name":"string|null","neck_name":"string|null","head_name":"string|null"},'
+        '"train_hyp_changes":"object|null","recipe_changes":"object|null",'
         '"reason":"string","risk":"low|medium|high"}'
         "其中 hypothesis 和 reason 必须使用简洁中文。"
+        "changes 是当前兼容层必填字段；如果你能明确映射到 recipe 视角，也应同时返回 train_hyp_changes 或 recipe_changes。"
         "你会收到同一个 run 的完整实验历史，而不是只收到最新一轮。"
         "你必须综合所有历史轮次，重点参考 baseline、best、frontier 以及每轮指标变化趋势。"
         "如果某些历史实验已经被标记为 discard、crash、timeout 或 failed，要把它们视为负样本，避免重复无效尝试。"
@@ -299,6 +326,7 @@ def generate_aihubmix_proposal(
         "只能修改 Allowed AI change fields 中列出的字段。"
         "每个字段的可选值或范围必须严格遵循 Allowed field definitions。"
         "只能提出结构化参数改动。"
+        "如果当前 run 已开放 component-level 搜索，优先使用 neck_name 和 head_name，而不是旧的细粒度 recipe 字段。"
         "不要只根据最后一轮实验下结论；必须结合整个 run 的历史记录判断下一步。"
         "如果 Preferred fields 非空，优先从 Preferred fields 中选择。"
         "如果最近几轮没有明显提升，优先切换搜索维度，不要重复最近 3 轮几乎相同的建议。"
@@ -316,8 +344,9 @@ def generate_aihubmix_proposal(
             "当前处于 auto-train 的后半阶段。"
             "如果当前仍有可行动作，优先不要只修改基础超参数；"
             "优先包含一个非基础字段："
-            "augmentation_policy、mixup_alpha、cutmix_alpha、random_erasing_prob、loss_name、focal_gamma、aux_logits。"
-    )
+            "augmentation_policy、mixup_alpha、cutmix_alpha、random_erasing_prob、"
+            "loss_name、focal_gamma、aux_logits、backbone_name、neck_name、head_name。"
+        )
     client = AIHubMixClient()
     last_error: str | None = None
     for attempt_index in range(4):
@@ -331,15 +360,85 @@ def generate_aihubmix_proposal(
                 require_non_basic_change=require_non_basic_change,
                 preferred_fields=preferred_fields,
             )
-        proposal_payload = client.create_json_completion(
-            system_prompt=system_prompt,
-            user_prompt=base_user_prompt + retry_note,
+        effective_user_prompt = base_user_prompt + retry_note
+        prompt_chars = len(system_prompt) + len(effective_user_prompt)
+        prompt_tokens_estimate = _estimate_text_tokens(system_prompt + effective_user_prompt)
+        prompt_metadata = {
+            "attempt": attempt_index + 1,
+            "history_items": len(experiment_history),
+            "prompt_chars": prompt_chars,
+            "prompt_tokens_estimate": prompt_tokens_estimate,
+        }
+        if on_prompt_metadata is not None:
+            on_prompt_metadata(prompt_metadata)
+        append_run_log(
+            run_id,
+            (
+                f"[proposal-meta] attempt={attempt_index + 1} | "
+                f"history_items={len(experiment_history)} | "
+                f"prompt_chars={prompt_chars} | "
+                f"prompt_tokens_estimate={prompt_tokens_estimate}"
+            ),
+        )
+        append_run_llm_event(
+            run_id,
+            "proposal_request",
+            {
+                "attempt": attempt_index + 1,
+                "history_items": len(experiment_history),
+                "prompt_chars": prompt_chars,
+                "prompt_tokens_estimate": prompt_tokens_estimate,
+                "system_prompt": system_prompt,
+                "user_prompt": effective_user_prompt,
+            },
+        )
+        try:
+            proposal_payload, provider_metadata = client.create_json_completion_with_metadata(
+                system_prompt=system_prompt,
+                user_prompt=effective_user_prompt,
+            )
+        except Exception as error:
+            append_run_log(
+                run_id,
+                (
+                    f"[proposal-meta] attempt={attempt_index + 1} failed | "
+                    f"prompt_tokens_estimate={prompt_tokens_estimate} | "
+                    f"error={error}"
+                ),
+            )
+            append_run_llm_event(
+                run_id,
+                "proposal_error",
+                {
+                    "attempt": attempt_index + 1,
+                    "prompt_tokens_estimate": prompt_tokens_estimate,
+                    "error": str(error),
+                },
+            )
+            raise
+        if on_provider_metadata is not None:
+            on_provider_metadata(provider_metadata)
+        append_run_llm_event(
+            run_id,
+            "proposal_response",
+            {
+                "attempt": attempt_index + 1,
+                "usage": provider_metadata.get("usage"),
+                "response_model": provider_metadata.get("response_model"),
+                "response_chars": provider_metadata.get("response_chars"),
+                "raw_content": provider_metadata.get("raw_content"),
+                "parsed_payload": proposal_payload,
+            },
         )
         proposal = ProposalSchema.model_validate(proposal_payload)
         if proposal.model_name != run.model_name:
             last_error = "Proposal model_name does not match the run model"
             continue
-        proposal = sanitize_disallowed_proposal_fields(proposal, search_policy)
+        proposal = sanitize_disallowed_proposal_fields(
+            proposal,
+            search_policy,
+            parameter_space=parameter_space,
+        )
         effective_change_count = _count_effective_changes(proposal)
         if effective_change_count == 0:
             last_error = "Proposal does not contain any effective parameter changes"
@@ -367,6 +466,8 @@ def generate_aihubmix_proposal(
                 f"blocked_fields={json.dumps(sorted(blocked_fields), ensure_ascii=False)} | "
                 f"discouraged_dimensions={json.dumps(sorted(forbidden_dimensions), ensure_ascii=False)} | "
                 f"preferred_fields={json.dumps(sorted(preferred_fields), ensure_ascii=False)} | "
+                f"prompt_tokens_estimate={prompt_tokens_estimate} | "
+                f"provider_usage={json.dumps(provider_metadata.get('usage'), ensure_ascii=False)} | "
                 f"hypothesis={proposal.hypothesis} | "
                 f"changes={json.dumps(proposal.changes.model_dump(exclude_none=True), ensure_ascii=False)} | "
                 f"reason={proposal.reason}"
