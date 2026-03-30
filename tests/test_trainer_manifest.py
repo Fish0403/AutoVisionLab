@@ -176,7 +176,60 @@ search_policy:
         output = model(torch.zeros(1, 3, 96, 96))
 
         self.assertEqual(model.__class__.__name__, "ResNet")
-        self.assertEqual(tuple(output.shape), (1, 10))
+        self.assertEqual(tuple(output.shape), (1, 6))
+
+    def test_build_model_from_manifest_infers_output_classes_from_split_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            train_manifest = temp_root / "train.txt"
+            val_manifest = temp_root / "val.txt"
+            train_manifest.write_text(
+                "sample_a.jpg\tclass_a\nsample_b.jpg\tclass_b\nsample_c.jpg\tclass_c\n",
+                encoding="utf-8",
+            )
+            val_manifest.write_text(
+                "sample_d.jpg\tclass_a\nsample_e.jpg\tclass_b\n",
+                encoding="utf-8",
+            )
+
+            manifest = parse_trainer_manifest_payload(
+                {
+                    "version": "trainer_manifest@v1",
+                    "task_type": "classification",
+                    "parameter_space_version": "mobilenet_v3_small@v1",
+                    "model": {
+                        "version": "model_recipe@v1",
+                        "task_type": "classification",
+                        "model_family": "mobilenet",
+                        "base_model": "mobilenet_v3_small",
+                    },
+                    "train": {
+                        "version": "train_hyp@v1",
+                        "task_type": "classification",
+                        "optimizer": "adamw",
+                        "lr0": 0.003,
+                        "weight_decay": 0.0001,
+                        "scheduler": "cosine",
+                        "epochs": 10,
+                        "batch_size": 32,
+                        "image_size": 96,
+                    },
+                    "data": {
+                        "version": "dataset_recipe@v1",
+                        "task_type": "classification",
+                        "dataset_name": "temp-dataset",
+                        "source": {"root_dir": str(temp_root)},
+                        "splits": {
+                            "train_manifest": str(train_manifest),
+                            "val_manifest": str(val_manifest),
+                        },
+                    },
+                }
+            )
+
+            model = build_model_from_manifest(manifest)
+
+        self.assertEqual(model.classifier[-1].out_features, 3)
 
     def test_build_trainer_from_config_dispatches_to_trainer_factory(self) -> None:
         payload = _build_config_payload("googlenet", "googlenet", "googlenet@v1")

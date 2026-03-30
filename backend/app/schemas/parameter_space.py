@@ -1,6 +1,7 @@
 """Editable parameter space schemas."""
 
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -223,6 +224,18 @@ class ModelRecipe(BaseModel):
                 base_model=base_model,
                 pooling_type=str(pooling_type),
             )
+        if base_model:
+            from app.trainers.classification.model_components import (
+                build_default_backbone_layers,
+                build_default_head_layers,
+            )
+
+            if not normalized_payload.get("backbone"):
+                normalized_payload["backbone"] = build_default_backbone_layers(base_model)
+            if "neck" not in normalized_payload or normalized_payload.get("neck") is None:
+                normalized_payload["neck"] = []
+            if not normalized_payload.get("head"):
+                normalized_payload["head"] = build_default_head_layers(base_model)
         return normalized_payload
 
 
@@ -336,6 +349,35 @@ class DatasetRecipe(BaseModel):
     metadata: DatasetRecipeMetadata = Field(default_factory=DatasetRecipeMetadata)
 
 
+def _infer_dataset_class_names(dataset_recipe: DatasetRecipe) -> list[str]:
+    """Infer dataset class names from available split manifests when possible."""
+    from app.trainers.classification.data_loading import collect_manifest_classes
+    from app.services.dataset_paths import resolve_dataset_dir
+
+    raw_manifest_paths = [
+        Path(dataset_recipe.splits.train_manifest),
+        Path(dataset_recipe.splits.val_manifest),
+    ]
+    if dataset_recipe.splits.test_manifest:
+        raw_manifest_paths.append(Path(dataset_recipe.splits.test_manifest))
+
+    discovered_class_names: set[str] = set()
+    for manifest_path in raw_manifest_paths:
+        if not manifest_path.exists() and len(manifest_path.parts) >= 3:
+            candidate_parent = resolve_dataset_dir(
+                manifest_path.parent.parent,
+                dataset_recipe.dataset_name,
+                strict=False,
+            )
+            candidate_path = candidate_parent / manifest_path.name
+            if candidate_path.exists():
+                manifest_path = candidate_path
+        if not manifest_path.exists():
+            continue
+        discovered_class_names.update(collect_manifest_classes(manifest_path))
+    return sorted(discovered_class_names)
+
+
 class ExperimentConfig(BaseModel):
     """Final config consumed by the trainer."""
 
@@ -408,6 +450,15 @@ class ExperimentConfig(BaseModel):
                     test_manifest=f"data/classification/{dataset_root}/test.txt",
                 ),
             )
+        if self.dataset_recipe is not None and not self.dataset_recipe.class_names:
+            self.dataset_recipe.class_names = _infer_dataset_class_names(self.dataset_recipe)
+        if (
+            self.model_recipe is not None
+            and self.model_recipe.nc is None
+            and self.dataset_recipe is not None
+            and self.dataset_recipe.class_names
+        ):
+            self.model_recipe.nc = len(self.dataset_recipe.class_names)
         return self
 
 

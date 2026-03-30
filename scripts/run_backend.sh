@@ -13,4 +13,4 @@ fi
 
 source "$VENV_DIR/bin/activate"
 cd "$ROOT_DIR"
-uvicorn app.main:app --reload --app-dir backend
+uvicorn app.main:app --app-dir backend

@@ -3,34 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import partial
 from typing import Callable
 
 import torch
 from torch import nn
 from torchvision.models import googlenet, resnet18
-from torchvision.models.mobilenetv3 import Conv2dNormActivation, InvertedResidual, InvertedResidualConfig
 
 from app.schemas.parameter_space import ModelRecipe, hydrate_model_recipe
+from app.trainers.classification.model_components import (
+    build_classification_neck,
+    build_mobilenet_v3_small_classifier,
+    build_mobilenet_v3_small_native_backbone,
+    build_mobilenet_v3_small_tail,
+)
 
 
 ValidateRecipeFn = Callable[[ModelRecipe], None]
 BuildModelFn = Callable[[ModelRecipe, int], nn.Module]
-
-
-class GeMPooling2d(nn.Module):
-    """Generalized mean pooling used as one lightweight neck variant."""
-
-    def __init__(self, p: float = 3.0, eps: float = 1e-6) -> None:
-        super().__init__()
-        self.p = p
-        self.eps = eps
-
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        """Pool one feature map tensor into a global descriptor."""
-        inputs = inputs.clamp(min=self.eps).pow(self.p)
-        pooled = inputs.mean(dim=(-2, -1), keepdim=True)
-        return pooled.pow(1.0 / self.p)
 
 
 class RecipeMobileNetV3(nn.Module):
@@ -80,62 +69,6 @@ class ClassificationModelBuilderAdapter:
     name: str
     validate_recipe: ValidateRecipeFn
     build_model: BuildModelFn
-
-
-def _resolve_activation_layer(activation_type: str) -> type[nn.Module]:
-    """Return one activation layer class from the recipe string."""
-    if activation_type == "hardswish":
-        return nn.Hardswish
-    if activation_type == "relu":
-        return nn.ReLU
-    raise ValueError(f"Unsupported activation_type for MobileNetV3 Small: {activation_type}")
-
-
-def _resolve_pooling_module(pooling_type: str) -> nn.Module:
-    """Return one global pooling module from the recipe string."""
-    if pooling_type == "avg":
-        return nn.AdaptiveAvgPool2d(1)
-    if pooling_type == "gem":
-        return GeMPooling2d()
-    raise ValueError(f"Unsupported pooling_type for MobileNetV3 Small: {pooling_type}")
-
-
-def _build_native_classifier(
-    *,
-    lastconv_output_channels: int,
-    classifier_hidden_channels: int,
-    classifier_dropout: float,
-    num_classes: int,
-) -> nn.Sequential:
-    """Build the native MobileNetV3 classifier head."""
-    return nn.Sequential(
-        nn.Linear(lastconv_output_channels, classifier_hidden_channels),
-        nn.Hardswish(inplace=True),
-        nn.Dropout(p=classifier_dropout, inplace=True),
-        nn.Linear(classifier_hidden_channels, num_classes),
-    )
-
-
-def _build_linear_classifier(
-    *,
-    lastconv_output_channels: int,
-    num_classes: int,
-) -> nn.Linear:
-    """Build one pooled linear classifier head."""
-    return nn.Linear(lastconv_output_channels, num_classes)
-
-
-def _build_dropout_linear_classifier(
-    *,
-    lastconv_output_channels: int,
-    num_classes: int,
-    dropout_probability: float,
-) -> nn.Sequential:
-    """Build one pooled dropout-linear classifier head."""
-    return nn.Sequential(
-        nn.Dropout(p=dropout_probability, inplace=True),
-        nn.Linear(lastconv_output_channels, num_classes),
-    )
 
 
 def _find_recipe_layer(head_layers: list[object], module_name: str) -> list[object]:
@@ -235,92 +168,25 @@ def _build_mobilenet_v3_small_from_recipe(recipe: ModelRecipe, num_classes: int)
     _validate_mobilenet_v3_small_recipe(recipe)
 
     output_classes = recipe.nc or num_classes
-    norm_layer = partial(nn.BatchNorm2d, eps=0.001, momentum=0.01)
-    stem_layer = recipe.backbone[0]
-    stem_out_channels, stem_kernel_size, stem_stride, stem_activation_type = stem_layer.args
-    stem_activation = _resolve_activation_layer(str(stem_activation_type))
-    stem_output_channels = InvertedResidualConfig.adjust_channels(
-        int(stem_out_channels),
-        recipe.width_multiple,
+    backbone_result = build_mobilenet_v3_small_native_backbone(recipe)
+    features = list(backbone_result.features)
+    tail_module, lastconv_output_channels = build_mobilenet_v3_small_tail(
+        recipe,
+        input_channels=backbone_result.output_channels,
+        norm_layer=backbone_result.norm_layer,
     )
-    features: list[nn.Module] = [
-        Conv2dNormActivation(
-            recipe.input_channels,
-            stem_output_channels,
-            kernel_size=int(stem_kernel_size),
-            stride=int(stem_stride),
-            norm_layer=norm_layer,
-            activation_layer=stem_activation,
-        )
-    ]
-
-    for layer in recipe.backbone[1:]:
-        input_channels, kernel_size, expanded_channels, out_channels, use_se, activation, stride, dilation = layer.args
-        features.append(
-            InvertedResidual(
-                InvertedResidualConfig(
-                    input_channels,
-                    kernel_size,
-                    expanded_channels,
-                    out_channels,
-                    bool(use_se),
-                    str(activation),
-                    stride,
-                    dilation,
-                    recipe.width_multiple,
-                ),
-                norm_layer,
-            )
-        )
-
-    tail_args = _find_recipe_layer(recipe.head, "pointwise_tail")
-    expansion_factor = int(tail_args[0])
-    tail_activation = _resolve_activation_layer(str(tail_args[1]))
-    lastconv_input_channels = InvertedResidualConfig.adjust_channels(
-        int(recipe.backbone[-1].args[3]),
-        recipe.width_multiple,
-    )
-    lastconv_output_channels = expansion_factor * lastconv_input_channels
-    features.append(
-        Conv2dNormActivation(
-            lastconv_input_channels,
-            lastconv_output_channels,
-            kernel_size=1,
-            norm_layer=norm_layer,
-            activation_layer=tail_activation,
-        )
-    )
+    features.append(tail_module)
 
     _find_recipe_layer(recipe.head, "global_pool")
-    classifier_args = _find_recipe_layer(recipe.head, "classifier")
-    classifier_hidden_channels = InvertedResidualConfig.adjust_channels(
-        int(classifier_args[0]),
-        recipe.width_multiple,
-    )
     head_component_name = _resolve_head_component_name(recipe)
     neck_component_name = _resolve_neck_component_name(recipe)
-    pooling_type = "gem" if neck_component_name == "gem_pool" else "avg"
-    avgpool = _resolve_pooling_module(pooling_type)
-    if head_component_name == "native_classifier":
-        classifier = _build_native_classifier(
-            lastconv_output_channels=lastconv_output_channels,
-            classifier_hidden_channels=classifier_hidden_channels,
-            classifier_dropout=recipe.head_config.classifier_dropout,
-            num_classes=output_classes,
-        )
-    elif head_component_name == "linear":
-        classifier = _build_linear_classifier(
-            lastconv_output_channels=lastconv_output_channels,
-            num_classes=output_classes,
-        )
-    elif head_component_name == "dropout_linear":
-        classifier = _build_dropout_linear_classifier(
-            lastconv_output_channels=lastconv_output_channels,
-            num_classes=output_classes,
-            dropout_probability=0.2,
-        )
-    else:
-        raise ValueError(f"Unsupported head component for MobileNetV3 Small: {head_component_name}")
+    avgpool = build_classification_neck(neck_component_name)
+    classifier = build_mobilenet_v3_small_classifier(
+        recipe,
+        head_name=head_component_name,
+        lastconv_output_channels=lastconv_output_channels,
+        num_classes=output_classes,
+    )
     return RecipeMobileNetV3(
         features=features,
         avgpool=avgpool,

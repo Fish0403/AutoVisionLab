@@ -189,8 +189,9 @@ class BaseClassificationTrainer:
         train_transform = build_train_transform(
             image_size=image_size,
             augmentation=self.config.train_hyp.augmentation,
+            dataset_name=self.config.dataset,
         )
-        eval_transform = build_eval_transform(image_size)
+        eval_transform = build_eval_transform(image_size, dataset_name=self.config.dataset)
         train_manifest, val_manifest, source_root = resolve_classification_dataset_files(
             self.data_root,
             self.config.dataset.strip(),
@@ -220,9 +221,17 @@ class BaseClassificationTrainer:
                 seed=DEMO_SUBSET_SEED + 1,
             )
         batch_size = self.config.train_hyp.batch_size
+        num_workers = max(int(self.settings.classification_num_workers), 0)
+        common_dataloader_kwargs = {
+            "batch_size": batch_size,
+            "num_workers": num_workers,
+            "pin_memory": self.device.type == "cuda",
+        }
+        if num_workers > 0:
+            common_dataloader_kwargs["persistent_workers"] = True
         return (
-            DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0),
-            DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0),
+            DataLoader(train_dataset, shuffle=True, **common_dataloader_kwargs),
+            DataLoader(val_dataset, shuffle=False, **common_dataloader_kwargs),
         )
 
     def build_demo_subset(

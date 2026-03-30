@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     is_demo_mode: bool = True
     demo_train_samples: int = 2000
     demo_val_samples: int = 1000
+    classification_num_workers: int = 4
     aihubmix_api_key: str | None = None
     aihubmix_model: str = "minimax/minimax-m2.5"
     aihubmix_base_url: str = "https://aihubmix.com/v1"

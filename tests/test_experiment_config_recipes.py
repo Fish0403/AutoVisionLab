@@ -14,6 +14,7 @@ sys.path.insert(0, str(VENV_SITE_PACKAGES))
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 from app.schemas.parameter_space import ExperimentConfig
+from app.trainers.templates import load_builtin_model_recipe_payload
 
 
 def _build_config_payload() -> dict[str, object]:
@@ -49,6 +50,12 @@ def _build_config_payload() -> dict[str, object]:
 class ExperimentConfigRecipeTest(unittest.TestCase):
     """Verify recipe objects are attached to experiment config payloads."""
 
+    def test_builtin_mobilenet_template_hides_architecture_details(self) -> None:
+        template_payload = load_builtin_model_recipe_payload("mobilenet_v3_small")
+
+        self.assertNotIn("backbone", template_payload)
+        self.assertNotIn("head", template_payload)
+
     def test_legacy_payload_is_backfilled_with_default_recipes(self) -> None:
         config = ExperimentConfig.model_validate(_build_config_payload())
 
@@ -67,10 +74,20 @@ class ExperimentConfigRecipeTest(unittest.TestCase):
         self.assertEqual(config.train_hyp.augmentation.mixup, 0.2)
         self.assertIsNotNone(config.dataset_recipe)
         self.assertEqual(config.dataset_recipe.dataset_name, "neu")
+        self.assertEqual(len(config.dataset_recipe.class_names), 6)
+        self.assertEqual(config.model_recipe.nc, 6)
         self.assertEqual(
             config.dataset_recipe.splits.train_manifest,
             "data/classification/neu/train.txt",
         )
+
+    def test_default_dataset_recipe_infers_dt_class_names_and_model_output_classes(self) -> None:
+        payload = _build_config_payload()
+        payload["dataset"] = "DT"
+        config = ExperimentConfig.model_validate(payload)
+
+        self.assertEqual(config.dataset_recipe.class_names, ["0", "1", "2"])
+        self.assertEqual(config.model_recipe.nc, 3)
 
     def test_explicit_recipe_payloads_are_preserved(self) -> None:
         payload = _build_config_payload()

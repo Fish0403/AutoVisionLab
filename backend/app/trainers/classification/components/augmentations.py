@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+from typing import Final
 
 import torch
 from torchvision.transforms import transforms
@@ -11,9 +12,27 @@ from torchvision.transforms import transforms
 from app.schemas.parameter_space import TrainHypAugmentation
 
 
+NormalizationStats = tuple[tuple[float, float, float], tuple[float, float, float]]
+
+CLASSIFICATION_DATASET_NORMALIZATION: Final[dict[str, NormalizationStats]] = {
+    "dt": ((0.4707, 0.4707, 0.4707), (0.0587, 0.0587, 0.0587)),
+    "neu": ((0.5002, 0.5002, 0.5002), (0.1103, 0.1103, 0.1103)),
+    "kdsc": ((0.4303, 0.4303, 0.4303), (0.0922, 0.0922, 0.0922)),
+    "nt": ((0.3903, 0.3903, 0.3903), (0.0754, 0.0754, 0.0754)),
+}
+
+
+def resolve_classification_normalization(dataset_name: str | None) -> NormalizationStats | None:
+    """Return dataset-specific normalization stats when available."""
+    if dataset_name is None:
+        return None
+    return CLASSIFICATION_DATASET_NORMALIZATION.get(dataset_name.strip().lower())
+
+
 def build_train_transform(
     image_size: int,
     augmentation: TrainHypAugmentation,
+    dataset_name: str | None = None,
 ) -> transforms.Compose:
     """Build the train transform pipeline from structured params."""
     steps: list[object] = [transforms.Resize((image_size, image_size))]
@@ -28,19 +47,24 @@ def build_train_transform(
                 value="random",
             )
         )
-    steps.append(transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)))
+    normalization = resolve_classification_normalization(dataset_name)
+    if normalization is not None:
+        mean, std = normalization
+        steps.append(transforms.Normalize(mean, std))
     return transforms.Compose(steps)
 
 
-def build_eval_transform(image_size: int) -> transforms.Compose:
+def build_eval_transform(image_size: int, dataset_name: str | None = None) -> transforms.Compose:
     """Build the eval transform pipeline."""
-    return transforms.Compose(
-        [
-            transforms.Resize((image_size, image_size)),
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)),
-        ]
-    )
+    steps: list[object] = [
+        transforms.Resize((image_size, image_size)),
+        transforms.ToTensor(),
+    ]
+    normalization = resolve_classification_normalization(dataset_name)
+    if normalization is not None:
+        mean, std = normalization
+        steps.append(transforms.Normalize(mean, std))
+    return transforms.Compose(steps)
 
 
 def apply_batch_augmentations(
