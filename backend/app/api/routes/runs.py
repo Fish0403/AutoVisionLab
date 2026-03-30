@@ -8,8 +8,23 @@ from app.api.responses import build_success_response
 from app.db.session import get_db_session
 from app.schemas.api import ApiResponse
 from app.schemas.ai import ProposalSchema
-from app.schemas.run import AutoTrainStartRequest, AutoTrainTaskResponse, RunCreateRequest, RunDetailResponse, RunListItem, RunMetricsResponse, RunSummaryResponse
+from app.schemas.run import (
+    AutoTrainStartRequest,
+    AutoTrainTaskResponse,
+    ModelCompareStartRequest,
+    ModelCompareTaskResponse,
+    RunCreateRequest,
+    RunDetailResponse,
+    RunListItem,
+    RunMetricsResponse,
+    RunSummaryResponse,
+)
 from app.services.auto_train_service import get_active_auto_train_task, get_auto_train_task, start_auto_train_task, stop_auto_train_task
+from app.services.model_compare_service import (
+    get_active_model_compare_task,
+    get_model_compare_task,
+    start_model_compare_task,
+)
 from app.services.persistence import clear_all_records, clear_run_records, create_run, get_run_detail, get_run_metrics, get_run_summary, list_runs
 from app.services.proposal_service import generate_aihubmix_proposal, test_aihubmix_connection
 
@@ -21,6 +36,34 @@ router = APIRouter()
 def get_runs(db: Session = Depends(get_db_session)) -> ApiResponse[list[RunListItem]]:
     """List all runs."""
     return build_success_response(list_runs(db), message="Runs loaded.")
+
+
+@router.post("/model-compare", response_model=ApiResponse[ModelCompareTaskResponse], status_code=202)
+def start_model_compare_endpoint(request: ModelCompareStartRequest) -> ApiResponse[ModelCompareTaskResponse]:
+    """Start one background cross-model compare task."""
+    try:
+        task = start_model_compare_task(request)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return build_success_response(task, message="Model compare task started.", code=task.status)
+
+
+@router.get("/model-compare/active", response_model=ApiResponse[ModelCompareTaskResponse])
+def get_active_model_compare_endpoint() -> ApiResponse[ModelCompareTaskResponse]:
+    """Get the currently active cross-model compare task when one exists."""
+    task = get_active_model_compare_task()
+    if task is None:
+        raise HTTPException(status_code=404, detail="No active model compare task")
+    return build_success_response(task, message="Active model compare task loaded.", code=task.status)
+
+
+@router.get("/model-compare/{task_id}", response_model=ApiResponse[ModelCompareTaskResponse])
+def get_model_compare_endpoint(task_id: str) -> ApiResponse[ModelCompareTaskResponse]:
+    """Get one background cross-model compare task snapshot."""
+    task = get_model_compare_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Model compare task not found")
+    return build_success_response(task, message="Model compare task loaded.", code=task.status)
 
 
 @router.post("", response_model=ApiResponse[RunDetailResponse], status_code=201)

@@ -1,8 +1,8 @@
 """Run-facing API schemas."""
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.schemas.common import PointMetric, RunStatus
 from app.schemas.experiment import ExperimentSummary
@@ -107,3 +107,48 @@ class AutoTrainTaskResponse(BaseModel):
     provider_prompt_tokens_total: int = 0
     provider_completion_tokens_total: int = 0
     provider_total_tokens_total: int = 0
+
+
+class ModelCompareStartRequest(BaseModel):
+    """Request payload for starting one cross-model compare task."""
+
+    dataset: str
+    config: ExperimentConfig
+    candidate_models: list[str] | None = None
+
+
+class ModelCompareCandidateResult(BaseModel):
+    """One candidate result inside the cross-model compare summary."""
+
+    model_name: str
+    run_id: str | None = None
+    baseline_experiment_id: str | None = None
+    status: str
+    top1_acc: float | None = None
+    latency_ms: float | None = None
+    parameter_count_million: float | None = None
+    normalized_config_notes: list[str] = Field(default_factory=list)
+
+
+class ModelCompareSummary(BaseModel):
+    """Cross-model compare result summary."""
+
+    mode: Literal["model_compare"] = "model_compare"
+    shared_baseline_config: dict[str, Any]
+    candidate_results: list[ModelCompareCandidateResult] = Field(default_factory=list)
+
+
+class ModelCompareTaskResponse(BaseModel):
+    """Background cross-model compare task snapshot."""
+
+    task_id: str
+    status: str
+    elapsed_seconds: float = 0.0
+    current_model_name: str | None = None
+    current_model_index: int = 0
+    total_models: int = 0
+    current_run_id: str | None = None
+    current_experiment_id: str | None = None
+    logs: list[str]
+    summary: ModelCompareSummary | None = None
+    error: str | None = None

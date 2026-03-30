@@ -7,6 +7,8 @@ import shutil
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import uuid4
 
 
@@ -28,14 +30,19 @@ from app.api.routes.experiments import (
     save_result_endpoint,
 )
 from app.api.routes.models import read_parameter_space
-from app.api.routes.runs import create_run_endpoint, get_metrics
+from app.api.routes.runs import create_run_endpoint, get_metrics, start_model_compare_endpoint
 from app.db.session import SessionLocal
 from app.main import healthcheck, initialize_database
 from app.schemas.ai import ResultSchema
 from app.schemas.api import ApiResponse
 from app.schemas.experiment import ExperimentCreateRequest, ExperimentDecisionRequest
 from app.schemas.parameter_space import EditableParameterSpace, ExperimentConfig
-from app.schemas.run import RunCreateRequest
+from app.schemas.run import (
+    ModelCompareStartRequest,
+    ModelCompareSummary,
+    ModelCompareTaskResponse,
+    RunCreateRequest,
+)
 from app.services.persistence import clear_all_records
 
 
@@ -326,6 +333,41 @@ class ApiResponseEnvelopeTest(unittest.TestCase):
         self.assertIn("training_seconds", metrics_response.data.available_metrics)
         self.assertEqual(metrics_response.data.points[0].metric_name, "latency_ms")
         self.assertEqual(metrics_response.data.points[0].metric_value, 5.2)
+
+    def test_model_compare_endpoint_uses_api_response_envelope(self) -> None:
+        experiment_config = _build_experiment_config("mobilenet_v3_small@v1")
+
+        with patch("app.api.routes.runs.start_model_compare_task") as start_task:
+            start_task.return_value = ModelCompareTaskResponse(
+                task_id="cmp_demo_001",
+                status="queued",
+                elapsed_seconds=0.0,
+                current_model_name=None,
+                current_model_index=0,
+                total_models=3,
+                current_run_id=None,
+                current_experiment_id=None,
+                logs=["Model compare task queued."],
+                summary=ModelCompareSummary(
+                    mode="model_compare",
+                    shared_baseline_config={"dataset": "cifar10"},
+                    candidate_results=[],
+                ),
+                error=None,
+            )
+            response = start_model_compare_endpoint(
+                ModelCompareStartRequest(
+                    dataset="cifar10",
+                    config=ExperimentConfig.model_validate(experiment_config),
+                )
+            )
+
+        self.assertIsInstance(response, ApiResponse)
+        payload = response.model_dump()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["code"], "queued")
+        self.assertEqual(payload["message"], "Model compare task started.")
+        self.assertEqual(payload["data"]["task_id"], "cmp_demo_001")
 
 
 if __name__ == "__main__":

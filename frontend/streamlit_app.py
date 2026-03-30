@@ -8,6 +8,7 @@ import json
 import time
 from typing import Any
 
+import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
@@ -649,6 +650,15 @@ def start_auto_train_task_request(
     return post_json("/runs/auto-train", request_payload)
 
 
+def start_model_compare_task_request(payload: dict[str, Any]) -> tuple[bool, Any]:
+    """Start one backend cross-model compare task."""
+    request_payload = {
+        "dataset": payload["dataset"],
+        "config": payload["config"],
+    }
+    return post_json("/runs/model-compare", request_payload)
+
+
 def load_auto_train_task(task_id: str) -> tuple[bool, Any]:
     """Load one backend auto-train task."""
     payload = request_json(f"/runs/auto-train/{task_id}", {"detail": "Auto train task not found"})
@@ -658,6 +668,18 @@ def load_auto_train_task(task_id: str) -> tuple[bool, Any]:
 def load_active_auto_train_task() -> tuple[bool, Any]:
     """Load the currently active auto-train task when one exists."""
     payload = request_json("/runs/auto-train/active", {"detail": "No active auto train task"})
+    return isinstance(payload, dict) and "task_id" in payload, payload
+
+
+def load_model_compare_task(task_id: str) -> tuple[bool, Any]:
+    """Load one backend cross-model compare task."""
+    payload = request_json(f"/runs/model-compare/{task_id}", {"detail": "Model compare task not found"})
+    return isinstance(payload, dict) and "task_id" in payload, payload
+
+
+def load_active_model_compare_task() -> tuple[bool, Any]:
+    """Load the currently active cross-model compare task when one exists."""
+    payload = request_json("/runs/model-compare/active", {"detail": "No active model compare task"})
     return isinstance(payload, dict) and "task_id" in payload, payload
 
 
@@ -1202,6 +1224,8 @@ def clear_training_state() -> None:
     st.session_state["last_running_experiment_id"] = None
     st.session_state["current_auto_task_id"] = None
     st.session_state["auto_task_progress"] = None
+    st.session_state["current_compare_task_id"] = None
+    st.session_state["model_compare_task_progress"] = None
     st.session_state["skip_auto_poll_once"] = False
     st.session_state["manual_stop_requested"] = False
 
@@ -1232,6 +1256,66 @@ def recover_active_auto_train_task_state() -> None:
             "baseline": {},
             "rounds": [],
         }
+
+
+def recover_active_model_compare_task_state() -> None:
+    """Reattach frontend state to one backend model-compare task after a browser refresh."""
+    if st.session_state.get("current_compare_task_id"):
+        return
+    ok, active_task_response = load_active_model_compare_task()
+    if not ok:
+        return
+    st.session_state["current_compare_task_id"] = active_task_response["task_id"]
+    st.session_state["active_train_control"] = "compare"
+    st.session_state["ui_locked"] = active_task_response.get("status") in {"queued", "running"}
+    st.session_state["selected_run_id"] = "__all__"
+    if active_task_response.get("summary"):
+        st.session_state["model_compare_summary"] = active_task_response["summary"]
+
+
+def sync_model_compare_task_state() -> str | None:
+    """Sync frontend state from one backend model-compare task snapshot."""
+    current_compare_task_id = st.session_state.get("current_compare_task_id")
+    if not current_compare_task_id:
+        return None
+
+    st.session_state["active_train_control"] = "compare"
+    ok, compare_task_response = load_model_compare_task(current_compare_task_id)
+    if not ok or "task_id" not in compare_task_response:
+        return None
+
+    st.session_state["activity_logs"] = compare_task_response.get("logs", [])
+    if compare_task_response.get("summary") is not None:
+        st.session_state["model_compare_summary"] = compare_task_response["summary"]
+    st.session_state["selected_run_id"] = "__all__"
+    st.session_state["training_experiment_id"] = compare_task_response.get("current_experiment_id")
+    st.session_state["model_compare_task_progress"] = {
+        "status": compare_task_response.get("status"),
+        "elapsed_seconds": compare_task_response.get("elapsed_seconds", 0.0),
+        "current_model_name": compare_task_response.get("current_model_name"),
+        "current_model_index": compare_task_response.get("current_model_index", 0),
+        "total_models": compare_task_response.get("total_models", 0),
+        "current_run_id": compare_task_response.get("current_run_id"),
+        "current_experiment_id": compare_task_response.get("current_experiment_id"),
+    }
+    compare_status = compare_task_response.get("status")
+    if compare_status in {"queued", "running"}:
+        st.session_state["ui_locked"] = True
+        return compare_status
+
+    st.session_state["current_compare_task_id"] = None
+    st.session_state["model_compare_task_progress"] = None
+    st.session_state["training_experiment_id"] = None
+    st.session_state["ui_locked"] = False
+    st.session_state["active_train_control"] = None
+    if compare_status == "success":
+        set_post_action_notice("Model compare finished.")
+    elif compare_status == "failed":
+        set_post_action_notice(
+            f"Model compare failed: {compare_task_response.get('error') or 'unknown error'}",
+            "error",
+        )
+    return compare_status
 
 
 def sync_auto_train_task_state() -> str | None:
@@ -1294,8 +1378,9 @@ def sync_manual_training_state() -> None:
     """Sync one manually started experiment before rendering the main UI."""
     training_experiment_id = st.session_state.get("training_experiment_id")
     current_auto_task_id = st.session_state.get("current_auto_task_id")
+    current_compare_task_id = st.session_state.get("current_compare_task_id")
     active_train_control = st.session_state.get("active_train_control")
-    if not training_experiment_id or current_auto_task_id or active_train_control == "auto":
+    if not training_experiment_id or current_auto_task_id or current_compare_task_id or active_train_control in {"auto", "compare"}:
         return
 
     training_experiment_detail = load_experiment_detail(training_experiment_id)
@@ -1427,9 +1512,10 @@ def sync_manual_suggestion_task_state() -> None:
 def render_live_training_monitor() -> None:
     """Keep the log and AI panel updated while training is active."""
     auto_task_id = st.session_state.get("current_auto_task_id")
+    compare_task_id = st.session_state.get("current_compare_task_id")
     experiment_id = st.session_state.get("training_experiment_id")
     suggestion_experiment_id = st.session_state.get("manual_suggestion_experiment_id")
-    if not auto_task_id and not experiment_id and not suggestion_experiment_id:
+    if not auto_task_id and not compare_task_id and not experiment_id and not suggestion_experiment_id:
         return
 
     if auto_task_id:
@@ -1471,6 +1557,13 @@ def render_live_training_monitor() -> None:
                     "error",
                 )
             clear_training_state()
+            st.rerun()
+        return
+
+    if compare_task_id:
+        compare_status = sync_model_compare_task_state()
+        refresh_activity_log_view()
+        if compare_status in {"success", "failed"}:
             st.rerun()
         return
 
@@ -2158,7 +2251,8 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
     manual_stop_requested = bool(st.session_state.get("manual_stop_requested"))
     auto_task_status = str((st.session_state.get("auto_task_progress") or {}).get("status") or "")
     auto_stop_requested = auto_task_status == "stopping"
-    action_left, action_right = st.columns(2)
+    compare_task_status = str((st.session_state.get("model_compare_task_progress") or {}).get("status") or "")
+    action_left, action_middle, action_right = st.columns(3)
     with action_left:
         left_label = (
             "Stopping..."
@@ -2184,18 +2278,18 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
             else:
                 clear_manual_suggestion_task_state()
                 queue_train_request(payload)
-    with action_right:
-        right_label = (
+    with action_middle:
+        middle_label = (
             "Stopping..."
             if is_training_active and active_train_control == "auto" and auto_stop_requested
             else "Stop Training"
             if is_training_active and active_train_control == "auto"
             else auto_train_button_label
         )
-        right_disabled = auto_stop_requested or (is_training_active and active_train_control != "auto") or (
+        middle_disabled = auto_stop_requested or (is_training_active and active_train_control != "auto") or (
             not is_training_active and not can_start_auto_train
         )
-        if st.button(right_label, disabled=right_disabled, use_container_width=True):
+        if st.button(middle_label, disabled=middle_disabled, use_container_width=True):
             if is_training_active and active_train_control == "auto":
                 current_auto_task_id = st.session_state.get("current_auto_task_id")
                 if current_auto_task_id:
@@ -2226,12 +2320,39 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
                 else:
                     st.session_state["active_train_control"] = None
                     st.error(f'Auto Train failed to start: {response.get("detail", response)}')
+    with action_right:
+        compare_label = "Comparing..." if is_training_active and active_train_control == "compare" else "Compare Models"
+        compare_disabled = is_training_active
+        if st.button(compare_label, disabled=compare_disabled, use_container_width=True):
+            clear_manual_suggestion_task_state()
+            st.session_state["active_train_control"] = "compare"
+            st.session_state["selected_run_id"] = "__all__"
+            ok, response = start_model_compare_task_request(payload)
+            if ok:
+                st.session_state["current_compare_task_id"] = response["task_id"]
+                st.session_state["model_compare_task_progress"] = {
+                    "status": response.get("status"),
+                    "elapsed_seconds": response.get("elapsed_seconds", 0.0),
+                    "current_model_name": response.get("current_model_name"),
+                    "current_model_index": response.get("current_model_index", 0),
+                    "total_models": response.get("total_models", 0),
+                    "current_run_id": response.get("current_run_id"),
+                    "current_experiment_id": response.get("current_experiment_id"),
+                }
+                st.session_state["model_compare_summary"] = response.get("summary")
+                st.session_state["ui_locked"] = True
+                append_activity_log(f"Model compare task started: {response['task_id']}")
+                st.rerun()
+            else:
+                st.session_state["active_train_control"] = None
+                st.error(f'Model compare failed to start: {response.get("detail", response)}')
     if not has_existing_run:
         st.caption("先用 `Train Baseline` 创建并跑完一个 run，然后在该 run 上启动 `Auto Train`。")
     elif not can_start_auto_train:
         st.caption("当前 run 还没有可用 baseline，先手动训练一轮。")
     else:
         st.caption("`Auto Train` 会基于当前 run 的已有实验继续搜索，不会重新创建 baseline。")
+    st.caption("`Compare Models` 会用统一 baseline 配置分别跑 `MobileNetV2 / MobileNetV3 Small / GoogLeNet`。")
 
 
 def render_activity_log() -> None:
@@ -2423,6 +2544,123 @@ def render_training_records_workspace(runs: list[dict[str, Any]], selected_run_i
         st.caption("Metrics trend is shown only when a single run is selected.")
 
 
+def render_model_compare_results() -> None:
+    """Render one cross-model compare summary when available."""
+    compare_summary = st.session_state.get("model_compare_summary") or {}
+    if compare_summary.get("mode") != "model_compare":
+        st.caption("Compare Models to inspect cross-model baseline results.")
+        return
+
+    candidate_results = list(compare_summary.get("candidate_results") or [])
+    shared_baseline_config = compare_summary.get("shared_baseline_config") or {}
+    progress = st.session_state.get("model_compare_task_progress") or {}
+    compare_status = progress.get("status") or "success"
+
+    st.subheader("Model Compare")
+    if compare_status in {"queued", "running"}:
+        current_model_name = progress.get("current_model_name") or "-"
+        current_model_index = int(progress.get("current_model_index") or 0)
+        total_models = int(progress.get("total_models") or 0)
+        elapsed_seconds = float(progress.get("elapsed_seconds") or 0.0)
+        st.caption(
+            f"Comparing {current_model_name} ({current_model_index}/{total_models}) | "
+            f"elapsed {format_elapsed_seconds(elapsed_seconds)}"
+        )
+    else:
+        st.caption("Cross-model baseline comparison result.")
+
+    with st.expander("Shared Baseline Config", expanded=False):
+        st.json(shared_baseline_config)
+
+    result_rows = [
+        {
+            "model_name": result.get("model_name"),
+            "status": result.get("status"),
+            "top1_acc": result.get("top1_acc"),
+            "latency_ms": result.get("latency_ms"),
+            "parameter_count_million": result.get("parameter_count_million"),
+            "run_id": result.get("run_id"),
+            "baseline_experiment_id": result.get("baseline_experiment_id"),
+            "normalized_config_notes": "; ".join(result.get("normalized_config_notes") or []),
+        }
+        for result in candidate_results
+    ]
+    if not result_rows:
+        st.info("No model compare results yet.")
+        return
+
+    compare_df = pd.DataFrame(result_rows)
+    chart_df = compare_df.dropna(subset=["latency_ms", "top1_acc"]).copy()
+    if not chart_df.empty:
+        scatter_chart = (
+            alt.Chart(chart_df)
+            .mark_circle(size=160)
+            .encode(
+                x=alt.X("latency_ms:Q", title="Latency (ms)"),
+                y=alt.Y("top1_acc:Q", title="Top1 Acc"),
+                color=alt.Color("model_name:N", legend=alt.Legend(title="Model")),
+                tooltip=[
+                    alt.Tooltip("model_name:N", title="Model"),
+                    alt.Tooltip("top1_acc:Q", title="Top1 Acc", format=".4f"),
+                    alt.Tooltip("latency_ms:Q", title="Latency (ms)", format=".3f"),
+                    alt.Tooltip("parameter_count_million:Q", title="Params (M)", format=".3f"),
+                    alt.Tooltip("status:N", title="Status"),
+                ],
+            )
+            .properties(height=320)
+        )
+        label_chart = scatter_chart.mark_text(align="left", dx=8, dy=-8).encode(text="model_name:N")
+        st.altair_chart(scatter_chart + label_chart, use_container_width=True)
+    else:
+        st.caption("Scatter plot will appear after completed candidates report both latency and accuracy.")
+
+    st.dataframe(
+        compare_df[
+            [
+                "model_name",
+                "status",
+                "top1_acc",
+                "latency_ms",
+                "parameter_count_million",
+                "run_id",
+                "normalized_config_notes",
+            ]
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    selectable_candidates = [
+        result for result in candidate_results
+        if result.get("status") == "success" and result.get("run_id")
+    ]
+    if compare_status in {"queued", "running"} or not selectable_candidates:
+        return
+
+    selected_compare_run_id = st.selectbox(
+        "Continue With",
+        options=[str(result["run_id"]) for result in selectable_candidates],
+        format_func=lambda run_id: next(
+            (
+                f"{result['model_name']} | acc={format_metric_value('top1_acc', result.get('top1_acc'))} | "
+                f"latency={format_metric_value('latency_ms', result.get('latency_ms'))} ms"
+                for result in selectable_candidates
+                if result.get("run_id") == run_id
+            ),
+            run_id,
+        ),
+        key="selected_model_compare_run_id",
+    )
+    if st.button("Select for Auto Train", use_container_width=True):
+        selected_result = next(
+            result for result in selectable_candidates if result.get("run_id") == selected_compare_run_id
+        )
+        st.session_state["selected_run_id"] = selected_compare_run_id
+        st.session_state["selected_experiment_id"] = selected_result.get("baseline_experiment_id")
+        set_post_action_notice(f"Selected {selected_result['model_name']} for the next optimization stage.")
+        st.rerun()
+
+
 def render_result_summary(selected_run_id: str) -> None:
     """Render the result summary cards for one selected run."""
     def render_result_card(
@@ -2522,6 +2760,11 @@ def render_live_result_summary(selected_run_id: str) -> None:
 
 def render_result_workspace(runs: list[dict[str, Any]], selected_run_id: str) -> None:
     """Render the right-side result workspace."""
+    compare_summary = st.session_state.get("model_compare_summary") or {}
+    if selected_run_id == "__all__" and compare_summary.get("mode") == "model_compare":
+        render_model_compare_results()
+        return
+
     st.subheader("Results")
     if should_refresh_result_summary(selected_run_id):
         render_live_result_summary(selected_run_id)
@@ -2566,7 +2809,9 @@ def main() -> None:
         else:
             st.error(post_action_notice["message"])
 
+    recover_active_model_compare_task_state()
     recover_active_auto_train_task_state()
+    sync_model_compare_task_state()
     sync_auto_train_task_state()
     sync_manual_training_state()
 
