@@ -89,6 +89,19 @@ class ExperimentConfigRecipeTest(unittest.TestCase):
         self.assertEqual(config.dataset_recipe.class_names, ["0", "1", "2"])
         self.assertEqual(config.model_recipe.nc, 3)
 
+    def test_mobilenet_v2_defaults_attach_native_components_and_dropout(self) -> None:
+        payload = _build_config_payload()
+        payload["model_name"] = "mobilenet_v2"
+        payload["parameter_space_version"] = "mobilenet_v2@v1"
+        config = ExperimentConfig.model_validate(payload)
+
+        self.assertEqual(config.model_recipe.base_model, "mobilenet_v2")
+        self.assertEqual(config.model_recipe.components.backbone.name, "mobilenet_v2_native")
+        self.assertEqual(config.model_recipe.components.neck.name, "avg_pool")
+        self.assertEqual(config.model_recipe.components.head.name, "native_classifier")
+        self.assertEqual(config.model_recipe.head_config.classifier_dropout, 0.2)
+        self.assertEqual(config.model_recipe.nc, 6)
+
     def test_explicit_recipe_payloads_are_preserved(self) -> None:
         payload = _build_config_payload()
         payload["model_recipe"] = {

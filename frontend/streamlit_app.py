@@ -12,9 +12,35 @@ import pandas as pd
 import requests
 import streamlit as st
 
+from manual_train_logic import resolve_manual_train_action
+
 
 API_BASE_URL = "http://127.0.0.1:8000"
 SUPPORTED_MODELS = {
+    "mobilenet_v2": {
+        "model_family": "mobilenet",
+        "parameter_space_version": "mobilenet_v2@v1",
+        "parameter_space": {
+            "model_name": "mobilenet_v2",
+            "version": "mobilenet_v2@v1",
+            "editable_params": {
+                "optimizer": {"type": "enum", "choices": ["sgd", "adam", "adamw"]},
+                "learning_rate": {"type": "number_range", "min": 0.0001, "max": 0.01},
+                "batch_size": {"type": "discrete_values", "choices": [32, 64, 128, 256]},
+                "image_size": {"type": "discrete_values", "choices": [32, 64, 96]},
+                "epochs": {"type": "discrete_values", "choices": [10, 20, 30, 50]},
+                "weight_decay": {"type": "number_range", "min": 0.0, "max": 0.01},
+                "scheduler": {"type": "enum", "choices": ["none", "step", "cosine"]},
+                "augmentation_policy": {"type": "enum", "choices": ["none", "basic"]},
+                "mixup_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
+                "cutmix_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
+                "random_erasing_prob": {"type": "number_range", "min": 0.0, "max": 0.5},
+                "loss_name": {"type": "enum", "choices": ["cross_entropy", "cross_entropy_with_label_smoothing", "focal_loss"]},
+                "focal_gamma": {"type": "number_range", "min": 0.5, "max": 5.0},
+                "label_smoothing": {"type": "number_range", "min": 0.0, "max": 0.2},
+            },
+        },
+    },
     "mobilenet_v3_small": {
         "model_family": "mobilenet",
         "parameter_space_version": "mobilenet_v3_small@v1",
@@ -92,6 +118,7 @@ SUPPORTED_MODELS = {
     },
 }
 MODEL_LABELS = {
+    "mobilenet_v2": "MobileNetV2",
     "mobilenet_v3_small": "MobileNetV3 Small",
     "googlenet": "GoogLeNet",
     "resnet18": "ResNet18",
@@ -309,6 +336,23 @@ def format_elapsed_seconds(elapsed_seconds: float) -> str:
     if hours > 0:
         return f"{hours}h {minutes}m {seconds}s"
     return f"{minutes}m {seconds}s"
+
+
+def format_metric_value(metric_name: str, metric_value: Any) -> str:
+    """Format one scalar metric value for compact display."""
+    if not isinstance(metric_value, (int, float)):
+        return "-"
+    if metric_name in {"top1_acc", "val_loss", "train_loss"}:
+        return f"{float(metric_value):.4f}"
+    if metric_name == "latency_ms":
+        return f"{float(metric_value):.3f}"
+    if metric_name == "parameter_count_million":
+        return f"{float(metric_value):.3f}"
+    if metric_name == "training_seconds":
+        return format_elapsed_seconds(float(metric_value))
+    if float(metric_value).is_integer():
+        return str(int(metric_value))
+    return f"{float(metric_value):.3f}"
 
 
 def format_token_estimate(token_count: int | None) -> str:
@@ -1471,7 +1515,22 @@ def process_pending_train_request() -> None:
     selected_run_id = pending_request.get("selected_run_id", "__all__")
 
     append_activity_log("Manual train requested from the current parameter panel.")
-    if selected_run_id == "__all__":
+    selected_run_detail = load_run_detail(selected_run_id) if selected_run_id != "__all__" else None
+    selected_run_model_name = (
+        str(selected_run_detail.get("model_name"))
+        if isinstance(selected_run_detail, dict) and selected_run_detail.get("model_name")
+        else None
+    )
+    manual_train_action = resolve_manual_train_action(
+        selected_run_id=selected_run_id,
+        selected_run_model_name=selected_run_model_name,
+        requested_model_name=payload["model_name"],
+    )
+    if manual_train_action == "create_run":
+        if selected_run_id != "__all__" and selected_run_model_name != payload["model_name"]:
+            append_activity_log(
+                "Selected run model differs from the current panel. Creating a new run instead of appending."
+            )
         ok, message = create_run_and_first_experiment(payload)
     else:
         latest_experiment = get_latest_experiment_detail(selected_run_id)
@@ -1499,6 +1558,7 @@ def build_all_training_records(runs: list[dict[str, Any]], selected_run_id: str)
             detail = load_experiment_detail(experiment["id"])
             result = detail.get("result") or {}
             metrics = result.get("metrics") or {}
+            resource = result.get("resource") or {}
             params = detail.get("config", {}).get("params", {})
             anchor_labels = []
             if experiment["id"] == run_summary.get("baseline_experiment_id"):
@@ -1523,6 +1583,9 @@ def build_all_training_records(runs: list[dict[str, Any]], selected_run_id: str)
                     "val_loss": metrics.get("val_loss"),
                     "train_loss": metrics.get("train_loss"),
                     "best_epoch": metrics.get("best_epoch"),
+                    "latency_ms": resource.get("latency_ms"),
+                    "parameter_count_million": resource.get("parameter_count_million"),
+                    "training_seconds": resource.get("training_seconds"),
                     "optimizer": params.get("optimizer"),
                     "learning_rate": params.get("learning_rate"),
                     "batch_size": params.get("batch_size"),
@@ -1901,7 +1964,7 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
         with top_right:
             model_name = st.selectbox(
                 "Model",
-                options=["mobilenet_v3_small", "googlenet", "resnet18"],
+                options=list(SUPPORTED_MODELS.keys()),
                 format_func=get_model_label,
                 key="model_name",
                 on_change=sync_auto_run_name,
@@ -2315,6 +2378,9 @@ def render_training_records_workspace(runs: list[dict[str, Any]], selected_run_i
             "val_loss",
             "train_loss",
             "best_epoch",
+            "latency_ms",
+            "parameter_count_million",
+            "training_seconds",
             "optimizer",
             "learning_rate",
             "batch_size",
@@ -2374,6 +2440,7 @@ def render_result_summary(selected_run_id: str) -> None:
             experiment_id = experiment_detail.get("id")
             status = experiment_detail.get("status", "-")
             metrics = (experiment_detail.get("result") or {}).get("metrics") or {}
+            resource = (experiment_detail.get("result") or {}).get("resource") or {}
             elapsed_seconds_override = experiment_detail.get("_elapsed_seconds_override")
             running_elapsed_seconds = get_running_elapsed_seconds(
                 str(experiment_detail.get("run_id") or ""),
@@ -2388,13 +2455,17 @@ def render_result_summary(selected_run_id: str) -> None:
             )
             time_label = "Running Time" if status in {"running", "queued", "stopping"} else "Training Time"
 
-            metric_row = st.columns(6)
-            metric_row[0].metric("Experiment", get_short_experiment_id(experiment_id))
-            metric_row[1].metric("Status", status)
-            metric_row[2].metric(time_label, timing_label)
-            metric_row[3].metric("Top1 Acc", metrics.get("top1_acc", "-"))
-            metric_row[4].metric("Val Loss", metrics.get("val_loss", "-"))
-            metric_row[5].metric("Best Epoch", metrics.get("best_epoch", "-"))
+            summary_row = st.columns(4)
+            summary_row[0].metric("Experiment", get_short_experiment_id(experiment_id))
+            summary_row[1].metric("Status", status)
+            summary_row[2].metric(time_label, timing_label)
+            summary_row[3].metric("Best Epoch", format_metric_value("best_epoch", metrics.get("best_epoch")))
+
+            comparison_row = st.columns(4)
+            comparison_row[0].metric("Top1 Acc", format_metric_value("top1_acc", metrics.get("top1_acc")))
+            comparison_row[1].metric("Val Loss", format_metric_value("val_loss", metrics.get("val_loss")))
+            comparison_row[2].metric("Latency (ms)", format_metric_value("latency_ms", resource.get("latency_ms")))
+            comparison_row[3].metric("Params (M)", format_metric_value("parameter_count_million", resource.get("parameter_count_million")))
 
             if emphasize_best:
                 st.caption("This card tracks the current best experiment in the run.")

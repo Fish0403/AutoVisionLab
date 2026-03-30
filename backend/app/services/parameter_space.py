@@ -2,6 +2,7 @@
 
 from app.config_spaces.classification import (
     GOOGLENET_PARAMETER_SPACE,
+    MOBILENET_V2_PARAMETER_SPACE,
     MOBILENET_V3_SMALL_PARAMETER_SPACE,
     RESNET18_PARAMETER_SPACE,
 )
@@ -16,6 +17,7 @@ from app.schemas.parameter_space import (
 
 
 PARAMETER_SPACES = {
+    "mobilenet_v2": MOBILENET_V2_PARAMETER_SPACE,
     "mobilenet_v3_small": MOBILENET_V3_SMALL_PARAMETER_SPACE,
     "googlenet": GOOGLENET_PARAMETER_SPACE,
     "resnet18": RESNET18_PARAMETER_SPACE,

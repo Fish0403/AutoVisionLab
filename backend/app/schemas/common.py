@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 TaskType = Literal["classification"]
 ModelFamily = Literal["mobilenet", "googlenet", "resnet"]
-ModelName = Literal["mobilenet_v3_small", "googlenet", "resnet18"]
+ModelName = Literal["mobilenet_v2", "mobilenet_v3_small", "googlenet", "resnet18"]
 RiskLevel = Literal["low", "medium", "high"]
 ExperimentStatus = Literal["draft", "queued", "running", "success", "failed", "discarded"]
 RunStatus = Literal["draft", "active", "paused", "completed", "failed"]

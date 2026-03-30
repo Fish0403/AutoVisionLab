@@ -384,7 +384,7 @@ class ExperimentConfig(BaseModel):
     task_type: Literal["classification"]
     dataset: str
     model_family: Literal["mobilenet", "googlenet", "resnet"]
-    model_name: Literal["mobilenet_v3_small", "googlenet", "resnet18"]
+    model_name: Literal["mobilenet_v2", "mobilenet_v3_small", "googlenet", "resnet18"]
     parameter_space_version: str
     use_demo_mode: bool = False
     participates_in_ranking: bool = True
@@ -566,13 +566,16 @@ def build_default_model_recipe(*, model_name: str, task_type: str, model_family:
         recipe_payload["base_model"] = model_name
         return ModelRecipe.model_validate(recipe_payload)
 
-    return ModelRecipe(
+    recipe = ModelRecipe(
         task_type=task_type,
         model_family=model_family,
         base_model=model_name,
         components=ModelRecipeComponents.model_validate(build_default_model_recipe_components(base_model=model_name)),
         backbone_config=ModelRecipeBackbone(),
     )
+    if model_name == "mobilenet_v2":
+        recipe.head_config.classifier_dropout = 0.2
+    return recipe
 
 
 def hydrate_model_recipe(model_recipe: ModelRecipe) -> ModelRecipe:
@@ -591,6 +594,12 @@ def hydrate_model_recipe(model_recipe: ModelRecipe) -> ModelRecipe:
 
 def build_default_model_recipe_components(base_model: str, *, pooling_type: str = "avg") -> dict[str, Any]:
     """Return the default component slots for one base model."""
+    if base_model == "mobilenet_v2":
+        return {
+            "backbone": {"name": "mobilenet_v2_native", "params": {}},
+            "neck": {"name": "avg_pool", "params": {}},
+            "head": {"name": "native_classifier", "params": {}},
+        }
     if base_model == "mobilenet_v3_small":
         neck_name = "gem_pool" if pooling_type == "gem" else "avg_pool"
         return {

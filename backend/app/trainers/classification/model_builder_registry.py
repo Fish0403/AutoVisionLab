@@ -7,7 +7,7 @@ from typing import Callable
 
 import torch
 from torch import nn
-from torchvision.models import googlenet, resnet18
+from torchvision.models import googlenet, mobilenet_v2, resnet18
 
 from app.schemas.parameter_space import ModelRecipe, hydrate_model_recipe
 from app.trainers.classification.model_components import (
@@ -229,6 +229,48 @@ def _validate_googlenet_recipe(recipe: ModelRecipe) -> None:
         raise ValueError(f"Unsupported extra recipe modules for GoogLeNet: {extra_modules}")
 
 
+def _validate_mobilenet_v2_recipe(recipe: ModelRecipe) -> None:
+    """Validate the minimal supported MobileNetV2 recipe subset."""
+    if recipe.base_model != "mobilenet_v2":
+        raise ValueError(f"Unsupported base_model for MobileNetV2 builder: {recipe.base_model}")
+    if recipe.task_type != "classification":
+        raise ValueError(f"Unsupported task_type for MobileNetV2 builder: {recipe.task_type}")
+    if recipe.width_multiple != 1.0:
+        raise ValueError("MobileNetV2 v1 builder does not support width_multiple changes")
+    if recipe.backbone_config.stem_variant != "standard":
+        raise ValueError(f"Unsupported stem_variant for MobileNetV2: {recipe.backbone_config.stem_variant}")
+    if recipe.backbone_config.attention_module != "none":
+        raise ValueError(f"Unsupported attention_module for MobileNetV2: {recipe.backbone_config.attention_module}")
+    if recipe.backbone_config.last_channel_multiplier != 1.0:
+        raise ValueError("MobileNetV2 v1 builder does not support last_channel_multiplier changes")
+    if recipe.head_config.pooling_type != "avg":
+        raise ValueError(f"Unsupported pooling_type for MobileNetV2: {recipe.head_config.pooling_type}")
+    if recipe.head_config.classifier_type != "linear":
+        raise ValueError(f"Unsupported classifier_type for MobileNetV2: {recipe.head_config.classifier_type}")
+    if recipe.components is not None:
+        if recipe.components.backbone.name != "mobilenet_v2_native":
+            raise ValueError(f"Unsupported backbone component for MobileNetV2: {recipe.components.backbone.name}")
+        if recipe.components.neck.name != "avg_pool":
+            raise ValueError(f"Unsupported neck component for MobileNetV2: {recipe.components.neck.name}")
+        if recipe.components.head.name != "native_classifier":
+            raise ValueError(f"Unsupported head component for MobileNetV2: {recipe.components.head.name}")
+    if recipe.neck:
+        raise ValueError("MobileNetV2 v1 builder does not support neck configuration")
+    if recipe.modules:
+        raise ValueError(f"Unsupported extra recipe modules for MobileNetV2: {sorted(recipe.modules.keys())}")
+    if recipe.backbone or recipe.head:
+        raise ValueError("MobileNetV2 v1 builder does not support custom architecture layers")
+
+
+def _build_mobilenet_v2_from_recipe(recipe: ModelRecipe, num_classes: int) -> nn.Module:
+    """Build one MobileNetV2 model from the supported recipe subset."""
+    _validate_mobilenet_v2_recipe(recipe)
+    return mobilenet_v2(
+        num_classes=recipe.nc or num_classes,
+        dropout=recipe.head_config.classifier_dropout,
+    )
+
+
 def _build_googlenet_from_recipe(recipe: ModelRecipe, num_classes: int) -> nn.Module:
     """Build one GoogLeNet model from the supported recipe subset."""
     _validate_googlenet_recipe(recipe)
@@ -281,6 +323,11 @@ def _build_resnet18_from_recipe(recipe: ModelRecipe, num_classes: int) -> nn.Mod
 
 
 CLASSIFICATION_MODEL_BUILDERS = {
+    "mobilenet_v2": ClassificationModelBuilderAdapter(
+        name="mobilenet_v2",
+        validate_recipe=_validate_mobilenet_v2_recipe,
+        build_model=_build_mobilenet_v2_from_recipe,
+    ),
     "mobilenet_v3_small": ClassificationModelBuilderAdapter(
         name="mobilenet_v3_small",
         validate_recipe=_validate_mobilenet_v3_small_recipe,

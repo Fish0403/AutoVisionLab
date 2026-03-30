@@ -59,6 +59,7 @@ class ClassificationModelAdapter:
 
 
 CLASSIFICATION_MODEL_ADAPTERS: dict[str, ClassificationModelAdapter] = {
+    "mobilenet_v2": ClassificationModelAdapter(name="mobilenet_v2"),
     "mobilenet_v3_small": ClassificationModelAdapter(name="mobilenet_v3_small"),
     "googlenet": ClassificationModelAdapter(name="googlenet", compute_loss=_compute_googlenet_loss),
     "resnet18": ClassificationModelAdapter(name="resnet18"),

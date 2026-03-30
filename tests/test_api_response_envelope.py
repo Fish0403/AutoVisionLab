@@ -28,7 +28,7 @@ from app.api.routes.experiments import (
     save_result_endpoint,
 )
 from app.api.routes.models import read_parameter_space
-from app.api.routes.runs import create_run_endpoint
+from app.api.routes.runs import create_run_endpoint, get_metrics
 from app.db.session import SessionLocal
 from app.main import healthcheck, initialize_database
 from app.schemas.ai import ResultSchema
@@ -39,13 +39,18 @@ from app.schemas.run import RunCreateRequest
 from app.services.persistence import clear_all_records
 
 
-def _build_experiment_config(parameter_space_version: str) -> dict[str, object]:
+def _build_experiment_config(
+    parameter_space_version: str,
+    *,
+    model_name: str = "mobilenet_v3_small",
+    model_family: str = "mobilenet",
+) -> dict[str, object]:
     """Build a minimal valid experiment config payload."""
     return {
         "task_type": "classification",
         "dataset": "cifar10",
-        "model_family": "mobilenet",
-        "model_name": "mobilenet_v3_small",
+        "model_family": model_family,
+        "model_name": model_name,
         "parameter_space_version": parameter_space_version,
         "participates_in_ranking": True,
         "search_policy": {
@@ -126,6 +131,17 @@ class ApiResponseEnvelopeTest(unittest.TestCase):
         self.assertEqual(payload["message"], "Parameter space loaded.")
         self.assertEqual(payload["data"]["model_name"], "mobilenet_v3_small")
         self.assertIn("editable_params", payload["data"])
+
+    def test_mobilenet_v2_parameter_space_uses_api_response_envelope(self) -> None:
+        response = read_parameter_space("mobilenet_v2")
+
+        self.assertIsInstance(response, ApiResponse)
+        payload = response.model_dump()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["message"], "Parameter space loaded.")
+        self.assertEqual(payload["data"]["model_name"], "mobilenet_v2")
+        self.assertNotIn("neck_name", payload["data"]["editable_params"])
+        self.assertNotIn("head_name", payload["data"]["editable_params"])
 
     def test_experiment_endpoints_use_api_response_envelope(self) -> None:
         parameter_space_response = read_parameter_space("mobilenet_v3_small")
@@ -247,6 +263,69 @@ class ApiResponseEnvelopeTest(unittest.TestCase):
 
         self.assertIn("neck_name", create_response.data.parameter_space.editable_params)
         self.assertIn("head_name", create_response.data.parameter_space.editable_params)
+
+    def test_run_metrics_endpoint_exposes_resource_metrics(self) -> None:
+        parameter_space_response = read_parameter_space("mobilenet_v2")
+        parameter_space = parameter_space_response.data.model_dump()
+        experiment_config = _build_experiment_config(
+            parameter_space["version"],
+            model_name="mobilenet_v2",
+            model_family="mobilenet",
+        )
+
+        with SessionLocal() as db:
+            run_response = create_run_endpoint(
+                request=RunCreateRequest(
+                    name=f"api-envelope-test-{uuid4().hex[:8]}",
+                    dataset="cifar10",
+                    model_name="mobilenet_v2",
+                    base_config=ExperimentConfig.model_validate(experiment_config),
+                    notes="Run metrics resource test.",
+                ),
+                db=db,
+            )
+            experiment_response = create_experiment_endpoint(
+                request=ExperimentCreateRequest(
+                    run_id=run_response.data.id,
+                    config=ExperimentConfig.model_validate(experiment_config),
+                    parameter_space=EditableParameterSpace.model_validate(parameter_space),
+                    proposal=None,
+                ),
+                db=db,
+            )
+            save_result_endpoint(
+                experiment_id=experiment_response.data.id,
+                request=ResultSchema.model_validate({
+                    "status": "success",
+                    "metrics": {
+                        "train_loss": 0.5,
+                        "val_loss": 0.4,
+                        "top1_acc": 0.9,
+                        "best_epoch": 1,
+                    },
+                    "resource": {
+                        "gpu_memory_mb": 0,
+                        "training_seconds": 12,
+                        "latency_ms": 5.2,
+                        "parameter_count_million": 1.6,
+                    },
+                    "params": experiment_config["params"],
+                    "artifacts": {
+                        "log_path": str(TEST_ARTIFACT_ROOT / "runs" / f"{run_response.data.id}.log"),
+                        "checkpoint_path": str(TEST_ARTIFACT_ROOT / "checkpoints" / f"{experiment_response.data.id}.pt"),
+                    },
+                }),
+                db=db,
+            )
+            metrics_response = get_metrics(run_id=run_response.data.id, metric_name="latency_ms", db=db)
+
+        self.assertIsInstance(metrics_response, ApiResponse)
+        self.assertTrue(metrics_response.ok)
+        self.assertIn("latency_ms", metrics_response.data.available_metrics)
+        self.assertIn("parameter_count_million", metrics_response.data.available_metrics)
+        self.assertIn("training_seconds", metrics_response.data.available_metrics)
+        self.assertEqual(metrics_response.data.points[0].metric_name, "latency_ms")
+        self.assertEqual(metrics_response.data.points[0].metric_value, 5.2)
 
 
 if __name__ == "__main__":

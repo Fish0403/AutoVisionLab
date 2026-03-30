@@ -178,6 +178,32 @@ search_policy:
         self.assertEqual(model.__class__.__name__, "ResNet")
         self.assertEqual(tuple(output.shape), (1, 6))
 
+    def test_build_model_from_manifest_dispatches_to_mobilenet_v2_builder(self) -> None:
+        config = ExperimentConfig.model_validate(_build_config_payload("mobilenet_v2", "mobilenet", "mobilenet_v2@v1"))
+        manifest = parse_trainer_manifest_payload(
+            {
+                "version": "trainer_manifest@v1",
+                "task_type": "classification",
+                "parameter_space_version": config.parameter_space_version,
+                "model": config.model_recipe.model_dump(by_alias=True),
+                "train": config.train_hyp.model_dump(),
+                "data": config.dataset_recipe.model_dump(),
+                "search": config.search_policy.model_dump(),
+                "ranking": config.ranking_policy.model_dump(),
+                "runtime": {
+                    "use_demo_mode": config.use_demo_mode,
+                    "participates_in_ranking": config.participates_in_ranking,
+                },
+            }
+        )
+
+        model = build_model_from_manifest(manifest)
+        output = model(torch.zeros(1, 3, 96, 96))
+
+        self.assertEqual(model.__class__.__name__, "MobileNetV2")
+        self.assertEqual(tuple(output.shape), (1, 6))
+        self.assertEqual(model.classifier[0].p, 0.2)
+
     def test_build_model_from_manifest_infers_output_classes_from_split_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_root = Path(temp_dir)

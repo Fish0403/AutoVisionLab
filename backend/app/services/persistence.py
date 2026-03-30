@@ -572,13 +572,20 @@ def get_run_metrics(db: Session, run_id: str, metric_name: str) -> RunMetricsRes
         select(ExperimentModel).where(ExperimentModel.run_id == run_id).order_by(ExperimentModel.created_at.asc())
     ).all()
     points: list[PointMetric] = []
-    available_metrics = {"train_loss", "val_loss", "top1_acc", "best_epoch"}
+    resource_metric_names = {"training_seconds", "latency_ms", "parameter_count_million"}
+    available_metrics = {"train_loss", "val_loss", "top1_acc", "best_epoch", *resource_metric_names}
     for index, experiment in enumerate(experiments, start=1):
         result = db.scalar(select(ResultModel).where(ResultModel.experiment_id == experiment.id))
         if result is None:
             continue
         available_metrics.update(result.metrics.keys())
-        metric_value = result.metrics.get(metric_name)
+        available_metrics.update(
+            key for key, value in result.resource.items() if isinstance(value, (int, float))
+        )
+        if metric_name in resource_metric_names:
+            metric_value = result.resource.get(metric_name)
+        else:
+            metric_value = result.metrics.get(metric_name)
         if isinstance(metric_value, (int, float)):
             points.append(
                 PointMetric(
