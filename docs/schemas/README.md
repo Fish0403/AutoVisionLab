@@ -15,8 +15,6 @@
   - `model_recipe` 设计
 - [component_search_schema.md](component_search_schema.md)
   - 组件级 `backbone / neck / head` 搜索设计
-- [mobilenet_component_search_v1.md](mobilenet_component_search_v1.md)
-  - `MobileNetV3 Small` 组件搜索第一版实施口径
 - [train_hyp_schema.md](train_hyp_schema.md)
   - `train_hyp` 设计
 - [dataset_recipe_schema.md](dataset_recipe_schema.md)
@@ -29,9 +27,8 @@
 1. [README.md](README.md)
 2. [model_recipe_schema.md](model_recipe_schema.md)
 3. [component_search_schema.md](component_search_schema.md)
-4. [mobilenet_component_search_v1.md](mobilenet_component_search_v1.md)
-5. [train_hyp_schema.md](train_hyp_schema.md)
-6. [dataset_recipe_schema.md](dataset_recipe_schema.md)
+4. [train_hyp_schema.md](train_hyp_schema.md)
+5. [dataset_recipe_schema.md](dataset_recipe_schema.md)
 
 ## 3. 与其他文档的边界
 
@@ -39,6 +36,11 @@
 - 执行状态见 [../tasks.md](../tasks.md)
 - 接口说明见 [../api.md](../api.md)
 - 规则说明见 [../policies/README.md](../policies/README.md)
+
+当前 `MobileNetV3 Small` 组件搜索第一版的实施口径，已经并回：
+
+- [component_search_schema.md](component_search_schema.md)
+- [../tasks.md](../tasks.md)
 
 ## 4. 核心对象总览
 

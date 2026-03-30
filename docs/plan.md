@@ -31,6 +31,7 @@ AutoVisionLab 是一个面向图像分类实验的自主训练 Web 平台。
 
 当前可选模型：
 
+- `MobileNetV2`
 - `MobileNetV3 Small`
 - `GoogLeNet`
 - `ResNet18`
@@ -62,6 +63,14 @@ AutoVisionLab 是一个面向图像分类实验的自主训练 Web 平台。
 - 一个 run 固定一个数据集和一个模型
 - 追加实验只在该 run 内继续调参
 - 跨模型比较应通过多个 run 完成，而不是在同一个 run 内混合实验
+
+当前已开始提供独立的跨模型比较入口：
+
+- `Compare Models`
+  - 负责在多个独立 run 上跑统一 baseline
+  - 第一版只做横向比较，不自动继续调参
+- `Auto Train`
+  - 继续只负责单模型 run 内优化
 
 ### 3.3 数据库与本地产物分层
 
@@ -324,6 +333,8 @@ data/
   - Auto Train 搜索策略
 - [docs/policies/auto_train_stop_policy.md](policies/auto_train_stop_policy.md)
   - Auto Train 停止策略
+- [docs/policies/model_compare_policy.md](policies/model_compare_policy.md)
+  - 跨模型 baseline 比较与公平比较口径
 - [docs/policies/ranking_policy.md](policies/ranking_policy.md)
   - Ranking Policy 与成本 gate
 - [CHANGELOG.md](../CHANGELOG.md)

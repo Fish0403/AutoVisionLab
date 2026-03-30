@@ -9,7 +9,7 @@
 `v1` 范围明确限制为：
 
 - 任务类型：`classification`
-- base backbone：`MobileNetV3 Small`
+- 训练超参 schema 当前先服务于 `MobileNetV3 Small` 的 recipe / 组件搜索链路
 
 ## 2. 设计原则
 

@@ -14,7 +14,7 @@
 当前 `v1` 实施口径：
 
 - 任务类型先只做图像分类
-- base backbone 先只做 `MobileNetV3 Small`
+- 组件搜索与 recipe 深化当前先聚焦 `MobileNetV3 Small`
 - 底层 schema / parser / registry 从一开始为后续检测和分割预留统一抽象
 
 ## 2. 已完成
@@ -30,6 +30,7 @@
 - 已支持统一分类数据目录读取：
   - `data/classification/<dataset>/train.txt|val.txt|test.txt`
 - 已接入模型：
+  - `MobileNetV2`
   - `MobileNetV3 Small`
   - `GoogLeNet`
   - `ResNet18`
@@ -90,7 +91,7 @@
   - `backbone / head`
   - 单层 `from / number / module / args`
 - 已增加内置 recipe template registry，当前首个落地模板：
-  - `backend/app/recipes/classification/mobilenet_v3_small.yaml`
+  - `backend/app/trainers/recipes/classification/mobilenet_v3_small.yaml`
 - `MobileNetV3 Small` 已改为从内置 architecture recipe 构建，不再直接调用默认 `torchvision.mobilenet_v3_small(...)`
 - 当前 `v1` 已在 `MobileNetV3 Small` 上打通受限结构搜索链路：
   - `width_multiple`
@@ -112,6 +113,20 @@
   - `best_quality_experiment_id`
   - `best_efficiency_experiment_id`
   - `best_tradeoff_experiment_id`
+
+### 跨模型比较
+
+- 已新增独立的 `Compare Models` 入口
+- 当前第一版候选模型：
+  - `MobileNetV2`
+  - `MobileNetV3 Small`
+  - `GoogLeNet`
+- `Compare Models` 已支持：
+  - 为每个候选模型创建独立 run
+  - 在共享 baseline 配置下跑 baseline experiment
+  - 结果页展示 `x = latency_ms`、`y = top1_acc` 的二维散点图
+  - 从比较结果里手动选择一个模型继续进入后续优化
+- 当前 `Compare Models` 不会自动继续进入第二阶段 `Auto Train`
 
 ### API 响应收敛
 
@@ -203,6 +218,9 @@
     - `neck = avg_pool | gem_pool`
     - `head = native_classifier | linear | dropout_linear`
   - `backbone` 当前仍保留为槽位，尚未开放搜索
+- 开始把“跨模型比较”从口头流程收敛成独立入口与独立文档：
+  - 第一版只做 baseline 横向比较
+  - 下一步再决定是否增加预算筛选或自动接第二阶段
 
 ## 4. 待做
 

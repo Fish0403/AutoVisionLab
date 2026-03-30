@@ -78,17 +78,20 @@
 
 `head` 表示分类头。
 
-考虑到目前还没有稳定的通用分类 head 库，第一版暂时采用：
+对当前分类任务，第一版 head 候选保持有限白名单：
 
 - `native_classifier`
-
-也就是先沿用模型本身风格的 head，不急着开放：
-
 - `linear`
 - `dropout_linear`
-- `mlp_head`
 
-这些 head 会保留在后续扩展计划里，但不是这一轮优先项。
+说明：
+
+- `native_classifier`
+  - 保持模型原生风格的分类头
+- `linear`
+  - 全局池化后直接线性分类
+- `dropout_linear`
+  - 全局池化后 `Dropout(0.2) + Linear`
 
 ## 4. 第一版实施口径
 
@@ -98,14 +101,14 @@
 
 - `backbone` 槽位进入 schema，但默认固定为 native
 - `neck` 开始成为真正可搜索的组件位
-- `head` 先固定为 `native_classifier`
+- `head` 允许少量稳定候选进入白名单
 
 对应当前分类实现：
 
 - `mobilenet_v3_small`
   - `backbone`: `mobilenet_v3_small_native`
   - `neck`: `avg_pool | gem_pool`
-  - `head`: `native_classifier`
+  - `head`: `native_classifier | linear | dropout_linear`
 - `googlenet`
   - `backbone`: `googlenet_native`
   - `neck`: `avg_pool`
@@ -119,7 +122,7 @@
 
 - 引入共享 backbone feature adapter
 - 允许少量跨 family backbone 候选进入同一个“组合式分类器”入口
-- 开始开放通用 `head` 候选
+- 开始开放更通用的 `head` 候选
 
 ### 阶段 3
 
@@ -160,6 +163,7 @@ components:
 第一版实际放开的重点是：
 
 - `neck_name`
+- `head_name`
 
 旧字段例如：
 
@@ -184,9 +188,13 @@ Builder 层建议遵循以下规则：
 
 新的方向不是让 AI 去改某一层卷积，而是让 AI 在白名单内替换 `backbone / neck / head` 这三个组件槽位。
 
-当前第一步不是马上开放三者全部自由搜索，而是：
+当前已经落地的 `v1` 口径是：
 
-- 先把组件 schema 和注册表搭起来
-- 先让 `neck` 成为第一个真正可搜索的组件位
-- `head` 暂时固定为 native
-- `backbone` 先作为保留槽位，等共享适配层做好后再放开
+- `mobilenet_v3_small`
+  - 冻结 native backbone
+  - 开放 `neck_name = avg_pool | gem_pool`
+  - 开放 `head_name = native_classifier | linear | dropout_linear`
+- `googlenet / resnet18 / mobilenet_v2`
+  - 当前仍保持 native backbone + native head，不开放组件搜索
+
+后续如果要开放真正的 `backbone` 搜索，需要先引入共享 feature adapter，或新的跨模型组合入口。

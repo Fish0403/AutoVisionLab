@@ -14,7 +14,7 @@ AutoVisionLab 是一个面向图像分类实验的自主训练 Web 平台。
 当前实现：
 
 - 任务类型：图像分类
-- `v1` base backbone：`MobileNetV3 Small`
+- `v1` 组件搜索与 recipe 深化当前先聚焦：`MobileNetV3 Small`
 - 前端：`Streamlit`
 - 后端：`FastAPI`
 - 数据库：`SQLite`
@@ -25,13 +25,19 @@ AutoVisionLab 是一个面向图像分类实验的自主训练 Web 平台。
   - `dataset_recipe`
 - 训练结果仍保留 `params` 摘要，作为现有结果存储与搜索策略的兼容输出
 - 可选模型：
+  - `MobileNetV2`
   - `MobileNetV3 Small`
   - `GoogLeNet`
   - `ResNet18`
+- 当前已支持两个自动化入口：
+  - `Auto Train`
+    - 单模型 run 内继续调参和组件搜索
+  - `Compare Models`
+    - 以统一 baseline 比较 `MobileNetV2 / MobileNetV3 Small / GoogLeNet`
 
 当前演进方向：
 
-- `v1` 先把分类 + `MobileNetV3 Small` 的 recipe 链路做完整
+- `v1` 先把分类 + `MobileNetV3 Small` 的组件搜索 / recipe 链路做完整
 - 底层 schema / parser / registry 从现在开始为后续目标检测和分割预留统一抽象
 
 ## 1. 环境要求
@@ -125,6 +131,7 @@ run 日志会聚合同一个 run 下的：
 - Run 晋级与回退规则：[docs/policies/run_promotion_policy.md](docs/policies/run_promotion_policy.md)
 - Auto Train 搜索策略：[docs/policies/auto_train_search_policy.md](docs/policies/auto_train_search_policy.md)
 - Auto Train 停止策略：[docs/policies/auto_train_stop_policy.md](docs/policies/auto_train_stop_policy.md)
+- 跨模型比较策略：[docs/policies/model_compare_policy.md](docs/policies/model_compare_policy.md)
 - 变更记录：[CHANGELOG.md](CHANGELOG.md)
 
 ## 8. 仓库结构

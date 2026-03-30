@@ -16,6 +16,8 @@
   - Auto Train 如何继续搜索
 - [auto_train_stop_policy.md](auto_train_stop_policy.md)
   - Auto Train 何时停止
+- [model_compare_policy.md](model_compare_policy.md)
+  - 跨模型 baseline 比较与公平比较口径
 
 ## 2. 阅读顺序
 
@@ -24,8 +26,9 @@
 1. [experiment_policy.md](experiment_policy.md)
 2. [auto_train_search_policy.md](auto_train_search_policy.md)
 3. [auto_train_stop_policy.md](auto_train_stop_policy.md)
-4. [ranking_policy.md](ranking_policy.md)
-5. [run_promotion_policy.md](run_promotion_policy.md)
+4. [model_compare_policy.md](model_compare_policy.md)
+5. [ranking_policy.md](ranking_policy.md)
+6. [run_promotion_policy.md](run_promotion_policy.md)
 
 ## 3. 与其他文档的边界
 
