@@ -14,6 +14,8 @@
 
 AutoVisionLab 以 `run` 为实验容器，以 `experiment` 为单次训练记录，以 `task` 为后台编排单元，以结构化 `proposal`、`result` 和 `reflection` 连接 AI 搜索、训练和复盘。
 
+当前实现支持图像分类，并已接入 `MobileNetV2`、`MobileNetV3 Small`、`GoogLeNet` 和 `ResNet18`。其他任务类型和模型仍在开发中。
+
 当前实现包含：
 
 - 图像分类训练闭环
@@ -23,30 +25,29 @@ AutoVisionLab 以 `run` 为实验容器，以 `experiment` 为单次训练记录
 - `Compare Models` 后台跨模型 baseline 比较
 - SQLite 元数据存储与本地产物落盘
 
-## 范围
-
-| 项目 | 值 |
-| --- | --- |
-| 前端 | `React` |
-| 后端 | `FastAPI` |
-| 训练 | `PyTorch` |
-| 数据库 | `SQLite` |
-| 任务类型 | `classification` |
-| 支持模型 | `MobileNetV2`、`MobileNetV3 Small`、`GoogLeNet`、`ResNet18` |
-
 ## 数据与产物
 
-分类数据使用以下目录：
+分类数据分成两层：
 
-```text
-data/
-  raw/
-    <dataset_name>/
-  classification/
-    <dataset_name>/
-      train.txt
-      val.txt
-      test.txt
+- `data/raw/<dataset_name>/` 存按类别名分文件夹的图片
+- `data/classification/<dataset_name>/` 存由 `raw/` 生成的切分清单
+
+训练器读取的是这些清单文件：
+
+- 必需：`train.txt`、`val.txt`
+- 可选：`test.txt`
+
+使用 `data/prepare_classification_split.py` 扫描 `data/raw/<dataset_name>/` 下的类别文件夹，并生成或刷新切分清单。
+
+示例：
+
+```bash
+python3 data/prepare_classification_split.py \
+  --source-dir data/raw/your_dataset \
+  --dataset-name your_dataset \
+  --val-ratio 0.2 \
+  --test-ratio 0.1 \
+  --seed 42
 ```
 
 训练产物写入本地目录：
@@ -56,16 +57,33 @@ data/
 
 ## 快速开始
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-cd frontend/web
-npm install
-./scripts/run_backend.sh
-./scripts/run_frontend.sh
-```
+1. 创建并激活 Python 虚拟环境。
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install --upgrade pip
+   ```
+
+2. 安装后端依赖。
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. 安装前端依赖。
+
+   ```bash
+   cd frontend/web
+   npm install
+   ```
+
+4. 启动后端和前端。
+
+   ```bash
+   ./scripts/run_backend.sh
+   ./scripts/run_frontend.sh
+   ```
 
 默认地址：
 

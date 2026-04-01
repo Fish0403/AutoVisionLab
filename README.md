@@ -14,6 +14,8 @@ English | [中文](README.zh.md)
 
 AutoVisionLab uses `run` as the experiment container, `experiment` as the unit of training history, `task` as the background orchestration unit, and structured `proposal`, `result`, and `reflection` objects to connect AI search, training, and review.
 
+Current implementation supports image classification with `MobileNetV2`, `MobileNetV3 Small`, `GoogLeNet`, and `ResNet18`. Other task types and models are still under development.
+
 Current implementation includes:
 
 - Image-classification training loop
@@ -23,30 +25,29 @@ Current implementation includes:
 - Background `Compare Models`
 - SQLite metadata storage and local artifact persistence
 
-## Scope
-
-| Item | Value |
-| --- | --- |
-| Frontend | `React` |
-| Backend | `FastAPI` |
-| Training | `PyTorch` |
-| Database | `SQLite` |
-| Task type | `classification` |
-| Supported models | `MobileNetV2`, `MobileNetV3 Small`, `GoogLeNet`, `ResNet18` |
-
 ## Data and Artifacts
 
-Classification data uses:
+Classification data is prepared in two layers:
 
-```text
-data/
-  raw/
-    <dataset_name>/
-  classification/
-    <dataset_name>/
-      train.txt
-      val.txt
-      test.txt
+- `data/raw/<dataset_name>/` stores images grouped by class name
+- `data/classification/<dataset_name>/` stores split manifests generated from `raw/`
+
+The manifests are the files the trainer reads:
+
+- Required: `train.txt` and `val.txt`
+- Optional: `test.txt`
+
+Use `data/prepare_classification_split.py` to scan the class folders under `data/raw/<dataset_name>/` and generate or refresh the split manifests.
+
+Example:
+
+```bash
+python3 data/prepare_classification_split.py \
+  --source-dir data/raw/your_dataset \
+  --dataset-name your_dataset \
+  --val-ratio 0.2 \
+  --test-ratio 0.1 \
+  --seed 42
 ```
 
 Training artifacts are written locally:
@@ -56,16 +57,33 @@ Training artifacts are written locally:
 
 ## Quick Start
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-cd frontend/web
-npm install
-./scripts/run_backend.sh
-./scripts/run_frontend.sh
-```
+1. Create and activate a Python virtual environment.
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install --upgrade pip
+   ```
+
+2. Install the backend dependencies.
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Install the frontend dependencies.
+
+   ```bash
+   cd frontend/web
+   npm install
+   ```
+
+4. Start the backend and frontend.
+
+   ```bash
+   ./scripts/run_backend.sh
+   ./scripts/run_frontend.sh
+   ```
 
 Default endpoints:
 
