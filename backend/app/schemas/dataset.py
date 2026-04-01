@@ -16,5 +16,14 @@ class LocalDatasetSummary(BaseModel):
     test_manifest_exists: bool = False
     is_ready_for_training: bool = False
     original_image_size: int | None = None
+    image_width: int | None = None
+    image_height: int | None = None
     image_size_options: list[int] = Field(default_factory=list)
+    train_sample_count: int = 0
+    val_sample_count: int = 0
+    test_sample_count: int = 0
+    class_names: list[str] = Field(default_factory=list)
+    train_class_distribution: dict[str, int] = Field(default_factory=dict)
+    val_class_distribution: dict[str, int] = Field(default_factory=dict)
+    test_class_distribution: dict[str, int] = Field(default_factory=dict)
     message: str | None = None

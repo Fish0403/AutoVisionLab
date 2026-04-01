@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import requests
 
+from app.core.settings import get_settings
 from app.db.session import SessionLocal
 from app.llm.aihubmix_client import AIHubMixRequestError
 from app.schemas.experiment import ExperimentCreateRequest
@@ -25,6 +26,7 @@ from app.schemas.parameter_space import (
     build_train_hyp_change_payload,
 )
 from app.schemas.run import AutoTrainStartRequest, AutoTrainTaskResponse, RunCreateRequest, TaskHistoryItemResponse
+from app.services.dataset_service import build_dataset_summary_text, get_local_dataset_summary
 from app.services.persistence import clear_run_records, create_experiment, create_run, get_experiment_detail, get_run_detail
 from app.services.proposal_service import generate_aihubmix_proposal, get_run_history_payload
 from app.services.run_policy import (
@@ -135,6 +137,11 @@ def _append_owned_run(task_id: str, run_id: str) -> None:
     upsert_task_payload("auto_train", payload)
 
 
+def _set_activity_message(task_id: str, activity_message: str | None) -> None:
+    """Update one short task activity message for the workspace."""
+    _update_task(task_id, activity_message=activity_message)
+
+
 def _update_task(task_id: str, **updates) -> None:
     with AUTO_TRAIN_LOCK:
         task = AUTO_TRAIN_TASKS.get(task_id)
@@ -211,14 +218,6 @@ def _normalize_auto_train_history_summary(task: dict) -> str | None:
         if isinstance(final_hypothesis, str) and final_hypothesis.strip():
             return final_hypothesis.strip()
 
-    rounds = summary_payload.get("rounds") if isinstance(summary_payload, dict) else None
-    if isinstance(rounds, list) and rounds:
-        latest_round = rounds[-1] if isinstance(rounds[-1], dict) else {}
-        latest_result = latest_round.get("result") if isinstance(latest_round, dict) else {}
-        latest_round_summary = latest_result.get("summary") if isinstance(latest_result, dict) else None
-        if isinstance(latest_round_summary, str) and latest_round_summary.strip():
-            return latest_round_summary.strip()
-
     source_task_type = task.get("source_task_type")
     source_model_name = task.get("source_model_name")
     if source_task_type == "model_compare" and isinstance(source_model_name, str) and source_model_name.strip():
@@ -236,12 +235,10 @@ def _build_search_scope_summary(config: ExperimentConfig) -> str:
     categories: list[str] = []
     if policy.allow_basic_hparam_search:
         categories.append("Basic")
-    if policy.allow_strategy_search:
-        categories.append("Strategy")
     if policy.allow_loss_search:
         categories.append("Loss")
     if policy.allow_augmentation_search:
-        categories.append("Augmentation")
+        categories.append("Data Augmentation")
     if policy.allow_model_module_search:
         categories.append("Architecture")
     return " / ".join(categories) if categories else "No search scope selected"
@@ -253,7 +250,9 @@ def _is_retryable_proposal_error(error: Exception) -> bool:
         return True
     if isinstance(error, AIHubMixRequestError):
         error_text = str(error)
-        return any(f"status={status_code}" in error_text for status_code in ("500", "502", "503", "504"))
+        if any(f"status={status_code}" in error_text for status_code in ("429", "500", "502", "503", "504", "529")):
+            return True
+        return "overloaded_error" in error_text or "high load" in error_text.lower()
     return False
 
 
@@ -497,17 +496,19 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
         task_snapshot = _snapshot_task(task_id)
         if task_snapshot is None or task_snapshot.stop_requested:
             raise AutoTrainStoppedError("Auto train stopped before execution started")
-        _update_task(task_id, status="running")
+        _update_task(task_id, status="running", activity_message="Validating dataset manifests and training config")
         started_at_monotonic = time.monotonic()
         run_policy = get_default_run_policy()
         db = SessionLocal()
         try:
             if request.run_id:
+                _set_activity_message(task_id, "Loading the selected run")
                 run_detail = get_run_detail(db, request.run_id)
                 if run_detail is None:
                     raise ValueError("Selected run not found")
                 run_id = run_detail.id
             else:
+                _set_activity_message(task_id, "Creating a new search run")
                 run_detail = create_run(
                     db,
                     RunCreateRequest(
@@ -528,6 +529,7 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
         if request.run_id:
             db = SessionLocal()
             try:
+                _set_activity_message(task_id, "Checking for an existing successful baseline")
                 baseline_detail = _load_auto_train_seed_experiment(db, run_id)
             finally:
                 db.close()
@@ -536,6 +538,7 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                 _append_task_log(task_id, f"Reusing existing baseline: {baseline_detail['id']}")
             else:
                 _append_task_log(task_id, f"No successful baseline found in run {run_id}; creating a new baseline")
+                _set_activity_message(task_id, "Creating baseline experiment")
                 baseline_request = ExperimentCreateRequest(
                     run_id=run_id,
                     config=request.config,
@@ -551,8 +554,10 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                     db.close()
                 _update_task(task_id, current_experiment_id=baseline_experiment.id, current_round=0)
                 _append_task_log(task_id, f"Baseline created: {baseline_experiment.id}")
+                _set_activity_message(task_id, "Starting baseline training")
                 start_experiment_training(baseline_experiment.id)
                 _append_task_log(task_id, f"Baseline training started: {baseline_experiment.id}")
+                _set_activity_message(task_id, "Baseline training is running")
                 baseline_detail = _wait_for_experiment_terminal(
                     task_id,
                     baseline_experiment.id,
@@ -563,6 +568,7 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                 if baseline_detail["status"] != "success":
                     raise ValueError(f"Baseline experiment failed with status {baseline_detail['status']}")
         else:
+            _set_activity_message(task_id, "Creating baseline experiment")
             baseline_request = ExperimentCreateRequest(
                 run_id=run_id,
                 config=request.config,
@@ -578,8 +584,10 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                 db.close()
             _update_task(task_id, current_experiment_id=baseline_experiment.id, current_round=0)
             _append_task_log(task_id, f"Baseline created: {baseline_experiment.id}")
+            _set_activity_message(task_id, "Starting baseline training")
             start_experiment_training(baseline_experiment.id)
             _append_task_log(task_id, f"Baseline training started: {baseline_experiment.id}")
+            _set_activity_message(task_id, "Baseline training is running")
             baseline_detail = _wait_for_experiment_terminal(
                 task_id,
                 baseline_experiment.id,
@@ -646,6 +654,7 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                     f"Round {round_index}: warmup is complete, prioritize augmentation/loss/strategy changes",
                 )
             _append_task_log(task_id, f"Round {round_index}: generating AI proposal")
+            _set_activity_message(task_id, f"Generating proposal for round {round_index}")
 
             try:
                 proposal = _generate_auto_train_proposal(
@@ -689,6 +698,7 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                 task_id,
                 f"Round {round_index}: branching from {source_experiment_detail['id']} for the next experiment",
             )
+            _set_activity_message(task_id, f"Creating experiment for round {round_index}")
 
             followup_config = _build_followup_config(source_experiment_detail, proposal_payload)
             db = SessionLocal()
@@ -709,8 +719,10 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
 
             _update_task(task_id, current_experiment_id=next_experiment.id)
             _append_task_log(task_id, f"Round {round_index}: created experiment {next_experiment.id}")
+            _set_activity_message(task_id, f"Starting training for round {round_index}")
             start_experiment_training(next_experiment.id)
             _append_task_log(task_id, f"Round {round_index}: training started for {next_experiment.id}")
+            _set_activity_message(task_id, f"Training round {round_index}")
             current_experiment_detail = _wait_for_experiment_terminal(
                 task_id,
                 next_experiment.id,
@@ -757,7 +769,7 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
         _update_task(task_id, status="stopped", current_experiment_id=None, stop_reason="Stopped by user request.")
         _append_task_log(task_id, "Auto train stopped and current experiment discarded")
     except Exception as error:
-        _update_task(task_id, status="failed", error=str(error), current_experiment_id=None)
+        _update_task(task_id, status="failed", error=str(error), current_experiment_id=None, activity_message=str(error))
         _append_task_log(task_id, f"Auto train failed: {error}")
         error_detail = getattr(error, "response", None)
         if error_detail is not None and getattr(error_detail, "text", None):
@@ -769,6 +781,12 @@ def start_auto_train_task(request: AutoTrainStartRequest) -> AutoTrainTaskRespon
     _ensure_no_active_task()
     task_id = f"auto_{uuid4().hex[:8]}"
     created_at = _now_iso()
+    ai_model_name = get_settings().aihubmix_model
+    training_image_size = request.config.train_hyp.image_size if request.config.train_hyp is not None else request.config.params.image_size
+    dataset_summary = build_dataset_summary_text(
+        get_local_dataset_summary(request.dataset),
+        training_image_size=training_image_size,
+    )
     task_payload = {
         "task_id": task_id,
         "title": request.title or request.run_name,
@@ -787,6 +805,10 @@ def start_auto_train_task(request: AutoTrainStartRequest) -> AutoTrainTaskRespon
         "current_experiment_id": None,
         "created_at": created_at,
         "updated_at": created_at,
+        "activity_message": "Queued and waiting to validate the dataset",
+        "dataset_summary": dataset_summary,
+        "training_image_size": training_image_size,
+        "ai_model_name": ai_model_name,
         "logs": [],
         "summary": None,
         "error": None,

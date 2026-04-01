@@ -1,5 +1,9 @@
 import type { DatasetSummary } from "../../types/domain";
 
+const KNOWN_DATASET_IMAGE_OPTIONS: Record<string, number[]> = {
+  neu: [200, 224, 256]
+};
+
 export type SupportedModelName = "mobilenet_v2" | "mobilenet_v3_small" | "googlenet" | "resnet18";
 
 export const MODEL_LABELS: Record<SupportedModelName, string> = {
@@ -30,7 +34,6 @@ export interface TrainingFormValues {
   modelName: SupportedModelName;
   compareCandidateModels: SupportedModelName[];
   allowBasicHparamSearch: boolean;
-  allowStrategySearch: boolean;
   allowLossSearch: boolean;
   allowAugmentationSearch: boolean;
   allowModelModuleSearch: boolean;
@@ -52,7 +55,6 @@ export function defaultFormValues(dataset: string, imageSize: number): TrainingF
     modelName: "mobilenet_v3_small",
     compareCandidateModels: [...COMPARE_CANDIDATE_MODELS],
     allowBasicHparamSearch: true,
-    allowStrategySearch: true,
     allowLossSearch: true,
     allowAugmentationSearch: true,
     allowModelModuleSearch: false,
@@ -85,10 +87,22 @@ export function buildTaskTitle(
   return `Optimize ${MODEL_LABELS[modelName]} on ${dataset.toUpperCase()}`;
 }
 
+export function getPreferredDatasetName(datasets: DatasetSummary[], fallbackDataset = "neu"): string {
+  const preferredDataset = datasets.find((item) => item.name.toLowerCase() === fallbackDataset.toLowerCase());
+  if (preferredDataset) {
+    return preferredDataset.name;
+  }
+  return datasets[0]?.name ?? fallbackDataset;
+}
+
 export function getDatasetImageOptions(datasets: DatasetSummary[], datasetName: string): number[] {
   const dataset = datasets.find((item) => item.name === datasetName);
   if (dataset?.image_size_options?.length) {
     return dataset.image_size_options.map((value) => Number(value));
+  }
+  const knownOptions = KNOWN_DATASET_IMAGE_OPTIONS[datasetName.toLowerCase()];
+  if (knownOptions?.length) {
+    return knownOptions;
   }
   return [64];
 }
@@ -106,7 +120,7 @@ export function buildSearchPolicy(values: TrainingFormValues) {
           "label_smoothing"
         ]
       : [],
-    allow_strategy_search: values.allowStrategySearch,
+    allow_strategy_search: false,
     allow_loss_search: values.allowLossSearch,
     allow_augmentation_search: values.allowAugmentationSearch,
     allow_model_module_search: values.allowModelModuleSearch,

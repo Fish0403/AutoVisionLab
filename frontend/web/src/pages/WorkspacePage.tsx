@@ -25,6 +25,7 @@ import {
   COMPARE_CANDIDATE_MODELS,
   defaultFormValues,
   getDatasetImageOptions,
+  getPreferredDatasetName,
   MODEL_LABELS,
   type SupportedModelName,
   type TrainingFormValues
@@ -75,8 +76,9 @@ export function WorkspacePage() {
   const activeModelCompareQuery = useActiveModelCompareTask();
 
   const datasets = datasetsQuery.data ?? [];
-  const defaultDataset = datasets[0]?.name ?? "neu";
+  const defaultDataset = getPreferredDatasetName(datasets, "neu");
   const defaultImageSize = getDatasetImageOptions(datasets, defaultDataset)[0] ?? 64;
+  const areDatasetsReady = !datasetsQuery.isPending && !datasetsQuery.isError && datasets.length > 0;
 
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(
     () => requestedTaskId ?? readLocalStorage(SELECTED_TASK_ID_STORAGE_KEY)
@@ -91,6 +93,10 @@ export function WorkspacePage() {
   const [draftTaskTitle, setDraftTaskTitle] = useState("Untitled task");
   const [formValues, setFormValues] = useState<TrainingFormValues>(() => defaultFormValues(defaultDataset, defaultImageSize));
   const [selectedCompareCandidate, setSelectedCompareCandidate] = useState<CompareSearchCandidate | null>(null);
+  const selectedDatasetOption = datasets.find((dataset) => dataset.name === formValues.dataset) ?? null;
+  const selectedDatasetOptionLabel = selectedDatasetOption?.name ?? formValues.dataset;
+  const hasPersistedTaskContext = Boolean(requestedTaskId || selectedTaskId);
+  const isDatasetSelectorReady = areDatasetsReady || hasPersistedTaskContext;
 
   const autoTrainTaskQuery = useAutoTrainTask(selectedTaskType === "auto_train" ? selectedTaskId : null);
   const modelCompareTaskQuery = useModelCompareTask(selectedTaskType === "model_compare" ? selectedTaskId : null);
@@ -182,7 +188,6 @@ export function WorkspacePage() {
       return;
     }
     setSelectedCompareCandidate(null);
-    setMode("search");
     setDisplayMode("chart");
     setDraftTaskTitle(currentAutoTask.title ?? buildTaskTitle("search", currentAutoTask.dataset ?? defaultDataset, (currentAutoTask.model_name as SupportedModelName | undefined) ?? "mobilenet_v3_small"));
     setFormValues((previous) => ({
@@ -196,8 +201,6 @@ export function WorkspacePage() {
     if (!selectedTaskId || !currentCompareTask) {
       return;
     }
-    setSelectedCompareCandidate(null);
-    setMode("compare");
     setDisplayMode("chart");
     setDraftTaskTitle(currentCompareTask.title ?? buildTaskTitle("compare", currentCompareTask.dataset ?? defaultDataset));
     setFormValues((previous) => ({
@@ -220,9 +223,8 @@ export function WorkspacePage() {
     }));
   }, [formValues.allowModelModuleSearch, formValues.modelName]);
 
-  const isSearchDraftFromCompare = Boolean(selectedCompareCandidate && selectedTaskType === "model_compare" && !currentAutoTask);
-  const controlMode: WorkspaceMode = isSearchDraftFromCompare ? "search" : mode;
-  const activeCompareSource = isSearchDraftFromCompare ? selectedCompareCandidate : null;
+  const isSearchDraftFromCompare = Boolean(mode === "search" && selectedTaskType === "model_compare" && !currentAutoTask);
+  const controlMode: WorkspaceMode = mode;
   const parameterSpaceModelName = controlMode === "compare" ? COMPARE_ANCHOR_MODEL : formValues.modelName;
   const parameterSpaceQuery = useParameterSpace(parameterSpaceModelName);
   const renameTaskTitleMutation = useRenameTaskTitle();
@@ -237,8 +239,8 @@ export function WorkspacePage() {
   const successfulCandidates = candidateResults.filter((candidate) => candidate.status === "success" && candidate.run_id);
   const completedCandidateCount = candidateResults.filter((candidate) => isCandidateTerminalStatus(candidate.status)).length;
   const compareDisplayStatus = getCompareDisplayStatus(compareTask);
-  const compareRecommendation = getRecommendedCandidate(successfulCandidates);
-  const compareResultSummary = buildCompareResultSummary(compareTask, compareRecommendation);
+  const compareResultSummary = buildCompareResultSummary(compareTask);
+  const compareResultSummarySource = buildCompareResultSummarySource(compareTask);
 
   const isDetachedSearchDraft = Boolean(
     currentAutoTask &&
@@ -248,9 +250,14 @@ export function WorkspacePage() {
   );
   const displayAutoTask = isDetachedSearchDraft || isSearchLaunchPending ? null : currentAutoTask;
   const autoTrainSummary = readAutoTrainSummary(displayAutoTask);
-  const latestRound = [...(autoTrainSummary?.rounds ?? [])].reverse()[0] ?? null;
-  const searchTerminalSummary = buildSearchTerminalSummary(displayAutoTask, autoTrainSummary, latestRound);
-  const showSearchTerminalSummary = Boolean(searchTerminalSummary && displayAutoTask && isAutoTrainTerminalStatus(displayAutoTask.status));
+  const searchResultSummary = buildSearchResultSummary(displayAutoTask, autoTrainSummary);
+  const searchResultSummarySource = buildSearchResultSummarySource(displayAutoTask, autoTrainSummary);
+  const showSearchResultSummary = Boolean(
+    searchResultSummary &&
+      displayAutoTask &&
+      isAutoTrainTerminalStatus(displayAutoTask.status) &&
+      !isProviderOverloadedTaskFailure(displayAutoTask)
+  );
 
   const currentTaskTitle =
     (mode === "compare" ? currentCompareTask?.title : displayAutoTask?.title) ??
@@ -260,21 +267,29 @@ export function WorkspacePage() {
   const currentTaskStatus =
     (mode === "compare" ? compareDisplayStatus : displayAutoTask?.status) ??
     (mode === "search" && isSearchLaunchPending ? "running" : "draft");
-  const compareSourceTaskId = displayAutoTask?.source_task_id ?? null;
+  const compareSourceTaskId = displayAutoTask?.source_task_id ?? (isSearchDraftFromCompare ? selectedTaskId : null);
   const hasCompareBackLink = Boolean(
-    controlMode === "search" && displayAutoTask?.source_task_type === "model_compare" && compareSourceTaskId
+    controlMode === "search" && compareSourceTaskId && (displayAutoTask?.source_task_type === "model_compare" || isSearchDraftFromCompare)
   );
+  const useModeSwitchBackToCompare = Boolean(controlMode === "search" && isSearchDraftFromCompare);
 
   const isCompareRunning = Boolean(compareTask && !isCompareTerminalStatus(compareDisplayStatus));
   const isSearchRunning = Boolean(displayAutoTask && !["stopped", "stopped_by_policy", "failed"].includes(displayAutoTask.status));
   const hasEnabledSearchDimension =
     formValues.allowBasicHparamSearch ||
-    formValues.allowStrategySearch ||
     formValues.allowLossSearch ||
     formValues.allowAugmentationSearch ||
     formValues.allowModelModuleSearch;
   const isPrimaryActionBusy =
     startAutoTrainMutation.isPending || startModelCompareMutation.isPending || (controlMode === "compare" ? isCompareRunning : isSearchRunning);
+  const controlErrorMessage =
+    datasetsQuery.error?.message ??
+    parameterSpaceQuery.error?.message ??
+    startAutoTrainMutation.error?.message ??
+    startModelCompareMutation.error?.message ??
+    stopAutoTrainMutation.error?.message ??
+    stopModelCompareMutation.error?.message ??
+    null;
 
   const currentSearchRunId = displayAutoTask?.run_id ?? null;
   const runDetailQuery = useRunDetail(currentSearchRunId);
@@ -316,13 +331,9 @@ export function WorkspacePage() {
     .filter((experiment): experiment is ExperimentDetail => Boolean(experiment));
 
   const handleModeSelect = (nextMode: WorkspaceMode) => {
-    if (nextMode === "compare" && isSearchDraftFromCompare) {
-      setSelectedCompareCandidate(null);
-      return;
-    }
     setMode(nextMode);
     setDisplayMode("chart");
-    if (selectedTaskType && selectedTaskType !== toTaskType(nextMode)) {
+    if (selectedTaskType && selectedTaskType !== toTaskType(nextMode) && selectedTaskType !== "model_compare") {
       setSelectedTaskId(null);
       setSelectedTaskType(null);
       setSearchParams({});
@@ -354,9 +365,8 @@ export function WorkspacePage() {
     const generatedTitle =
       displayAutoTask?.task_id && !isDetachedSearchDraft ? currentTaskTitle : buildSearchTaskTitle(formValues.dataset, formValues.modelName);
     setDraftTaskTitle(generatedTitle);
-    const shouldStartFreshSearchRun = Boolean(
-      (activeCompareSource && selectedTaskType === "model_compare" && !displayAutoTask) || isDetachedSearchDraft
-    );
+    const isSearchFromCompareContext = Boolean(selectedTaskType === "model_compare" && !displayAutoTask);
+    const shouldStartFreshSearchRun = Boolean(isSearchFromCompareContext || isDetachedSearchDraft);
     setIsSearchLaunchPending(true);
     try {
       const response = await startAutoTrainMutation.mutateAsync({
@@ -365,10 +375,10 @@ export function WorkspacePage() {
         run_name: runDetail?.name ?? buildRunName(formValues.dataset, formValues.modelName),
         dataset: formValues.dataset,
         model_name: formValues.modelName,
-        source_task_type: activeCompareSource && selectedTaskType === "model_compare" ? "model_compare" : null,
-        source_task_id: activeCompareSource && selectedTaskType === "model_compare" ? selectedTaskId : null,
-        source_task_title: activeCompareSource && selectedTaskType === "model_compare" ? currentCompareTask?.title ?? null : null,
-        source_model_name: activeCompareSource?.modelName ?? null,
+        source_task_type: isSearchFromCompareContext ? "model_compare" : null,
+        source_task_id: isSearchFromCompareContext ? selectedTaskId : null,
+        source_task_title: isSearchFromCompareContext ? currentCompareTask?.title ?? null : null,
+        source_model_name: isSearchFromCompareContext ? selectedCompareCandidate?.modelName ?? formValues.modelName : null,
         config: buildExperimentConfig(formValues, parameterSpace.version),
         parameter_space: parameterSpace
       });
@@ -427,6 +437,8 @@ export function WorkspacePage() {
 
   const prepareSearchFromCompareCandidate = (candidate: CompareSearchCandidate) => {
     setSelectedCompareCandidate(candidate);
+    setMode("search");
+    setDisplayMode("chart");
     setIsEditingTitle(false);
     setIsSearchLaunchPending(false);
     setDraftTaskTitle(buildTaskTitle("search", candidate.dataset, candidate.modelName));
@@ -435,10 +447,6 @@ export function WorkspacePage() {
       dataset: candidate.dataset,
       modelName: candidate.modelName
     }));
-  };
-
-  const clearCompareSearchSource = () => {
-    setSelectedCompareCandidate(null);
   };
 
   function selectTask(taskId: string, taskType: TaskType) {
@@ -524,7 +532,7 @@ export function WorkspacePage() {
             <div className="form-grid">
               <FormField label="Dataset">
                 <select
-                  disabled={datasets.length === 0}
+                  disabled={!isDatasetSelectorReady}
                   value={formValues.dataset}
                   onChange={(event) => {
                     const nextDataset = event.target.value;
@@ -536,8 +544,20 @@ export function WorkspacePage() {
                     }));
                   }}
                 >
-                  {datasets.length === 0 ? <option value={formValues.dataset}>Loading datasets...</option> : null}
-                  {datasets.map((dataset) => (
+                  {!areDatasetsReady && !hasPersistedTaskContext ? (
+                    <option value={formValues.dataset}>
+                      {datasetsQuery.isPending
+                        ? "Loading datasets..."
+                        : datasetsQuery.isError
+                          ? "Failed to load datasets"
+                          : "No datasets found"}
+                    </option>
+                  ) : null}
+                  {!areDatasetsReady && hasPersistedTaskContext ? (
+                    <option value={formValues.dataset}>{formValues.dataset}</option>
+                  ) : null}
+                  {areDatasetsReady ? <option value={formValues.dataset}>{selectedDatasetOptionLabel}</option> : null}
+                  {datasets.filter((dataset) => dataset.name !== selectedDatasetOptionLabel).map((dataset) => (
                     <option key={dataset.name} value={dataset.name}>
                       {dataset.name}
                     </option>
@@ -546,14 +566,11 @@ export function WorkspacePage() {
               </FormField>
               <FormField label="Image Size">
                 <select
-                  disabled={datasets.length === 0}
+                  disabled={!isDatasetSelectorReady}
                   value={formValues.imageSize}
                   onChange={(event) => setFormValues((previous) => ({ ...previous, imageSize: Number(event.target.value) }))}
                 >
-                  {(getDatasetImageOptions(datasets, formValues.dataset).length
-                    ? getDatasetImageOptions(datasets, formValues.dataset)
-                    : [formValues.imageSize]
-                  ).map((value) => (
+                  {(areDatasetsReady ? getDatasetImageOptions(datasets, formValues.dataset) : [formValues.imageSize]).map((value) => (
                     <option key={value} value={value}>
                       {value}
                     </option>
@@ -634,64 +651,64 @@ export function WorkspacePage() {
             {hasCompareBackLink ? (
               <div className="search-model-link-row">
                 <span className="workspace-label">Model</span>
-                <Link
-                  className="text-button"
-                  to={`/workspace?taskId=${compareSourceTaskId}&taskType=model_compare`}
-                >
-                  Back to Compare
-                </Link>
+                {useModeSwitchBackToCompare ? (
+                  <button
+                    className="text-button"
+                    onClick={() => handleModeSelect("compare")}
+                    type="button"
+                  >
+                    Back to Compare
+                  </button>
+                ) : (
+                  <Link
+                    className="text-button"
+                    to={`/workspace?taskId=${compareSourceTaskId}&taskType=model_compare`}
+                  >
+                    Back to Compare
+                  </Link>
+                )}
               </div>
             ) : null}
             {controlMode === "search" ? (
-              isSearchDraftFromCompare ? (
-                <div className="details-panel search-model-panel">
-                  {hasCompareBackLink ? null : (
-                    <span className="workspace-label">Model</span>
-                  )}
-                  <strong>{MODEL_LABELS[formValues.modelName]}</strong>
-                  <p>Locked to the selected compare candidate.</p>
-                </div>
-              ) : (
-                <>
-                  {hasCompareBackLink ? (
-                    <div className="form-field">
-                      <select
-                        value={formValues.modelName}
-                        onChange={(event) =>
-                          setFormValues((previous) => ({
-                            ...previous,
-                            modelName: event.target.value as SupportedModelName
-                          }))
-                        }
-                      >
-                        {Object.entries(MODEL_LABELS).map(([value, label]) => (
-                          <option key={value} value={value}>
-                            {label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  ) : (
-                    <FormField label="Model">
-                      <select
-                        value={formValues.modelName}
-                        onChange={(event) =>
-                          setFormValues((previous) => ({
-                            ...previous,
-                            modelName: event.target.value as SupportedModelName
-                          }))
-                        }
-                      >
-                        {Object.entries(MODEL_LABELS).map(([value, label]) => (
-                          <option key={value} value={value}>
-                            {label}
-                          </option>
-                        ))}
-                      </select>
-                    </FormField>
-                  )}
-                </>
-              )
+              <>
+                {hasCompareBackLink ? (
+                  <div className="form-field">
+                    <select
+                      value={formValues.modelName}
+                      onChange={(event) =>
+                        setFormValues((previous) => ({
+                          ...previous,
+                          modelName: event.target.value as SupportedModelName
+                        }))
+                      }
+                    >
+                      {Object.entries(MODEL_LABELS).map(([value, label]) => (
+                        <option key={value} value={value}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : (
+                  <FormField label="Model">
+                    <select
+                      value={formValues.modelName}
+                      onChange={(event) =>
+                        setFormValues((previous) => ({
+                          ...previous,
+                          modelName: event.target.value as SupportedModelName
+                        }))
+                      }
+                    >
+                      {Object.entries(MODEL_LABELS).map(([value, label]) => (
+                        <option key={value} value={value}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </FormField>
+                )}
+              </>
             ) : null}
             {controlMode === "compare" ? (
               <div className="popover-panel mode-options-panel">
@@ -739,20 +756,7 @@ export function WorkspacePage() {
                       }
                       type="checkbox"
                     />
-                    <span>Basic Hyperparameter Search</span>
-                  </label>
-                  <label className="option-row">
-                    <input
-                      checked={formValues.allowStrategySearch}
-                      onChange={(event) =>
-                        setFormValues((previous) => ({
-                          ...previous,
-                          allowStrategySearch: event.target.checked
-                        }))
-                      }
-                      type="checkbox"
-                    />
-                    <span>Strategy Search</span>
+                    <span>Hyperparameter Search</span>
                   </label>
                   <label className="option-row">
                     <input
@@ -778,7 +782,7 @@ export function WorkspacePage() {
                       }
                       type="checkbox"
                     />
-                    <span>Augmentation Search</span>
+                    <span>Data Augmentation Search</span>
                   </label>
                   <label className="option-row">
                     <input
@@ -799,28 +803,12 @@ export function WorkspacePage() {
             ) : null}
           </div>
 
-          {activeCompareSource ? (
-            <div className="details-panel search-source-panel">
-              <div className="search-source-row">
-                <span className="workspace-label">Selected Source</span>
-                <button className="text-button" onClick={() => clearCompareSearchSource()} type="button">
-                  Clear
-                </button>
-              </div>
-              <div className="search-source-copy">
-                <span>
-                  {MODEL_LABELS[activeCompareSource.modelName]} · {truncateId(activeCompareSource.runId)}
-                </span>
-                <em>{buildCompareCandidateMeta(activeCompareSource) ?? activeCompareSource.dataset}</em>
-              </div>
-            </div>
-          ) : null}
-
           <div className="control-actions">
             <button
               className="primary-button"
               disabled={
                 isPrimaryActionBusy ||
+                !areDatasetsReady ||
                 !parameterSpaceQuery.data ||
                 (controlMode === "compare" && formValues.compareCandidateModels.length === 0) ||
                 (controlMode === "search" && !hasEnabledSearchDimension)
@@ -852,36 +840,20 @@ export function WorkspacePage() {
                 Stop Compare
               </button>
             )}
-            {(
-              datasetsQuery.error ??
-              parameterSpaceQuery.error ??
-              startAutoTrainMutation.error ??
-              startModelCompareMutation.error ??
-              stopAutoTrainMutation.error ??
-              stopModelCompareMutation.error
-            ) ? (
-              <p className="error-copy">
-                {datasetsQuery.error?.message ??
-                  parameterSpaceQuery.error?.message ??
-                  startAutoTrainMutation.error?.message ??
-                  startModelCompareMutation.error?.message ??
-                  stopAutoTrainMutation.error?.message ??
-                  stopModelCompareMutation.error?.message}
-              </p>
-            ) : null}
           </div>
         </aside>
 
         <section className="display-panel">
-          <div className={`progress-panel${mode === "search" ? " progress-panel-plain" : ""}`}>
+          <div className="progress-panel progress-panel-plain">
             {mode === "compare" ? (
               <CompareProgressCard
                 task={compareTask}
                 completedCandidateCount={completedCandidateCount}
                 displayStatus={compareDisplayStatus}
+                externalErrorMessage={controlErrorMessage}
               />
             ) : (
-              <SearchProgressCard task={displayAutoTask} />
+              <SearchProgressCard task={displayAutoTask} externalErrorMessage={controlErrorMessage} />
             )}
           </div>
 
@@ -910,7 +882,12 @@ export function WorkspacePage() {
           {mode === "compare" ? (
             displayMode === "chart" ? (
               <div className="display-stack">
-                {compareResultSummary ? <p className="result-summary-copy">{compareResultSummary}</p> : null}
+                {compareResultSummary ? (
+                  <div className="result-summary-row">
+                    {compareResultSummarySource ? <span className="result-summary-source">{compareResultSummarySource}</span> : null}
+                    <p className="result-summary-copy">{compareResultSummary}</p>
+                  </div>
+                ) : null}
                 <CompareScatterChart
                   candidates={successfulCandidates}
                   dataset={compareTask?.dataset ?? formValues.dataset}
@@ -962,14 +939,10 @@ export function WorkspacePage() {
             )
           ) : displayMode === "chart" ? (
             <div className="display-stack">
-              {showSearchTerminalSummary && searchTerminalSummary ? (
-                <div className="summary-highlight">
-                  <div className="summary-highlight-header">
-                    <SummaryIcon />
-                    <span>Latest Summary</span>
-                  </div>
-                  <h3>{searchTerminalSummary.title}</h3>
-                  <p>{searchTerminalSummary.body}</p>
+              {showSearchResultSummary && searchResultSummary ? (
+                <div className="result-summary-row">
+                  {searchResultSummarySource ? <span className="result-summary-source">{searchResultSummarySource}</span> : null}
+                  <p className="result-summary-copy">{searchResultSummary}</p>
                 </div>
               ) : null}
               <MetricTrendChart series={searchTrendSeries} />
@@ -1017,22 +990,19 @@ export function WorkspacePage() {
 function CompareProgressCard({
   task,
   completedCandidateCount,
-  displayStatus
+  displayStatus,
+  externalErrorMessage
 }: {
   task: ModelCompareTask | null;
   completedCandidateCount: number;
   displayStatus: string;
+  externalErrorMessage?: string | null;
 }) {
   const totalModels = task?.total_models ?? task?.candidate_models?.length ?? 0;
   const progress = totalModels > 0 ? Math.min(100, Math.round((completedCandidateCount / totalModels) * 100)) : 0;
-  const isTerminal = isCompareTerminalStatus(displayStatus);
-  const compareMetaEntries = buildCompareMetaEntries(task, completedCandidateCount, totalModels, displayStatus);
-  const compareSummary =
-    task?.current_model_name && !isTerminal
-      ? `Currently running ${MODEL_LABELS[task.current_model_name as SupportedModelName] ?? task.current_model_name}.`
-      : task
-        ? `Ready to compare ${totalModels || 0} selected models.`
-        : "Waiting for a compare task to start.";
+  const statusTone = task ? normalizeStatusTone(displayStatus) : "neutral";
+  const footerText = buildTaskProgressFooter(task);
+  const failureNotice = buildTaskFailureNotice(task, externalErrorMessage);
 
   return (
     <div>
@@ -1042,26 +1012,45 @@ function CompareProgressCard({
         </div>
         <div className="progress-activity-divider" />
       </div>
-      <p className="progress-suggestion-copy">{compareSummary}</p>
-      <div className="progress-meta-row">
-        {compareMetaEntries.map((entry) => (
-          <span className="progress-meta-chip" key={entry.label}>
-            {entry.value}
-          </span>
-        ))}
-      </div>
-      <div className="progress-bar">
-        <div className="progress-fill" style={{ width: `${progress}%` }} />
-      </div>
+      {task ? (
+        <>
+          <div className="compare-progress-row">
+            <div className="compare-status-block">
+              <span className={`compare-status-dot compare-status-dot-${statusTone}`} />
+              <span className="compare-status-text">{formatStatusLabel(displayStatus)}</span>
+            </div>
+            <div className="compare-meta-inline">
+              <span>{completedCandidateCount}/{totalModels || 0}</span>
+              <span>{formatElapsed(task.elapsed_seconds)}</span>
+            </div>
+          </div>
+        </>
+      ) : null}
+      {!task ? <div className="progress-empty-space" /> : null}
+      {task ? (
+        <>
+          <div className="progress-bar">
+            <div className="progress-fill" style={{ width: `${progress}%` }} />
+          </div>
+          {footerText ? <p className="progress-footer-copy">{footerText}</p> : null}
+          {failureNotice ? (
+            <p className="progress-footer-copy progress-footer-copy-error">
+              <ErrorNoticeIcon />
+              <span>{failureNotice}</span>
+            </p>
+          ) : null}
+        </>
+      ) : null}
     </div>
   );
 }
 
-function SearchProgressCard({ task }: { task: AutoTrainTask | null }) {
+function SearchProgressCard({ task, externalErrorMessage }: { task: AutoTrainTask | null; externalErrorMessage?: string | null }) {
   const summary = readAutoTrainSummary(task);
   const activeProposal = task && !isAutoTrainTerminalStatus(task.status) ? summary?.current_proposal ?? null : getActiveSearchProposal(summary);
   const searchFocus = describeProposalChangeSummary(activeProposal);
   const suggestionText = getSearchSuggestionText(task, summary, activeProposal);
+  const datasetSummaryText = buildTaskDatasetSummary(task);
   const [elapsedDisplay, setElapsedDisplay] = useState(task?.elapsed_seconds ?? 0);
 
   useEffect(() => {
@@ -1079,7 +1068,10 @@ function SearchProgressCard({ task }: { task: AutoTrainTask | null }) {
   }, [task?.task_id, task?.status]);
 
   const progressHeadline = searchFocus ? `Focus ${searchFocus}` : null;
-  const metaEntries = buildSearchMetaEntries(task, elapsedDisplay);
+  const metaInlineText = buildSearchMetaInlineText(task, elapsedDisplay);
+  const startupMessage = buildTaskStartupMessage(task);
+  const failureNotice = buildTaskFailureNotice(task, externalErrorMessage);
+  const hasInsightRows = Boolean(datasetSummaryText || progressHeadline || suggestionText);
 
   return (
     <div>
@@ -1088,27 +1080,60 @@ function SearchProgressCard({ task }: { task: AutoTrainTask | null }) {
           <h2>Activity Log</h2>
         </div>
         <div className="progress-activity-divider" />
+        {metaInlineText ? <div className="search-meta-inline">{metaInlineText}</div> : null}
       </div>
-      {progressHeadline ? (
-        <div className="progress-inline-note">
-          <SearchFocusIcon />
-          <span>{progressHeadline}</span>
+      {hasInsightRows ? (
+        <div className="progress-insight-group">
+          {datasetSummaryText ? (
+            <div className="progress-inline-note">
+              <DatasetSummaryIcon />
+              <span>{datasetSummaryText}</span>
+            </div>
+          ) : null}
+          {progressHeadline ? (
+            <div className="progress-inline-note">
+              <SearchFocusIcon />
+              <span>{progressHeadline}</span>
+            </div>
+          ) : null}
+          {suggestionText ? (
+            <div className="progress-suggestion-row">
+              <SuggestionIcon />
+              <p className="progress-suggestion-copy">{suggestionText}</p>
+            </div>
+          ) : null}
         </div>
       ) : null}
-      {suggestionText ? (
-        <div className="progress-suggestion-row">
-          <SuggestionIcon />
-          <p className="progress-suggestion-copy">{suggestionText}</p>
-        </div>
+      {task && startupMessage ? <p className="progress-footer-copy">{startupMessage}</p> : null}
+      {failureNotice ? (
+        <p className="progress-footer-copy progress-footer-copy-error">
+          <ErrorNoticeIcon />
+          <span>{failureNotice}</span>
+        </p>
       ) : null}
-      <div className="progress-meta-row">
-        {metaEntries.map((entry) => (
-          <span className="progress-meta-chip" key={entry.label}>
-            {entry.value}
-          </span>
-        ))}
-      </div>
+      {!task ? <div className="progress-empty-space" /> : null}
     </div>
+  );
+}
+
+function DatasetSummaryIcon() {
+  return (
+    <svg aria-hidden="true" className="progress-inline-icon" viewBox="0 0 16 16">
+      <path
+        d="M3.25 4.25h9.5v7.5h-9.5z"
+        fill="none"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+      <path
+        d="M5.5 7.25h5M5.5 9.5h2.75"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth="1.5"
+      />
+    </svg>
   );
 }
 
@@ -1136,11 +1161,11 @@ function SuggestionIcon() {
   );
 }
 
-function SummaryIcon() {
+function ErrorNoticeIcon() {
   return (
-    <svg aria-hidden="true" className="progress-inline-icon summary-inline-icon" viewBox="0 0 16 16">
-      <path d="M3 3.25h10v9.5H3z" fill="none" stroke="currentColor" strokeLinejoin="round" strokeWidth="1.5" />
-      <path d="M5.25 6h5.5M5.25 8.5h5.5M5.25 11h3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
+    <svg aria-hidden="true" className="progress-inline-icon" viewBox="0 0 16 16">
+      <circle cx="8" cy="8" fill="none" r="6.25" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M8 4.75v4.25M8 11.5h.01" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
     </svg>
   );
 }
@@ -1577,19 +1602,6 @@ function readAutoTrainSummary(task: AutoTrainTask | null): AutoTrainSummarySnaps
   return task.summary as AutoTrainSummarySnapshot;
 }
 
-function getRecommendedCandidate(candidates: ModelCompareCandidateResult[]) {
-  if (!candidates.length) {
-    return null;
-  }
-  return [...candidates].sort((left, right) => {
-    const accuracyDelta = (right.top1_acc ?? 0) - (left.top1_acc ?? 0);
-    if (accuracyDelta !== 0) {
-      return accuracyDelta;
-    }
-    return (left.latency_ms ?? Number.MAX_SAFE_INTEGER) - (right.latency_ms ?? Number.MAX_SAFE_INTEGER);
-  })[0];
-}
-
 function resolveCurrentAutoTask(
   selectedTaskId: string | null,
   activeTask: AutoTrainTask | null,
@@ -1671,22 +1683,15 @@ function isCompareRecommendationReady(task: ModelCompareTask | null) {
   return isCompareTerminalStatus(task.status) || hasCompareCompletedByCandidates(task);
 }
 
-function buildCompareResultSummary(
-  task: ModelCompareTask | null,
-  bestCandidate: ModelCompareCandidateResult | null
-) {
+function buildCompareResultSummary(task: ModelCompareTask | null) {
   const aiSummary = task?.summary?.ai_summary?.trim();
-  if (aiSummary) {
-    return aiSummary;
-  }
-  if (!task || !isCompareRecommendationReady(task)) {
-    return null;
-  }
-  if (bestCandidate) {
-    const modelLabel = MODEL_LABELS[bestCandidate.model_name as SupportedModelName] ?? bestCandidate.model_name;
-    return `${modelLabel} currently leads the compare results with Top1 ${formatAccuracy(bestCandidate.top1_acc)} and ${formatLatency(bestCandidate.latency_ms)} latency.`;
-  }
-  return task.stop_reason ?? task.error ?? "No candidate finished successfully yet.";
+  return aiSummary || null;
+}
+
+function buildCompareResultSummarySource(task: ModelCompareTask | null) {
+  const aiSummary = task?.summary?.ai_summary?.trim();
+  const aiModelLabel = formatAiModelLabel(task?.ai_model_name);
+  return aiSummary && aiModelLabel ? `AI · ${aiModelLabel}` : null;
 }
 
 function buildCompareSearchCandidate(
@@ -1706,86 +1711,24 @@ function buildCompareSearchCandidate(
   };
 }
 
-function buildCompareCandidateMeta(candidate: CompareSearchCandidate) {
-  const parts = [
-    candidate.top1Acc != null ? formatAccuracy(candidate.top1Acc) : null,
-    candidate.latencyMs != null ? formatLatency(candidate.latencyMs) : null,
-    candidate.parameterCountMillion != null ? formatParameterCount(candidate.parameterCountMillion) : null
-  ].filter((value): value is string => Boolean(value));
-  return parts.length ? parts.join(" / ") : null;
-}
-
 function buildSearchTaskTitle(dataset: string, modelName: SupportedModelName) {
   return `Search - ${MODEL_LABELS[modelName] ?? modelName} - ${dataset}`;
 }
 
-function buildSearchMetaEntries(task: AutoTrainTask | null, elapsedSeconds: number) {
-  const entries: Array<{
-    label: string;
-    value: string;
-  }> = [];
-
-  if (task?.current_round) {
-    entries.push({
-      label: "round",
-      value: `Round ${task.current_round}`
-    });
-  }
-  if (task) {
-    entries.push({
-      label: "elapsed",
-      value: formatElapsed(elapsedSeconds)
-    });
-  }
-  if ((task?.provider_total_tokens_total ?? 0) > 0) {
-    entries.push({
-      label: "tokens",
-      value: `Tokens ${formatCompactInteger(task?.provider_total_tokens_total)}`
-    });
-  }
-  if (!entries.length) {
-    entries.push({
-      label: "status",
-      value: task ? formatStatusLabel(task.status) : "Waiting to start"
-    });
-  }
-  return entries;
-}
-
-function buildCompareMetaEntries(
-  task: ModelCompareTask | null,
-  completedCandidateCount: number,
-  totalModels: number,
-  displayStatus: string
-) {
-  const entries: Array<{
-    label: string;
-    value: string;
-  }> = [
-    {
-      label: "status",
-      value: `Status ${task ? formatStatusLabel(displayStatus) : "Waiting to start"}`
-    }
-  ];
-
-  if (task) {
-    entries.push({
-      label: "progress",
-      value: `${completedCandidateCount}/${totalModels || 0}`
-    });
-    entries.push({
-      label: "elapsed",
-      value: formatElapsed(task.elapsed_seconds)
-    });
-    if (task.current_model_name && !isCompareTerminalStatus(displayStatus)) {
-      entries.push({
-        label: "current_model",
-        value: `Current ${MODEL_LABELS[task.current_model_name as SupportedModelName] ?? task.current_model_name}`
-      });
-    }
+function buildSearchMetaInlineText(task: AutoTrainTask | null, elapsedSeconds: number) {
+  if (!task) {
+    return null;
   }
 
-  return entries;
+  const parts: string[] = [];
+  if (task.current_round) {
+    parts.push(`Round ${task.current_round}`);
+  }
+  parts.push(formatElapsed(elapsedSeconds));
+  if ((task.provider_total_tokens_total ?? 0) > 0) {
+    parts.push(`Tokens ${formatCompactInteger(task.provider_total_tokens_total)}`);
+  }
+  return parts.length ? parts.join(" · ") : null;
 }
 
 function getActiveSearchProposal(summary: AutoTrainSummarySnapshot | null) {
@@ -1811,26 +1754,109 @@ function getSearchSuggestionText(
   return null;
 }
 
-function buildSearchTerminalSummary(
+function buildSearchResultSummary(
   task: AutoTrainTask | null,
-  summary: AutoTrainSummarySnapshot | null,
-  latestRound: RoundSnapshot | null
+  summary: AutoTrainSummarySnapshot | null
 ) {
   if (!task || !isAutoTrainTerminalStatus(task.status)) {
     return null;
   }
-  const title =
-    (task.status === "failed" ? "Search failed" : null) ??
+  const aiSummary =
     summary?.final_proposal?.hypothesis?.trim() ??
-    latestRound?.proposal?.hypothesis?.trim() ??
-    "Search finished";
-  const body =
-    task.stop_reason ??
-    task.error ??
-    latestRound?.result?.summary?.trim() ??
-    summary?.final_suggestion_error?.trim() ??
-    "Search finished.";
-  return { title, body };
+    null;
+  return aiSummary || null;
+}
+
+function buildSearchResultSummarySource(
+  task: AutoTrainTask | null,
+  summary: AutoTrainSummarySnapshot | null
+) {
+  if (!task || !isAutoTrainTerminalStatus(task.status)) {
+    return null;
+  }
+  const aiSummary =
+    summary?.final_proposal?.hypothesis?.trim() ??
+    null;
+  const aiModelLabel = formatAiModelLabel(task.ai_model_name);
+  return aiSummary && aiModelLabel ? `AI · ${aiModelLabel}` : null;
+}
+
+function formatAiModelLabel(modelName: string | null | undefined) {
+  if (!modelName) {
+    return null;
+  }
+  const normalizedModelName = modelName.trim();
+  if (!normalizedModelName) {
+    return null;
+  }
+  const pathSegments = normalizedModelName.split("/").filter(Boolean);
+  return pathSegments[pathSegments.length - 1] ?? normalizedModelName;
+}
+
+function buildTaskProgressFooter(task: AutoTrainTask | ModelCompareTask | null) {
+  if (!task) {
+    return null;
+  }
+  return buildTaskStartupMessage(task) ?? buildTaskDatasetSummary(task) ?? null;
+}
+
+function buildTaskStartupMessage(task: AutoTrainTask | ModelCompareTask | null) {
+  if (!task) {
+    return null;
+  }
+  const activityMessage = task.activity_message?.trim();
+  if (activityMessage && /(validating|creating|starting|preparing|loading|checking|queued)/i.test(activityMessage)) {
+    return activityMessage;
+  }
+  return null;
+}
+
+function buildTaskDatasetSummary(task: AutoTrainTask | ModelCompareTask | null) {
+  if (!task) {
+    return null;
+  }
+  const summary = task.dataset_summary?.trim() ?? null;
+  const trainingImageSize = Number(task.training_image_size ?? 0);
+  if (!summary) {
+    return trainingImageSize > 0 ? `train size ${trainingImageSize}x${trainingImageSize}` : null;
+  }
+  if (trainingImageSize > 0 && !/train size\s+\d+x\d+/i.test(summary)) {
+    return `${summary} · train size ${trainingImageSize}x${trainingImageSize}`;
+  }
+  return summary;
+}
+
+function isProviderOverloadedText(text: string | null | undefined) {
+  if (!text) {
+    return false;
+  }
+  return /(status=529|overloaded_error|high load|currently under high load)/i.test(text);
+}
+
+function isProviderOverloadedTaskFailure(task: AutoTrainTask | ModelCompareTask | null) {
+  if (!task || task.status !== "failed") {
+    return false;
+  }
+  return isProviderOverloadedText(task.error) || isProviderOverloadedText(task.activity_message);
+}
+
+function buildTaskFailureNotice(task: AutoTrainTask | ModelCompareTask | null, externalErrorMessage?: string | null) {
+  const normalizedExternalError = externalErrorMessage?.trim() ?? null;
+  if (normalizedExternalError) {
+    if (isProviderOverloadedText(normalizedExternalError)) {
+      return "Provider is under high load (529). Retry after a short wait.";
+    }
+    return normalizedExternalError;
+  }
+
+  if (!task || task.status !== "failed") {
+    return null;
+  }
+
+  if (isProviderOverloadedTaskFailure(task)) {
+    return "Provider is under high load (529). Retry after a short wait.";
+  }
+  return task.error?.trim() ?? null;
 }
 
 const PROPOSAL_CHANGE_LABELS: Record<string, string> = {
@@ -2050,13 +2076,6 @@ function formatParameterCount(value: number | null | undefined) {
     return "—";
   }
   return `${value.toFixed(2)} M`;
-}
-
-function truncateId(value: string | null | undefined) {
-  if (!value) {
-    return "—";
-  }
-  return value.length > 10 ? `${value.slice(0, 10)}…` : value;
 }
 
 function toTaskType(mode: WorkspaceMode): TaskType {

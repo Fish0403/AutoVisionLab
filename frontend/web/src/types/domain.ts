@@ -5,7 +5,16 @@ export interface DatasetSummary {
   val_manifest_exists?: boolean;
   classification_dir?: string | null;
   original_image_size?: number | null;
+  image_width?: number | null;
+  image_height?: number | null;
   image_size_options?: number[] | null;
+  train_sample_count?: number;
+  val_sample_count?: number;
+  test_sample_count?: number;
+  class_names?: string[];
+  train_class_distribution?: Record<string, number>;
+  val_class_distribution?: Record<string, number>;
+  test_class_distribution?: Record<string, number>;
 }
 
 export interface RunListItem {
@@ -112,6 +121,10 @@ export interface AutoTrainTask {
   current_experiment_id?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  activity_message?: string | null;
+  dataset_summary?: string | null;
+  training_image_size?: number | null;
+  ai_model_name?: string | null;
   logs: string[];
   summary?: {
     mode?: "auto";
@@ -183,6 +196,10 @@ export interface ModelCompareTask {
   current_experiment_id?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  activity_message?: string | null;
+  dataset_summary?: string | null;
+  training_image_size?: number | null;
+  ai_model_name?: string | null;
   logs: string[];
   summary?: {
     mode: "model_compare";

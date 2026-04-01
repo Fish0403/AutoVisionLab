@@ -110,6 +110,10 @@ class AutoTrainTaskResponse(BaseModel):
     current_experiment_id: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    activity_message: str | None = None
+    dataset_summary: str | None = None
+    training_image_size: int | None = None
+    ai_model_name: str | None = None
     logs: list[str]
     summary: dict[str, Any] | None = None
     error: str | None = None
@@ -173,6 +177,10 @@ class ModelCompareTaskResponse(BaseModel):
     current_experiment_id: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    activity_message: str | None = None
+    dataset_summary: str | None = None
+    training_image_size: int | None = None
+    ai_model_name: str | None = None
     logs: list[str]
     summary: ModelCompareSummary | None = None
     error: str | None = None

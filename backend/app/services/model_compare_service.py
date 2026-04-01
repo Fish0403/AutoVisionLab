@@ -10,6 +10,7 @@ from threading import Lock
 import time
 from uuid import uuid4
 
+from app.core.settings import get_settings
 from app.db.session import SessionLocal
 from app.llm.aihubmix_client import AIHubMixClient
 from app.schemas.experiment import ExperimentCreateRequest
@@ -23,6 +24,7 @@ from app.schemas.run import (
     TaskHistoryItemResponse,
 )
 from app.services.auto_train_service import delete_auto_train_task, get_active_auto_train_task
+from app.services.dataset_service import build_dataset_summary_text, get_local_dataset_summary
 from app.services.parameter_space import get_parameter_space
 from app.services.persistence import clear_run_records, create_experiment, create_run, get_experiment_detail
 from app.services.task_store import delete_task_payload, get_active_task_payload, get_task_payload, list_task_payloads, upsert_task_payload
@@ -93,6 +95,11 @@ def _append_owned_run(task_id: str, run_id: str) -> None:
             payload["owned_run_ids"] = owned_run_ids
             payload["updated_at"] = _now_iso()
     upsert_task_payload("model_compare", payload)
+
+
+def _set_activity_message(task_id: str, activity_message: str | None) -> None:
+    """Update one short compare activity message for the workspace."""
+    _update_task(task_id, activity_message=activity_message)
 
 
 def _snapshot_task(task_id: str) -> ModelCompareTaskResponse | None:
@@ -316,6 +323,7 @@ def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> 
         status="running",
         total_models=len(candidate_models),
         summary=summary.model_dump(),
+        activity_message="Validating dataset manifests and shared baseline config",
     )
     successful_candidate_count = 0
 
@@ -331,6 +339,7 @@ def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> 
                 current_experiment_id=None,
             )
             _append_task_log(task_id, f"[{model_index}/{len(candidate_models)}] Comparing {model_name}")
+            _set_activity_message(task_id, f"Preparing shared baseline for {model_name}")
 
             run_id: str | None = None
             experiment_id: str | None = None
@@ -350,6 +359,7 @@ def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> 
 
                 db = SessionLocal()
                 try:
+                    _set_activity_message(task_id, f"Creating compare run for {model_name}")
                     run_detail = create_run(
                         db,
                         RunCreateRequest(
@@ -362,6 +372,7 @@ def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> 
                     )
                     run_id = run_detail.id
                     _append_owned_run(task_id, run_id)
+                    _set_activity_message(task_id, f"Creating baseline experiment for {model_name}")
                     experiment_detail = create_experiment(
                         db,
                         ExperimentCreateRequest(
@@ -392,10 +403,12 @@ def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> 
                 if _is_stop_requested(task_id):
                     raise ModelCompareStoppedError("Model compare stopped by user request")
 
+                _set_activity_message(task_id, f"Starting baseline training for {model_name}")
                 started_experiment = start_experiment_training(experiment_id)
                 if started_experiment is None:
                     raise ValueError("Failed to start compare experiment")
                 _append_task_log(task_id, f"{model_name}: started baseline experiment {experiment_id}")
+                _set_activity_message(task_id, f"Training shared baseline for {model_name}")
 
                 terminal_experiment = _wait_for_experiment_terminal(
                     task_id,
@@ -454,6 +467,7 @@ def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> 
             elapsed_seconds=max(0.0, time.monotonic() - started_at_monotonic),
             summary=summary.model_dump(),
             error=final_error,
+            activity_message=summary.ai_summary or "Compare finished",
         )
     except ModelCompareStoppedError:
         summary = _try_attach_compare_ai_summary(task_id, summary)
@@ -467,6 +481,7 @@ def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> 
             summary=summary.model_dump(),
             error=None,
             stop_reason="Stopped by user request.",
+            activity_message="Stopped by user request.",
         )
         _append_task_log(task_id, "Model compare stopped and current experiment discarded")
     except Exception as error:
@@ -479,6 +494,7 @@ def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> 
             elapsed_seconds=max(0.0, time.monotonic() - started_at_monotonic),
             summary=summary.model_dump(),
             error=str(error),
+            activity_message=str(error),
         )
 
 
@@ -495,6 +511,12 @@ def start_model_compare_task(request: ModelCompareStartRequest) -> ModelCompareT
         shared_baseline_config=_build_shared_baseline_snapshot(request.config),
     )
     created_at = _now_iso()
+    ai_model_name = get_settings().aihubmix_model
+    training_image_size = request.config.train_hyp.image_size if request.config.train_hyp is not None else request.config.params.image_size
+    dataset_summary = build_dataset_summary_text(
+        get_local_dataset_summary(request.dataset),
+        training_image_size=training_image_size,
+    )
     task_payload = {
         "task_id": task_id,
         "title": request.title or f"Compare Models on {request.dataset}",
@@ -509,6 +531,10 @@ def start_model_compare_task(request: ModelCompareStartRequest) -> ModelCompareT
         "current_experiment_id": None,
         "created_at": created_at,
         "updated_at": created_at,
+        "activity_message": "Queued and waiting to validate the dataset",
+        "dataset_summary": dataset_summary,
+        "training_image_size": training_image_size,
+        "ai_model_name": ai_model_name,
         "logs": ["Model compare task queued."],
         "summary": initial_summary.model_dump(),
         "error": None,

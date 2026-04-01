@@ -44,7 +44,7 @@ export function HistoryPage() {
             </div>
           </Link>
           {taskHistory.length === 0 ? (
-            <div className="empty-state-card">
+            <div className="history-card empty-state-card">
               <p>No task history yet. Start a compare or search task from the workspace.</p>
             </div>
           ) : (
@@ -175,7 +175,9 @@ export function HistoryPage() {
                   <p>{taskItem.summary ?? buildTaskSummary(taskItem)}</p>
                 </div>
                 <div className="history-meta">
-                  <span>{formatStatusLabel(taskItem.status)}</span>
+                  <span className={`history-status-pill history-status-pill-${normalizeStatusTone(taskItem.status)}`}>
+                    {formatStatusLabel(taskItem.status)}
+                  </span>
                   <span>{taskItem.dataset ?? "Unknown dataset"}</span>
                   <span>{taskItem.model_name ?? "Multi-model"}</span>
                 </div>
@@ -212,6 +214,25 @@ function formatTaskTypeLabel(taskType: "auto_train" | "model_compare") {
 
 function formatStatusLabel(status: string) {
   return status.replace(/_/g, " ");
+}
+
+function normalizeStatusTone(status: string) {
+  if (status === "failed") {
+    return "danger";
+  }
+  if (status === "success") {
+    return "success";
+  }
+  if (status === "stopping") {
+    return "warning";
+  }
+  if (["running", "queued"].includes(status)) {
+    return "active";
+  }
+  if (["stopped", "stopped_by_policy"].includes(status)) {
+    return "neutral";
+  }
+  return "neutral";
 }
 
 function formatHistoryTime(value: string | null | undefined) {

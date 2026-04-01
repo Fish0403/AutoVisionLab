@@ -17,7 +17,10 @@ import type {
 export function useDatasets() {
   return useQuery({
     queryKey: ["datasets"],
-    queryFn: () => getJson<DatasetSummary[]>("/datasets")
+    queryFn: () => getJson<DatasetSummary[]>("/datasets"),
+    staleTime: 5 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+    refetchOnMount: false,
   });
 }
 
@@ -49,7 +52,10 @@ export function useRunDetail(runId: string | null) {
   return useQuery({
     queryKey: ["run-detail", runId],
     queryFn: () => getJson<RunDetail>(`/runs/${runId}`),
-    enabled: Boolean(runId)
+    enabled: Boolean(runId),
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
+    refetchInterval: 2000
   });
 }
 
@@ -65,7 +71,10 @@ export function useRunMetrics(runId: string | null, metricName = "top1_acc") {
   return useQuery({
     queryKey: ["run-metrics", runId, metricName],
     queryFn: () => getJson<MetricsPayload>(`/runs/${runId}/metrics?metric_name=${metricName}`),
-    enabled: Boolean(runId)
+    enabled: Boolean(runId),
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
+    refetchInterval: 2000
   });
 }
 
