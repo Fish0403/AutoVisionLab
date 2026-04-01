@@ -25,11 +25,11 @@ AutoVisionLab 以 `run` 为实验容器，以 `experiment` 为单次训练记录
 - `Compare Models` 后台跨模型 baseline 比较
 - SQLite 元数据存储与本地产物落盘
 
-![Task 页](docs/screenshots/task-page.png)
+![Task 页](docs/screenshots/task.png)
 
-![Search 模式页](docs/screenshots/search-mode.png)
+![Search 模式页](docs/screenshots/search.png)
 
-![Compare 模式页](docs/screenshots/compare-mode.png)
+![Compare 模式页](docs/screenshots/compare.png)
 
 ## 数据与产物
 

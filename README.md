@@ -25,11 +25,11 @@ Current implementation includes:
 - Background `Compare Models`
 - SQLite metadata storage and local artifact persistence
 
-![Task page](docs/screenshots/task-page.png)
+![Task page](docs/screenshots/task.png)
 
-![Search mode](docs/screenshots/search-mode.png)
+![Search mode](docs/screenshots/search.png)
 
-![Compare mode](docs/screenshots/compare-mode.png)
+![Compare mode](docs/screenshots/compare.png)
 
 ## Data and Artifacts
 
