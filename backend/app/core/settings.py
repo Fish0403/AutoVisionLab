@@ -19,6 +19,14 @@ class Settings(BaseSettings):
     aihubmix_api_key: str | None = None
     aihubmix_model: str = "minimax/minimax-m2.5"
     aihubmix_base_url: str = "https://aihubmix.com/v1"
+    cors_allowed_origins: list[str] = [
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        "http://127.0.0.1:4173",
+        "http://localhost:4173",
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
+    ]
 
     model_config = SettingsConfigDict(env_prefix="AVL_", env_file=".env", extra="ignore")
 

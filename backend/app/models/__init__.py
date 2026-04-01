@@ -3,5 +3,6 @@
 from app.models.experiment import ExperimentModel
 from app.models.result import ResultModel
 from app.models.run import RunModel
+from app.models.task import BackgroundTaskModel
 
-__all__ = ["RunModel", "ExperimentModel", "ResultModel"]
+__all__ = ["RunModel", "ExperimentModel", "ResultModel", "BackgroundTaskModel"]

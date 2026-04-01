@@ -156,6 +156,9 @@ RANKING_METRIC_LABELS = {
     "latency_ms": "Latency (ms)",
     "parameter_count_million": "Params (M)",
 }
+WORKSPACE_VIEW_HOME = "home"
+WORKSPACE_VIEW_SINGLE_MODEL = "single_model_workspace"
+WORKSPACE_VIEW_COMPARE = "compare_workspace"
 
 
 def default_search_policy() -> dict[str, Any]:
@@ -409,19 +412,19 @@ def build_auto_train_terminal_message(
     stop_reason: str | None = None,
     task_error: str | None = None,
 ) -> str:
-    """Build one user-facing terminal status message for auto train."""
+    """Build one user-facing terminal status message for model search."""
     if task_status == "stopped_by_policy":
-        return stop_reason or "自动训练已按停止策略结束。"
+        return stop_reason or "Model Search 已按停止策略结束。"
     if task_status == "stopped":
-        return stop_reason or "自动训练已手动停止，当前实验已丢弃。"
+        return stop_reason or "Model Search 已手动停止，当前实验已丢弃。"
     if task_status == "failed":
         if is_network_related_auto_train_error(task_error):
             return (
-                "自动训练异常结束：生成下一轮 AI proposal 时网络或上游模型服务连接异常。"
+                "Model Search 异常结束：生成下一轮 AI proposal 时网络或上游模型服务连接异常。"
                 f"{f' 原始错误：{task_error}' if task_error else ''}"
             )
-        return f"自动训练异常结束：{task_error}" if task_error else "自动训练异常结束。"
-    return stop_reason or "自动训练已结束。"
+        return f"Model Search 异常结束：{task_error}" if task_error else "Model Search 异常结束。"
+    return stop_reason or "Model Search 已结束。"
 
 
 def get_experiment_training_time_label(experiment_detail: dict[str, Any]) -> str:
@@ -935,6 +938,143 @@ def format_structured_changes(changes: dict[str, Any] | None) -> str:
     return json.dumps(changes, ensure_ascii=False, sort_keys=True)
 
 
+def _compare_top1_acc_key(candidate: dict[str, Any]) -> float:
+    """Return a sortable top1_acc key for one compare candidate."""
+    metric = candidate.get("top1_acc")
+    return float(metric) if isinstance(metric, (int, float)) else float("-inf")
+
+
+def _compare_latency_key(candidate: dict[str, Any]) -> float:
+    """Return a sortable latency key for one compare candidate."""
+    metric = candidate.get("latency_ms")
+    return float(metric) if isinstance(metric, (int, float)) else float("inf")
+
+
+def _compare_parameter_key(candidate: dict[str, Any]) -> float:
+    """Return a sortable parameter count key for one compare candidate."""
+    metric = candidate.get("parameter_count_million")
+    return float(metric) if isinstance(metric, (int, float)) else float("inf")
+
+
+def build_model_compare_ai_panel(
+    compare_summary: dict[str, Any] | None,
+    *,
+    task_status: str | None,
+    task_error: str | None = None,
+    progress: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build one compare-stage summary payload for the AI panel."""
+    candidate_results = list((compare_summary or {}).get("candidate_results") or [])
+    successful_candidates = [
+        candidate
+        for candidate in candidate_results
+        if candidate.get("status") == "success"
+    ]
+    progress = progress or {}
+    if task_status in {"queued", "running"}:
+        current_model_name = progress.get("current_model_name") or "-"
+        current_model_index = int(progress.get("current_model_index") or 0)
+        total_models = int(progress.get("total_models") or 0)
+        elapsed_seconds = float(progress.get("elapsed_seconds") or 0.0)
+        return {
+            "mode": "compare",
+            "status": task_status,
+            "headline": "正在执行跨模型 shared baseline 比较。",
+            "summary_lines": [
+                f"当前模型：{get_model_label(str(current_model_name))}",
+                f"进度：{current_model_index}/{total_models}",
+                f"已运行：{format_elapsed_seconds(elapsed_seconds)}",
+            ],
+            "candidate_results": candidate_results,
+        }
+
+    if task_status == "failed":
+        return {
+            "mode": "compare",
+            "status": task_status,
+            "headline": "Models Compare 未成功完成。",
+            "summary_lines": [task_error or "All compare candidates failed."],
+            "candidate_results": candidate_results,
+        }
+
+    if not successful_candidates:
+        return {
+            "mode": "compare",
+            "status": task_status or "success",
+            "headline": "Models Compare 已结束，但没有可继续的成功候选。",
+            "summary_lines": ["没有成功完成 baseline 的候选模型。"],
+            "candidate_results": candidate_results,
+        }
+
+    ranked_candidates = sorted(
+        successful_candidates,
+        key=lambda candidate: (
+            -_compare_top1_acc_key(candidate),
+            _compare_latency_key(candidate),
+            _compare_parameter_key(candidate),
+            str(candidate.get("model_name") or ""),
+        ),
+    )
+    recommended_candidate = ranked_candidates[0]
+    best_accuracy_candidate = max(successful_candidates, key=_compare_top1_acc_key)
+    fastest_candidate = min(successful_candidates, key=_compare_latency_key)
+
+    recommendation_reasons = [
+        (
+            f"{get_model_label(str(recommended_candidate.get('model_name')))} "
+            f"当前在 compare 结果里综合排名最高。"
+        )
+    ]
+    if recommended_candidate.get("model_name") == best_accuracy_candidate.get("model_name"):
+        recommendation_reasons.append("它拿到了当前最高的 top1_acc。")
+    else:
+        recommendation_reasons.append(
+            (
+                f"虽然最高精度来自 {get_model_label(str(best_accuracy_candidate.get('model_name')))}，"
+                f"但推荐模型的精度更接近且延迟/规模更均衡。"
+            )
+        )
+    if recommended_candidate.get("model_name") == fastest_candidate.get("model_name"):
+        recommendation_reasons.append("它同时也是当前延迟最小的候选。")
+    else:
+        recommendation_reasons.append(
+            (
+                f"最快的是 {get_model_label(str(fastest_candidate.get('model_name')))}，"
+                "但当前推荐更适合作为下一阶段继续优化的起点。"
+            )
+        )
+
+    leaderboard_lines = [
+        (
+            f"{index}. {get_model_label(str(candidate.get('model_name')))} | "
+            f"acc={format_metric_value('top1_acc', candidate.get('top1_acc'))} | "
+            f"latency={format_metric_value('latency_ms', candidate.get('latency_ms'))} ms | "
+            f"params={format_metric_value('parameter_count_million', candidate.get('parameter_count_million'))} M"
+        )
+        for index, candidate in enumerate(ranked_candidates, start=1)
+    ]
+    return {
+        "mode": "compare",
+        "status": task_status or "success",
+        "headline": "Models Compare 已完成。",
+        "summary_lines": [
+            f"成功候选：{len(successful_candidates)}/{len(candidate_results)}",
+            (
+                f"最高精度：{get_model_label(str(best_accuracy_candidate.get('model_name')))} "
+                f"({format_metric_value('top1_acc', best_accuracy_candidate.get('top1_acc'))})"
+            ),
+            (
+                f"最低延迟：{get_model_label(str(fastest_candidate.get('model_name')))} "
+                f"({format_metric_value('latency_ms', fastest_candidate.get('latency_ms'))} ms)"
+            ),
+        ],
+        "recommended_candidate": recommended_candidate,
+        "recommendation_reasons": recommendation_reasons,
+        "leaderboard_lines": leaderboard_lines,
+        "candidate_results": candidate_results,
+    }
+
+
 def clear_database_records() -> tuple[bool, Any]:
     """Clear all backend records."""
     return post_without_body("/runs/reset")
@@ -1019,10 +1159,16 @@ def refresh_ai_panel_view() -> None:
     active_mode = st.session_state.get("active_ai_panel_mode")
     if active_mode == "auto":
         suggestion_payload = st.session_state.get("auto_train_summary")
+    elif active_mode == "compare":
+        suggestion_payload = st.session_state.get("compare_ai_panel")
     elif active_mode == "manual":
         suggestion_payload = st.session_state.get("manual_ai_panel")
     else:
-        suggestion_payload = st.session_state.get("auto_train_summary") or st.session_state.get("manual_ai_panel")
+        suggestion_payload = (
+            st.session_state.get("auto_train_summary")
+            or st.session_state.get("compare_ai_panel")
+            or st.session_state.get("manual_ai_panel")
+        )
     with LIVE_AI_PANEL_CONTAINER.container():
         with st.container(border=True):
             if not suggestion_payload:
@@ -1037,7 +1183,7 @@ def refresh_ai_panel_view() -> None:
                 stop_reason = suggestion_payload.get("stop_reason")
                 task_error = suggestion_payload.get("task_error")
                 progress = st.session_state.get("auto_task_progress") or {}
-                st.markdown("**Auto Train Summary**")
+                st.markdown("**Model Search Summary**")
                 st.markdown("**Summary**")
                 if progress:
                     completed_rounds = len(rounds)
@@ -1168,7 +1314,41 @@ def refresh_ai_panel_view() -> None:
                     if final_suggestion_error:
                         st.caption(f"Next suggestion is not available: {final_suggestion_error}")
                 else:
-                    st.caption("自动训练进行中。每完成一轮后，这里的趋势会自动更新。")
+                    st.caption("Model Search 进行中。每完成一轮后，这里的趋势会自动更新。")
+                return
+
+            if suggestion_payload.get("mode") == "compare":
+                st.markdown("**Models Compare Summary**")
+                st.caption(suggestion_payload.get("headline", ""))
+                for summary_line in suggestion_payload.get("summary_lines") or []:
+                    st.caption(summary_line)
+
+                recommended_candidate = suggestion_payload.get("recommended_candidate")
+                if recommended_candidate:
+                    st.markdown(
+                        f"**Recommended Next Model**  \n{get_model_label(str(recommended_candidate.get('model_name')))}"
+                    )
+                    st.caption(
+                        (
+                            f"acc={format_metric_value('top1_acc', recommended_candidate.get('top1_acc'))} | "
+                            f"latency={format_metric_value('latency_ms', recommended_candidate.get('latency_ms'))} ms | "
+                            f"params={format_metric_value('parameter_count_million', recommended_candidate.get('parameter_count_million'))} M"
+                        )
+                    )
+                    recommendation_reasons = suggestion_payload.get("recommendation_reasons") or []
+                    if recommendation_reasons:
+                        st.markdown("**Why This Model**")
+                        for reason in recommendation_reasons:
+                            st.caption(reason)
+
+                leaderboard_lines = suggestion_payload.get("leaderboard_lines") or []
+                if leaderboard_lines:
+                    st.markdown("**Ranked Snapshot**")
+                    for leaderboard_line in leaderboard_lines:
+                        st.caption(leaderboard_line)
+
+                if suggestion_payload.get("status") == "success":
+                    st.markdown("**Next Step**  \n从 compare 结果里手动选择一个模型，进入单模型优化流程。")
                 return
 
             proposal = suggestion_payload["proposal"]
@@ -1213,6 +1393,43 @@ def set_ui_locked(is_locked: bool) -> None:
 def set_post_action_notice(message: str, level: str = "success") -> None:
     """Store one notice to be shown after the next rerun."""
     st.session_state["post_action_notice"] = {"message": message, "level": level}
+
+
+def set_workspace_view(workspace_view: str) -> None:
+    """Switch the top-level frontend workspace."""
+    st.session_state["workspace_view"] = workspace_view
+
+
+def get_workspace_view() -> str:
+    """Return the current top-level workspace view."""
+    return str(st.session_state.get("workspace_view") or WORKSPACE_VIEW_HOME)
+
+
+def sync_workspace_view() -> None:
+    """Keep the current workspace aligned with active tasks and recent user actions."""
+    if st.session_state.get("current_compare_task_id"):
+        set_workspace_view(WORKSPACE_VIEW_COMPARE)
+        return
+    if st.session_state.get("current_auto_task_id"):
+        set_workspace_view(WORKSPACE_VIEW_SINGLE_MODEL)
+        return
+
+    current_view = get_workspace_view()
+    selected_run_id = str(st.session_state.get("selected_run_id") or "__all__")
+    compare_summary = st.session_state.get("model_compare_summary") or {}
+    if current_view == WORKSPACE_VIEW_COMPARE:
+        if compare_summary.get("mode") == "model_compare" or selected_run_id == "__all__":
+            return
+    if current_view == WORKSPACE_VIEW_SINGLE_MODEL:
+        if selected_run_id not in {"", "__all__"}:
+            return
+
+    if compare_summary.get("mode") == "model_compare" and selected_run_id == "__all__":
+        set_workspace_view(WORKSPACE_VIEW_COMPARE)
+    elif selected_run_id not in {"", "__all__"}:
+        set_workspace_view(WORKSPACE_VIEW_SINGLE_MODEL)
+    else:
+        set_workspace_view(WORKSPACE_VIEW_HOME)
 
 
 def clear_training_state() -> None:
@@ -1271,6 +1488,18 @@ def recover_active_model_compare_task_state() -> None:
     st.session_state["selected_run_id"] = "__all__"
     if active_task_response.get("summary"):
         st.session_state["model_compare_summary"] = active_task_response["summary"]
+    st.session_state["active_ai_panel_mode"] = "compare"
+    st.session_state["compare_ai_panel"] = build_model_compare_ai_panel(
+        active_task_response.get("summary"),
+        task_status=active_task_response.get("status"),
+        task_error=active_task_response.get("error"),
+        progress={
+            "elapsed_seconds": active_task_response.get("elapsed_seconds", 0.0),
+            "current_model_name": active_task_response.get("current_model_name"),
+            "current_model_index": active_task_response.get("current_model_index", 0),
+            "total_models": active_task_response.get("total_models", 0),
+        },
+    )
 
 
 def sync_model_compare_task_state() -> str | None:
@@ -1298,6 +1527,13 @@ def sync_model_compare_task_state() -> str | None:
         "current_run_id": compare_task_response.get("current_run_id"),
         "current_experiment_id": compare_task_response.get("current_experiment_id"),
     }
+    st.session_state["active_ai_panel_mode"] = "compare"
+    st.session_state["compare_ai_panel"] = build_model_compare_ai_panel(
+        compare_task_response.get("summary"),
+        task_status=compare_task_response.get("status"),
+        task_error=compare_task_response.get("error"),
+        progress=st.session_state["model_compare_task_progress"],
+    )
     compare_status = compare_task_response.get("status")
     if compare_status in {"queued", "running"}:
         st.session_state["ui_locked"] = True
@@ -1563,6 +1799,7 @@ def render_live_training_monitor() -> None:
     if compare_task_id:
         compare_status = sync_model_compare_task_state()
         refresh_activity_log_view()
+        refresh_ai_panel_view()
         if compare_status in {"success", "failed"}:
             st.rerun()
         return
@@ -1929,10 +2166,20 @@ def append_experiment_to_run(run_id: str, payload: dict[str, Any]) -> tuple[bool
     return True, f'Appended and started experiment {experiment_response["id"]} under run {run_id}.'
 
 
-def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_training_active: bool) -> None:
+def render_control_panel(
+    runs: list[dict[str, Any]],
+    selected_run_id: str,
+    is_training_active: bool,
+    *,
+    workspace_mode: str,
+) -> None:
     """Render the left-side parameter and action panel."""
-    st.subheader("Train")
-    st.caption("这里先训练 baseline；已有 baseline 的 run 再进入 Auto Train。")
+    if workspace_mode == WORKSPACE_VIEW_COMPARE:
+        st.subheader("Compare Setup")
+        st.caption("这里定义 shared baseline 配置。当前 compare 会对内置候选模型全集执行同一套训练协议。")
+    else:
+        st.subheader("Optimize One Model")
+        st.caption("这里围绕单个模型配置 baseline 和后续自动优化参数。")
     if is_training_active:
         st.warning("A training job is running. Actions are temporarily locked.")
 
@@ -2046,22 +2293,35 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
         st.session_state["ranking_max_image_size"] = None
 
     with st.container(border=True):
-        st.markdown("**Training Setup**")
-        st.caption("这里配置本轮训练的基线参数。切换到已有 run 时，会自动带入该 run 最近一次实验的配置。")
+        st.markdown("**Shared Config**" if workspace_mode == WORKSPACE_VIEW_COMPARE else "**Model Config**")
+        if workspace_mode == WORKSPACE_VIEW_COMPARE:
+            st.caption("Compare workspace 只保留跨模型共享的训练配置，不暴露单模型 run 相关字段。")
+        else:
+            st.caption("切换到已有 run 时，会自动带入该 run 最近一次实验的配置。")
         top_left, top_mid, top_right = st.columns(3)
-        with top_left:
-            st.text_input("Run Name", key="run_name")
-        with top_mid:
-            dataset_options = get_ready_dataset_options(st.session_state.get("dataset"))
-            st.selectbox("Dataset", options=dataset_options, key="dataset", on_change=sync_auto_run_name)
-        with top_right:
-            model_name = st.selectbox(
-                "Model",
-                options=list(SUPPORTED_MODELS.keys()),
-                format_func=get_model_label,
-                key="model_name",
-                on_change=sync_auto_run_name,
-            )
+        if workspace_mode == WORKSPACE_VIEW_COMPARE:
+            with top_left:
+                dataset_options = get_ready_dataset_options(st.session_state.get("dataset"))
+                st.selectbox("Dataset", options=dataset_options, key="dataset")
+            with top_mid:
+                st.checkbox("Use Demo Subset", key="use_demo_mode")
+            with top_right:
+                st.caption("Compare All Models 会自动覆盖当前内置候选模型全集。")
+            model_name = st.session_state["model_name"]
+        else:
+            with top_left:
+                st.text_input("Run Name", key="run_name")
+            with top_mid:
+                dataset_options = get_ready_dataset_options(st.session_state.get("dataset"))
+                st.selectbox("Dataset", options=dataset_options, key="dataset", on_change=sync_auto_run_name)
+            with top_right:
+                model_name = st.selectbox(
+                    "Model",
+                    options=list(SUPPORTED_MODELS.keys()),
+                    format_func=get_model_label,
+                    key="model_name",
+                    on_change=sync_auto_run_name,
+                )
 
         row_one = st.columns(3)
         with row_one[0]:
@@ -2075,9 +2335,13 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
         with row_two[0]:
             st.selectbox("Image Size", options=get_dataset_image_size_options(st.session_state["dataset"]), key="image_size")
         with row_two[1]:
-            st.caption("Auto Train will keep running until you stop it or the run policy stops it.")
+            if workspace_mode == WORKSPACE_VIEW_COMPARE:
+                st.caption("Compare 只跑 shared baseline，不自动进入第二阶段优化。")
+            else:
+                st.caption("Model Search 会先跑 baseline，再持续自动搜索，直到你手动停止或被策略停止。")
         with row_two[2]:
-            st.checkbox("Use Demo Subset", key="use_demo_mode")
+            if workspace_mode != WORKSPACE_VIEW_COMPARE:
+                st.checkbox("Use Demo Subset", key="use_demo_mode")
 
         st.caption("Current Managed Params: " + summarize_ai_managed_params(st.session_state))
         if st.session_state.get("use_demo_mode"):
@@ -2085,113 +2349,114 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
         else:
             st.caption("Mode: Full dataset training is enabled for this run.")
 
-        with st.expander("AI Search Policy", expanded=False):
-            image_size_choices = get_image_size_search_choices(
-                st.session_state["dataset"],
-                model_name,
-                int(st.session_state["image_size"]),
-            )
-            allowed_basic_hparam_fields = get_allowed_basic_hparam_fields(
-                st.session_state["dataset"],
-                st.session_state["model_name"],
-                int(st.session_state["image_size"]),
-            )
-            st.caption(
-                summarize_effective_ai_search_fields(
-                    st.session_state["allow_basic_hparam_search"],
-                    allowed_basic_hparam_fields,
-                    st.session_state["allow_strategy_search"],
-                    st.session_state["allow_loss_search"],
-                    st.session_state["allow_augmentation_search"],
-                    st.session_state["allow_model_module_search"],
+        if workspace_mode != WORKSPACE_VIEW_COMPARE:
+            with st.expander("AI Search Policy", expanded=False):
+                image_size_choices = get_image_size_search_choices(
+                    st.session_state["dataset"],
+                    model_name,
+                    int(st.session_state["image_size"]),
                 )
-            )
-            st.caption(
-                f"补充说明：image_size 保持原图大小时不搜索；当你手动改成非原图大小时，只在原图大小和当前设置之间搜索。"
-                f"当前原图大小：{original_image_size}；当前 image_size 搜索范围："
-                + ", ".join(str(choice) for choice in image_size_choices)
-            )
-            st.caption(
-                "Model module search 正在向 component-level 搜索收口。"
-                "当前 `MobileNetV3 Small` 已开放 `neck_name=avg_pool|gem_pool` 和 "
-                "`head_name=native_classifier|linear|dropout_linear`。"
-            )
-            st.checkbox(
-                "Allow basic hyperparameter search",
-                key="allow_basic_hparam_search",
-                disabled=is_training_active,
-            )
-            st.checkbox("Allow strategy search", key="allow_strategy_search", disabled=is_training_active)
-            st.checkbox("Allow loss search", key="allow_loss_search", disabled=is_training_active)
-            st.checkbox("Allow augmentation search", key="allow_augmentation_search", disabled=is_training_active)
-            st.checkbox("Allow model module search", key="allow_model_module_search", disabled=is_training_active)
-            st.checkbox(
-                "Require manual approval for high-impact changes",
-                key="require_manual_approval_for_high_impact_changes",
-                disabled=is_training_active,
-            )
+                allowed_basic_hparam_fields = get_allowed_basic_hparam_fields(
+                    st.session_state["dataset"],
+                    st.session_state["model_name"],
+                    int(st.session_state["image_size"]),
+                )
+                st.caption(
+                    summarize_effective_ai_search_fields(
+                        st.session_state["allow_basic_hparam_search"],
+                        allowed_basic_hparam_fields,
+                        st.session_state["allow_strategy_search"],
+                        st.session_state["allow_loss_search"],
+                        st.session_state["allow_augmentation_search"],
+                        st.session_state["allow_model_module_search"],
+                    )
+                )
+                st.caption(
+                    f"补充说明：image_size 保持原图大小时不搜索；当你手动改成非原图大小时，只在原图大小和当前设置之间搜索。"
+                    f"当前原图大小：{original_image_size}；当前 image_size 搜索范围："
+                    + ", ".join(str(choice) for choice in image_size_choices)
+                )
+                st.caption(
+                    "Model module search 正在向 component-level 搜索收口。"
+                    "当前 `MobileNetV3 Small` 已开放 `neck_name=avg_pool|gem_pool` 和 "
+                    "`head_name=native_classifier|linear|dropout_linear`。"
+                )
+                st.checkbox(
+                    "Allow basic hyperparameter search",
+                    key="allow_basic_hparam_search",
+                    disabled=is_training_active,
+                )
+                st.checkbox("Allow strategy search", key="allow_strategy_search", disabled=is_training_active)
+                st.checkbox("Allow loss search", key="allow_loss_search", disabled=is_training_active)
+                st.checkbox("Allow augmentation search", key="allow_augmentation_search", disabled=is_training_active)
+                st.checkbox("Allow model module search", key="allow_model_module_search", disabled=is_training_active)
+                st.checkbox(
+                    "Require manual approval for high-impact changes",
+                    key="require_manual_approval_for_high_impact_changes",
+                    disabled=is_training_active,
+                )
 
-        with st.expander("Ranking Policy", expanded=False):
-            st.caption("这里控制 run 内实验如何晋级。默认模式保持轻量；关闭默认后可微调主指标、灰区和平局裁决。")
-            st.checkbox(
-                "Use default ranking policy",
-                key="use_default_ranking_policy",
-                disabled=is_training_active,
-            )
-            if st.session_state["use_default_ranking_policy"]:
-                st.caption("Default: " + summarize_ranking_policy(default_ranking_policy()))
-            else:
-                ranking_columns = st.columns(2)
-                with ranking_columns[0]:
-                    st.selectbox(
-                        "Primary Metric",
-                        options=["top1_acc", "val_loss"],
-                        format_func=lambda metric: RANKING_METRIC_LABELS.get(metric, metric),
-                        key="ranking_primary_metric",
-                        disabled=is_training_active,
-                    )
-                    st.number_input(
-                        "Min Primary Improvement",
-                        min_value=0.0,
-                        max_value=1.0,
-                        step=0.001,
-                        format="%.4f",
-                        key="ranking_min_primary_metric_improvement",
-                        disabled=is_training_active,
-                    )
-                    st.number_input(
-                        "Primary Parity Epsilon",
-                        min_value=0.0,
-                        max_value=1.0,
-                        step=0.0001,
-                        format="%.4f",
-                        key="ranking_primary_metric_parity_epsilon",
-                        disabled=is_training_active,
-                    )
-                with ranking_columns[1]:
-                    st.selectbox(
-                        "Tie Breaker",
-                        options=["latency_ms", "parameter_count_million", "val_loss", "top1_acc", "training_seconds"],
-                        format_func=lambda metric: RANKING_METRIC_LABELS.get(metric, metric),
-                        key="ranking_tie_breaker_metric",
-                        disabled=is_training_active,
-                    )
-                    st.number_input(
-                        "Min Tie Breaker Improvement",
-                        min_value=0.0,
-                        max_value=10.0,
-                        step=0.001,
-                        format="%.4f",
-                        key="ranking_min_tie_breaker_metric_improvement",
-                        disabled=is_training_active,
-                    )
-                    st.selectbox(
-                        "Max Image Size",
-                        options=allowed_ranking_image_sizes,
-                        format_func=lambda value: "No limit" if value is None else str(value),
-                        key="ranking_max_image_size",
-                        disabled=is_training_active,
-                    )
+            with st.expander("Ranking Policy", expanded=False):
+                st.caption("这里控制 run 内实验如何晋级。默认模式保持轻量；关闭默认后可微调主指标、灰区和平局裁决。")
+                st.checkbox(
+                    "Use default ranking policy",
+                    key="use_default_ranking_policy",
+                    disabled=is_training_active,
+                )
+                if st.session_state["use_default_ranking_policy"]:
+                    st.caption("Default: " + summarize_ranking_policy(default_ranking_policy()))
+                else:
+                    ranking_columns = st.columns(2)
+                    with ranking_columns[0]:
+                        st.selectbox(
+                            "Primary Metric",
+                            options=["top1_acc", "val_loss"],
+                            format_func=lambda metric: RANKING_METRIC_LABELS.get(metric, metric),
+                            key="ranking_primary_metric",
+                            disabled=is_training_active,
+                        )
+                        st.number_input(
+                            "Min Primary Improvement",
+                            min_value=0.0,
+                            max_value=1.0,
+                            step=0.001,
+                            format="%.4f",
+                            key="ranking_min_primary_metric_improvement",
+                            disabled=is_training_active,
+                        )
+                        st.number_input(
+                            "Primary Parity Epsilon",
+                            min_value=0.0,
+                            max_value=1.0,
+                            step=0.0001,
+                            format="%.4f",
+                            key="ranking_primary_metric_parity_epsilon",
+                            disabled=is_training_active,
+                        )
+                    with ranking_columns[1]:
+                        st.selectbox(
+                            "Tie Breaker",
+                            options=["latency_ms", "parameter_count_million", "val_loss", "top1_acc", "training_seconds"],
+                            format_func=lambda metric: RANKING_METRIC_LABELS.get(metric, metric),
+                            key="ranking_tie_breaker_metric",
+                            disabled=is_training_active,
+                        )
+                        st.number_input(
+                            "Min Tie Breaker Improvement",
+                            min_value=0.0,
+                            max_value=10.0,
+                            step=0.001,
+                            format="%.4f",
+                            key="ranking_min_tie_breaker_metric_improvement",
+                            disabled=is_training_active,
+                        )
+                        st.selectbox(
+                            "Max Image Size",
+                            options=allowed_ranking_image_sizes,
+                            format_func=lambda value: "No limit" if value is None else str(value),
+                            key="ranking_max_image_size",
+                            disabled=is_training_active,
+                        )
 
     payload = build_payload_from_form(
         {
@@ -2244,88 +2509,21 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
         }
     )
 
-    train_button_label = "Train One Round" if has_existing_run else "Train Baseline"
-    auto_train_history_count = max(experiment_count - 1, 0)
-    auto_train_button_label = "Continue Auto Train" if auto_train_history_count > 0 else "Auto Train"
+    model_search_button_label = (
+        "Continue Optimizing Selected Model"
+        if can_start_auto_train
+        else "Optimize Selected Model"
+    )
     active_train_control = st.session_state.get("active_train_control")
-    manual_stop_requested = bool(st.session_state.get("manual_stop_requested"))
     auto_task_status = str((st.session_state.get("auto_task_progress") or {}).get("status") or "")
     auto_stop_requested = auto_task_status == "stopping"
-    compare_task_status = str((st.session_state.get("model_compare_task_progress") or {}).get("status") or "")
-    action_left, action_middle, action_right = st.columns(3)
-    with action_left:
-        left_label = (
-            "Stopping..."
-            if is_training_active and active_train_control == "manual" and manual_stop_requested
-            else "Stop Training"
-            if is_training_active and active_train_control == "manual"
-            else train_button_label
-        )
-        left_disabled = manual_stop_requested or (is_training_active and active_train_control != "manual")
-        if st.button(left_label, disabled=left_disabled, use_container_width=True):
-            if is_training_active and active_train_control == "manual":
-                running_experiment_id = st.session_state.get("training_experiment_id") or find_running_experiment_id(runs)
-                if running_experiment_id:
-                    ok, response = stop_current_experiment(running_experiment_id)
-                    if ok:
-                        st.session_state["manual_stop_requested"] = True
-                        st.session_state["ui_locked"] = True
-                        st.session_state["active_train_control"] = "manual"
-                        append_activity_log(f"Stop requested for experiment {running_experiment_id}.")
-                        st.rerun()
-                    else:
-                        st.error(f'Stop training failed: {response.get("detail", response)}')
-            else:
-                clear_manual_suggestion_task_state()
-                queue_train_request(payload)
-    with action_middle:
-        middle_label = (
-            "Stopping..."
-            if is_training_active and active_train_control == "auto" and auto_stop_requested
-            else "Stop Training"
-            if is_training_active and active_train_control == "auto"
-            else auto_train_button_label
-        )
-        middle_disabled = auto_stop_requested or (is_training_active and active_train_control != "auto") or (
-            not is_training_active and not can_start_auto_train
-        )
-        if st.button(middle_label, disabled=middle_disabled, use_container_width=True):
-            if is_training_active and active_train_control == "auto":
-                current_auto_task_id = st.session_state.get("current_auto_task_id")
-                if current_auto_task_id:
-                    ok, response = stop_auto_train_task_request(current_auto_task_id)
-                    if ok:
-                        append_activity_log(f"Stopping auto train task {current_auto_task_id}...")
-                        st.rerun()
-                    else:
-                        st.error(f'Stop training failed: {response.get("detail", response)}')
-            else:
-                st.session_state["active_train_control"] = "auto"
-                ok, response = start_auto_train_task_request(payload, selected_run_id)
-                if ok:
-                    st.session_state["current_auto_task_id"] = response["task_id"]
-                    st.session_state["training_experiment_id"] = response.get("current_experiment_id")
-                    st.session_state["ui_locked"] = True
-                    st.session_state["skip_auto_poll_once"] = True
-                    st.session_state["active_ai_panel_mode"] = "auto"
-                    st.session_state["auto_train_summary"] = {
-                        "mode": "auto",
-                        "run_id": response.get("run_id"),
-                        "baseline": {},
-                        "rounds": [],
-                        "task_status": response.get("status"),
-                    }
-                    append_activity_log(f"Auto Train task started: {response['task_id']}")
-                    st.rerun()
-                else:
-                    st.session_state["active_train_control"] = None
-                    st.error(f'Auto Train failed to start: {response.get("detail", response)}')
-    with action_right:
-        compare_label = "Comparing..." if is_training_active and active_train_control == "compare" else "Compare Models"
+    if workspace_mode == WORKSPACE_VIEW_COMPARE:
+        compare_label = "Comparing..." if is_training_active and active_train_control == "compare" else "Compare All Models"
         compare_disabled = is_training_active
         if st.button(compare_label, disabled=compare_disabled, use_container_width=True):
             clear_manual_suggestion_task_state()
             st.session_state["active_train_control"] = "compare"
+            st.session_state["active_ai_panel_mode"] = "compare"
             st.session_state["selected_run_id"] = "__all__"
             ok, response = start_model_compare_task_request(payload)
             if ok:
@@ -2340,19 +2538,68 @@ def render_control_panel(runs: list[dict[str, Any]], selected_run_id: str, is_tr
                     "current_experiment_id": response.get("current_experiment_id"),
                 }
                 st.session_state["model_compare_summary"] = response.get("summary")
+                st.session_state["compare_ai_panel"] = build_model_compare_ai_panel(
+                    response.get("summary"),
+                    task_status=response.get("status"),
+                    task_error=response.get("error"),
+                    progress=st.session_state["model_compare_task_progress"],
+                )
                 st.session_state["ui_locked"] = True
                 append_activity_log(f"Model compare task started: {response['task_id']}")
                 st.rerun()
             else:
                 st.session_state["active_train_control"] = None
                 st.error(f'Model compare failed to start: {response.get("detail", response)}')
+        st.caption("当前 compare 会用统一 baseline 配置分别跑 `MobileNetV2 / MobileNetV3 Small / GoogLeNet`。")
+        return
+
+    action_label = (
+        "Stopping..."
+        if is_training_active and active_train_control == "auto" and auto_stop_requested
+        else "Stop Training"
+        if is_training_active and active_train_control == "auto"
+        else model_search_button_label
+    )
+    action_disabled = auto_stop_requested or (is_training_active and active_train_control != "auto") or (
+        not is_training_active and has_existing_run and not can_start_auto_train
+    )
+    if st.button(action_label, disabled=action_disabled, use_container_width=True):
+        if is_training_active and active_train_control == "auto":
+            current_auto_task_id = st.session_state.get("current_auto_task_id")
+            if current_auto_task_id:
+                ok, response = stop_auto_train_task_request(current_auto_task_id)
+                if ok:
+                    append_activity_log(f"Stopping auto train task {current_auto_task_id}...")
+                    st.rerun()
+                else:
+                    st.error(f'Stop training failed: {response.get("detail", response)}')
+        else:
+            st.session_state["active_train_control"] = "auto"
+            ok, response = start_auto_train_task_request(payload, selected_run_id)
+            if ok:
+                st.session_state["current_auto_task_id"] = response["task_id"]
+                st.session_state["training_experiment_id"] = response.get("current_experiment_id")
+                st.session_state["ui_locked"] = True
+                st.session_state["skip_auto_poll_once"] = True
+                st.session_state["active_ai_panel_mode"] = "auto"
+                st.session_state["auto_train_summary"] = {
+                    "mode": "auto",
+                    "run_id": response.get("run_id"),
+                    "baseline": {},
+                    "rounds": [],
+                    "task_status": response.get("status"),
+                }
+                append_activity_log(f"Model search task started: {response['task_id']}")
+                st.rerun()
+            else:
+                st.session_state["active_train_control"] = None
+                st.error(f'Model search failed to start: {response.get("detail", response)}')
     if not has_existing_run:
-        st.caption("先用 `Train Baseline` 创建并跑完一个 run，然后在该 run 上启动 `Auto Train`。")
+        st.caption("当前会基于表单配置创建一个新的单模型 run，并自动从 baseline 进入后续优化。")
     elif not can_start_auto_train:
-        st.caption("当前 run 还没有可用 baseline，先手动训练一轮。")
+        st.caption("当前 run 还没有成功 baseline。`Optimize Selected Model` 会自动补 baseline 并继续搜索。")
     else:
-        st.caption("`Auto Train` 会基于当前 run 的已有实验继续搜索，不会重新创建 baseline。")
-    st.caption("`Compare Models` 会用统一 baseline 配置分别跑 `MobileNetV2 / MobileNetV3 Small / GoogLeNet`。")
+        st.caption("当前会基于所选 run 的已有实验继续优化，不会重新创建 baseline。")
 
 
 def render_activity_log() -> None:
@@ -2368,9 +2615,75 @@ def render_ai_suggestion_panel() -> None:
     """Render the latest AI suggestion card."""
     global LIVE_AI_PANEL_CONTAINER
     st.subheader("AI Suggestions")
-    st.caption("这里展示单次训练建议、自动调优总结和下一步推荐动作。")
+    st.caption("这里展示 Model Search 总结，以及 Models Compare 结束后的推荐动作。")
     LIVE_AI_PANEL_CONTAINER = st.empty()
     refresh_ai_panel_view()
+
+
+def render_workspace_header(title: str, description: str, *, show_back_button: bool = True) -> None:
+    """Render one workspace header row."""
+    header_left, header_right = st.columns([8, 1.5])
+    with header_left:
+        st.subheader(title)
+        st.caption(description)
+    with header_right:
+        st.caption(" ")
+        if show_back_button and st.button("Back Home", key=f"back_home_{title}", use_container_width=True):
+            set_workspace_view(WORKSPACE_VIEW_HOME)
+            st.rerun()
+
+
+def render_home_view(runs: list[dict[str, Any]], is_training_active: bool) -> None:
+    """Render the lightweight workspace entry page."""
+    st.markdown("## Choose Your Workflow")
+    st.caption("先决定你当前要做的是单模型优化，还是全模型横向比较。进入工作台后再看详细配置、运行状态和结果。")
+
+    active_task_parts: list[str] = []
+    auto_task_progress = st.session_state.get("auto_task_progress") or {}
+    if st.session_state.get("current_auto_task_id"):
+        active_task_parts.append(
+            "单模型优化进行中"
+            if str(auto_task_progress.get("status") or "") in {"queued", "running", "stopping"}
+            else "存在最近的单模型优化记录"
+        )
+    compare_task_progress = st.session_state.get("model_compare_task_progress") or {}
+    if st.session_state.get("current_compare_task_id"):
+        active_task_parts.append(
+            "全模型比较进行中"
+            if str(compare_task_progress.get("status") or "") in {"queued", "running"}
+            else "存在最近的全模型比较记录"
+        )
+    if active_task_parts:
+        st.info(" / ".join(active_task_parts))
+    elif is_training_active:
+        st.info("当前存在运行中的任务。")
+
+    runs_with_history = [run for run in runs if int(run.get("experiment_count", 0)) > 0]
+    compare_summary = st.session_state.get("model_compare_summary") or {}
+    latest_compare_count = len(compare_summary.get("candidate_results") or []) if compare_summary.get("mode") == "model_compare" else 0
+
+    card_left, card_right = st.columns(2, gap="large")
+    with card_left:
+        with st.container(border=True):
+            st.markdown("### Optimize One Model")
+            st.caption("已经决定模型时，从这里进入单模型优化工作台。系统会自动创建或复用 run，并从 baseline 进入后续搜索。")
+            metric_columns = st.columns(2)
+            metric_columns[0].metric("Runs With History", len(runs_with_history))
+            metric_columns[1].metric("Selected Run", "Ready" if str(st.session_state.get("selected_run_id") or "__all__") not in {"", "__all__"} else "New")
+            if st.button("Open Single-Model Workspace", key="open_single_workspace", use_container_width=True):
+                set_workspace_view(WORKSPACE_VIEW_SINGLE_MODEL)
+                st.rerun()
+    with card_right:
+        with st.container(border=True):
+            st.markdown("### Compare All Models")
+            st.caption("还没决定模型时，从这里进入 compare 工作台。系统会对当前内置候选模型全集执行 shared baseline 比较。")
+            metric_columns = st.columns(2)
+            metric_columns[0].metric("Built-in Candidates", 3)
+            metric_columns[1].metric("Latest Compare", latest_compare_count if latest_compare_count else "None")
+            if st.button("Open Compare Workspace", key="open_compare_workspace", use_container_width=True):
+                st.session_state["selected_run_id"] = "__all__"
+                set_workspace_view(WORKSPACE_VIEW_COMPARE)
+                st.rerun()
 
 
 def render_run_list(runs: list[dict[str, Any]]) -> str:
@@ -2548,7 +2861,7 @@ def render_model_compare_results() -> None:
     """Render one cross-model compare summary when available."""
     compare_summary = st.session_state.get("model_compare_summary") or {}
     if compare_summary.get("mode") != "model_compare":
-        st.caption("Compare Models to inspect cross-model baseline results.")
+        st.caption("Run `Compare All Models` to inspect cross-model shared-baseline results.")
         return
 
     candidate_results = list(compare_summary.get("candidate_results") or [])
@@ -2556,7 +2869,7 @@ def render_model_compare_results() -> None:
     progress = st.session_state.get("model_compare_task_progress") or {}
     compare_status = progress.get("status") or "success"
 
-    st.subheader("Model Compare")
+    st.subheader("Models Compare")
     if compare_status in {"queued", "running"}:
         current_model_name = progress.get("current_model_name") or "-"
         current_model_index = int(progress.get("current_model_index") or 0)
@@ -2567,7 +2880,7 @@ def render_model_compare_results() -> None:
             f"elapsed {format_elapsed_seconds(elapsed_seconds)}"
         )
     else:
-        st.caption("Cross-model baseline comparison result.")
+        st.caption("Cross-model shared-baseline comparison result.")
 
     with st.expander("Shared Baseline Config", expanded=False):
         st.json(shared_baseline_config)
@@ -2638,7 +2951,7 @@ def render_model_compare_results() -> None:
         return
 
     selected_compare_run_id = st.selectbox(
-        "Continue With",
+        "Choose One Model To Optimize",
         options=[str(result["run_id"]) for result in selectable_candidates],
         format_func=lambda run_id: next(
             (
@@ -2651,13 +2964,13 @@ def render_model_compare_results() -> None:
         ),
         key="selected_model_compare_run_id",
     )
-    if st.button("Select for Auto Train", use_container_width=True):
+    if st.button("Optimize This Model", use_container_width=True):
         selected_result = next(
             result for result in selectable_candidates if result.get("run_id") == selected_compare_run_id
         )
         st.session_state["selected_run_id"] = selected_compare_run_id
         st.session_state["selected_experiment_id"] = selected_result.get("baseline_experiment_id")
-        set_post_action_notice(f"Selected {selected_result['model_name']} for the next optimization stage.")
+        set_post_action_notice(f"Selected {selected_result['model_name']} for single-model optimization.")
         st.rerun()
 
 
@@ -2786,10 +3099,10 @@ def render_result_workspace(runs: list[dict[str, Any]], selected_run_id: str) ->
     has_auto_train_history = selected_run_experiment_count > 1
     if is_selected_run_auto_training:
         st.subheader("Training Records")
-        st.caption("Auto Train 进行中时先隐藏训练记录表，结束后再统一查看和比较。")
+        st.caption("Model Search 进行中时先隐藏训练记录表，结束后再统一查看和比较。")
     elif selected_run_id not in {"", "__all__"} and not has_auto_train_history:
         st.subheader("Training Records")
-        st.caption("当前只有 baseline，暂不显示训练记录表；进入 Auto Train 后再展示历史对比。")
+        st.caption("当前只有 baseline，暂不显示训练记录表；进入 Model Search 后再展示历史对比。")
     else:
         render_training_records_workspace(runs, selected_run_id)
 
@@ -2800,7 +3113,7 @@ def main() -> None:
     REQUEST_CACHE = {}
     st.set_page_config(page_title="AutoVisionLab Demo", layout="wide")
     st.title("AutoVisionLab Demo")
-    st.caption("左侧训练，右侧看结果。`Train` 单次执行后给建议；`Auto Train` 自动连续调优并总结本轮优化结果。")
+    st.caption("左侧做单模型优化或全模型比较，右侧查看结果、总结和下一步建议。")
     st.session_state["dataset_catalog"] = load_dataset_catalog()
     post_action_notice = st.session_state.pop("post_action_notice", None)
     if post_action_notice:

@@ -4,7 +4,7 @@ from sqlalchemy import inspect, text
 
 from app.db.base import Base
 from app.db.session import get_engine
-from app.models import ExperimentModel, ResultModel, RunModel
+from app.models import BackgroundTaskModel, ExperimentModel, ResultModel, RunModel
 
 
 def _ensure_column(table_name: str, column_name: str, ddl: str) -> None:
@@ -29,7 +29,7 @@ def _migrate_demo_schema() -> None:
 
 def init_database() -> None:
     """Create all declared tables for the demo environment."""
-    _ = (RunModel, ExperimentModel, ResultModel)
+    _ = (RunModel, ExperimentModel, ResultModel, BackgroundTaskModel)
     engine = get_engine()
     Base.metadata.create_all(bind=engine)
     _migrate_demo_schema()

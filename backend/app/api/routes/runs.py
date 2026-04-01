@@ -18,12 +18,24 @@ from app.schemas.run import (
     RunListItem,
     RunMetricsResponse,
     RunSummaryResponse,
+    TaskHistoryItemResponse,
+    TaskTitleUpdateRequest,
 )
-from app.services.auto_train_service import get_active_auto_train_task, get_auto_train_task, start_auto_train_task, stop_auto_train_task
+from app.services.auto_train_service import (
+    get_active_auto_train_task,
+    get_auto_train_task,
+    list_auto_train_tasks,
+    start_auto_train_task,
+    stop_auto_train_task,
+    update_auto_train_task_title,
+)
 from app.services.model_compare_service import (
     get_active_model_compare_task,
     get_model_compare_task,
+    list_model_compare_tasks,
     start_model_compare_task,
+    stop_model_compare_task,
+    update_model_compare_task_title,
 )
 from app.services.persistence import clear_all_records, clear_run_records, create_run, get_run_detail, get_run_metrics, get_run_summary, list_runs
 from app.services.proposal_service import generate_aihubmix_proposal, test_aihubmix_connection
@@ -36,6 +48,28 @@ router = APIRouter()
 def get_runs(db: Session = Depends(get_db_session)) -> ApiResponse[list[RunListItem]]:
     """List all runs."""
     return build_success_response(list_runs(db), message="Runs loaded.")
+
+
+@router.get("/tasks", response_model=ApiResponse[list[TaskHistoryItemResponse]])
+def get_task_history() -> ApiResponse[list[TaskHistoryItemResponse]]:
+    """List auto-train and model-compare tasks in one unified history feed."""
+    task_items = list_auto_train_tasks() + list_model_compare_tasks()
+    task_items.sort(key=lambda item: item.updated_at or "", reverse=True)
+    return build_success_response(task_items, message="Task history loaded.")
+
+
+@router.post("/tasks/{task_type}/{task_id}/title", response_model=ApiResponse[dict[str, str]])
+def update_task_title(task_type: str, task_id: str, request: TaskTitleUpdateRequest) -> ApiResponse[dict[str, str]]:
+    """Update one task title for workspace and history views."""
+    if task_type == "auto_train":
+        task = update_auto_train_task_title(task_id, request.title)
+    elif task_type == "model_compare":
+        task = update_model_compare_task_title(task_id, request.title)
+    else:
+        raise HTTPException(status_code=404, detail="Task type not found")
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return build_success_response({"task_id": task.task_id, "title": task.title or request.title}, message="Task title updated.")
 
 
 @router.post("/model-compare", response_model=ApiResponse[ModelCompareTaskResponse], status_code=202)
@@ -64,6 +98,15 @@ def get_model_compare_endpoint(task_id: str) -> ApiResponse[ModelCompareTaskResp
     if task is None:
         raise HTTPException(status_code=404, detail="Model compare task not found")
     return build_success_response(task, message="Model compare task loaded.", code=task.status)
+
+
+@router.post("/model-compare/{task_id}/stop", response_model=ApiResponse[ModelCompareTaskResponse])
+def stop_model_compare_endpoint(task_id: str) -> ApiResponse[ModelCompareTaskResponse]:
+    """Stop one background model-compare task."""
+    task = stop_model_compare_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Model compare task not found")
+    return build_success_response(task, message="Model compare stop requested.", code=task.status)
 
 
 @router.post("", response_model=ApiResponse[RunDetailResponse], status_code=201)

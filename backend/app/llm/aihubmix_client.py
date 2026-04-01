@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 
 import requests
@@ -13,6 +14,10 @@ from app.core.settings import get_settings
 
 class AIHubMixRequestError(RuntimeError):
     """Raised when AIHubMix returns a request error."""
+
+
+AIHUBMIX_RETRY_DELAYS_SECONDS = (1, 3)
+AIHUBMIX_RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
 
 
 def _build_error_excerpt(text: str | None, *, limit: int = 240) -> str:
@@ -76,19 +81,51 @@ class AIHubMixClient:
             raise ValueError("AIHUBMIX_API_KEY is not configured")
         self.base_url = self.settings.aihubmix_base_url.strip().rstrip("/")
 
+    def _post_chat_completion(self, payload: dict[str, Any]) -> requests.Response:
+        """Post one chat completion request with light retry for transient transport errors."""
+        total_attempts = len(AIHUBMIX_RETRY_DELAYS_SECONDS) + 1
+        last_error: Exception | None = None
+        for attempt_index in range(total_attempts):
+            try:
+                response = requests.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.settings.aihubmix_api_key}",
+                        "Content-Type": "application/json",
+                        "Connection": "close",
+                    },
+                    json=payload,
+                    timeout=60,
+                )
+            except requests.RequestException as error:
+                last_error = error
+                if attempt_index >= total_attempts - 1:
+                    break
+                time.sleep(AIHUBMIX_RETRY_DELAYS_SECONDS[attempt_index])
+                continue
+
+            if response.ok:
+                return response
+            if response.status_code not in AIHUBMIX_RETRYABLE_STATUS_CODES or attempt_index >= total_attempts - 1:
+                return response
+            last_error = AIHubMixRequestError(
+                f"chat completions failed with status={response.status_code} body={response.text}"
+            )
+            time.sleep(AIHUBMIX_RETRY_DELAYS_SECONDS[attempt_index])
+
+        raise AIHubMixRequestError(
+            "chat completions request failed after retries: "
+            f"{last_error}"
+        ) from last_error
+
     def create_json_completion_with_metadata(
         self,
         system_prompt: str,
         user_prompt: str,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Request one JSON completion and return parsed content with provider metadata."""
-        response = requests.post(
-            f"{self.base_url}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {self.settings.aihubmix_api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
+        response = self._post_chat_completion(
+            {
                 "model": self.settings.aihubmix_model,
                 "messages": [
                     {"role": "system", "content": system_prompt},
@@ -96,8 +133,7 @@ class AIHubMixClient:
                 ],
                 "response_format": {"type": "json_object"},
                 "temperature": 0.2,
-            },
-            timeout=60,
+            }
         )
         if not response.ok:
             raise AIHubMixRequestError(

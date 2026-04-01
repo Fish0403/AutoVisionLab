@@ -241,6 +241,46 @@ class ProposalServiceTest(unittest.TestCase):
         self.assertIn("本轮优先考虑这些字段", second_prompt)
         self.assertIn("优先不要再次包含", second_prompt)
 
+    def test_generate_aihubmix_proposal_rejects_runs_with_no_enabled_search_fields(self) -> None:
+        db = Mock()
+        db.get.return_value = SimpleNamespace(
+            id="run_1",
+            name="empty-search-policy",
+            dataset="cifar10",
+            model_name="mobilenet_v3_small",
+            baseline_experiment_id="exp_keep",
+            best_experiment_id="exp_keep",
+            frontier_experiment_id="exp_keep",
+        )
+        experiment_history = [
+            {"id": "exp_keep", "status": "success", "decision": "keep"},
+        ]
+        mock_client = Mock()
+
+        with (
+            patch("app.services.proposal_service.get_run_history_payload", return_value=experiment_history),
+            patch(
+                "app.services.proposal_service._load_latest_search_policy",
+                return_value=SearchPolicy(
+                    allow_basic_hparam_search=False,
+                    allowed_basic_hparam_fields=[],
+                    allow_strategy_search=False,
+                    allow_loss_search=False,
+                    allow_augmentation_search=False,
+                    allow_model_module_search=False,
+                ),
+            ),
+            patch(
+                "app.services.proposal_service._load_latest_parameter_space",
+                return_value=_build_parameter_space(),
+            ),
+            patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
+        ):
+            with self.assertRaisesRegex(ValueError, "No AI search fields are enabled for this run"):
+                generate_aihubmix_proposal(db, "run_1")
+
+        mock_client.create_json_completion_with_metadata.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

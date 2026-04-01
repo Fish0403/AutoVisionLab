@@ -15,7 +15,9 @@ AutoVisionLab 是一个面向图像分类实验的自主训练 Web 平台。
 
 - 任务类型：图像分类
 - `v1` 组件搜索与 recipe 深化当前先聚焦：`MobileNetV3 Small`
-- 前端：`Streamlit`
+- 前端：
+  - 主前端：`React`
+  - 兼容调试前端：`Streamlit`
 - 后端：`FastAPI`
 - 数据库：`SQLite`
 - 训练框架：`PyTorch`
@@ -43,6 +45,7 @@ AutoVisionLab 是一个面向图像分类实验的自主训练 Web 平台。
 ## 1. 环境要求
 
 - `Python 3.10+`
+- `Node.js 20+`
 - 建议使用独立虚拟环境
 
 ## 2. 安装
@@ -52,6 +55,13 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
+```
+
+React 前端依赖会在首次执行 `./scripts/run_frontend.sh` 时自动安装，也可以手动执行：
+
+```bash
+cd frontend/web
+npm install
 ```
 
 如果需要配置 AI provider：
@@ -68,16 +78,23 @@ cp .env.example .env
 ./scripts/run_backend.sh
 ```
 
-启动前端：
+启动 React 前端：
 
 ```bash
 ./scripts/run_frontend.sh
 ```
 
+如需启动旧版 Streamlit 调试前端：
+
+```bash
+./scripts/run_streamlit.sh
+```
+
 默认地址：
 
 - Backend: `http://127.0.0.1:8000`
-- Frontend: `http://localhost:8501`
+- React Frontend: `http://127.0.0.1:5173`
+- Streamlit Frontend: `http://localhost:8501`
 
 ## 4. 数据目录规则
 
@@ -149,7 +166,8 @@ AutoVisionLab/
 │       ├── trainers/       # 当前分类 trainer；训练主链路已切到 recipe / train_hyp 驱动
 │       └── workers/        # experiment 执行入口
 ├── frontend/
-│   └── streamlit_app.py    # Streamlit 前端入口
+│   ├── streamlit_app.py    # 旧版 Streamlit 调试前端
+│   └── web/                # React 前端
 ├── data/                   # 数据集与准备脚本
 ├── artifacts/              # 日志、checkpoint 和其他训练产物
 ├── docs/                   # 补充说明文档与 recipe 设计稿

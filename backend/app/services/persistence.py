@@ -12,6 +12,7 @@ from app.core.settings import get_settings
 from app.models.experiment import ExperimentModel
 from app.models.result import ResultModel
 from app.models.run import RunModel
+from app.models.task import BackgroundTaskModel
 from app.services.parameter_space import get_parameter_space
 from app.services.run_logging import append_run_log
 from app.services.run_policy import evaluate_promotion, get_experiment_ranking_policy
@@ -609,11 +610,13 @@ def clear_all_records(db: Session) -> dict[str, int]:
     result_models = db.scalars(select(ResultModel)).all()
     deleted_artifact_files = _delete_recorded_artifact_paths(result_models)
     deleted_artifact_files += _clear_all_artifacts()
+    deleted_tasks = db.query(BackgroundTaskModel).delete()
     deleted_results = db.query(ResultModel).delete()
     deleted_experiments = db.query(ExperimentModel).delete()
     deleted_runs = db.query(RunModel).delete()
     db.commit()
     return {
+        "deleted_tasks": deleted_tasks,
         "deleted_runs": deleted_runs,
         "deleted_experiments": deleted_experiments,
         "deleted_results": deleted_results,

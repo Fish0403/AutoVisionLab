@@ -76,10 +76,16 @@ class RunMetricsResponse(BaseModel):
 class AutoTrainStartRequest(BaseModel):
     """Request payload for starting one background auto-train task."""
 
+    title: str | None = None
     run_id: str | None = None
     run_name: str
     dataset: str
     model_name: str
+    policy_preset: str | None = None
+    source_task_type: Literal["model_compare"] | None = None
+    source_task_id: str | None = None
+    source_task_title: str | None = None
+    source_model_name: str | None = None
     config: ExperimentConfig
     parameter_space: EditableParameterSpace
 
@@ -88,11 +94,22 @@ class AutoTrainTaskResponse(BaseModel):
     """Background auto-train task snapshot."""
 
     task_id: str
+    title: str | None = None
     status: str
+    dataset: str | None = None
+    model_name: str | None = None
+    policy_preset: str | None = None
+    search_scope_summary: str | None = None
     run_id: str | None = None
+    source_task_type: Literal["model_compare"] | None = None
+    source_task_id: str | None = None
+    source_task_title: str | None = None
+    source_model_name: str | None = None
     current_round: int = 0
     elapsed_seconds: float = 0.0
     current_experiment_id: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
     logs: list[str]
     summary: dict[str, Any] | None = None
     error: str | None = None
@@ -112,6 +129,7 @@ class AutoTrainTaskResponse(BaseModel):
 class ModelCompareStartRequest(BaseModel):
     """Request payload for starting one cross-model compare task."""
 
+    title: str | None = None
     dataset: str
     config: ExperimentConfig
     candidate_models: list[str] | None = None
@@ -136,19 +154,54 @@ class ModelCompareSummary(BaseModel):
     mode: Literal["model_compare"] = "model_compare"
     shared_baseline_config: dict[str, Any]
     candidate_results: list[ModelCompareCandidateResult] = Field(default_factory=list)
+    ai_summary: str | None = None
 
 
 class ModelCompareTaskResponse(BaseModel):
     """Background cross-model compare task snapshot."""
 
     task_id: str
+    title: str | None = None
     status: str
+    dataset: str | None = None
+    candidate_models: list[str] = Field(default_factory=list)
     elapsed_seconds: float = 0.0
     current_model_name: str | None = None
     current_model_index: int = 0
     total_models: int = 0
     current_run_id: str | None = None
     current_experiment_id: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
     logs: list[str]
     summary: ModelCompareSummary | None = None
     error: str | None = None
+    stop_requested: bool = False
+    stop_reason: str | None = None
+
+
+class TaskHistoryItemResponse(BaseModel):
+    """Compact task item for workspace and history listings."""
+
+    task_id: str
+    task_type: Literal["auto_train", "model_compare"]
+    title: str
+    status: str
+    summary: str | None = None
+    dataset: str | None = None
+    model_name: str | None = None
+    candidate_models: list[str] = Field(default_factory=list)
+    policy_preset: str | None = None
+    run_id: str | None = None
+    source_task_type: Literal["model_compare"] | None = None
+    source_task_id: str | None = None
+    source_task_title: str | None = None
+    source_model_name: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class TaskTitleUpdateRequest(BaseModel):
+    """Rename one task from the workspace header."""
+
+    title: str

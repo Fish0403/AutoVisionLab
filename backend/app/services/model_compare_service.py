@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from datetime import datetime, timezone
+import json
 from threading import Lock
 import time
 from uuid import uuid4
 
 from app.db.session import SessionLocal
+from app.llm.aihubmix_client import AIHubMixClient
 from app.schemas.experiment import ExperimentCreateRequest
 from app.schemas.parameter_space import ExperimentConfig, SearchPolicy
 from app.schemas.run import (
@@ -17,17 +20,28 @@ from app.schemas.run import (
     ModelCompareSummary,
     ModelCompareTaskResponse,
     RunCreateRequest,
+    TaskHistoryItemResponse,
 )
 from app.services.auto_train_service import get_active_auto_train_task
 from app.services.parameter_space import get_parameter_space
 from app.services.persistence import create_experiment, create_run, get_experiment_detail
-from app.services.training_runner import start_experiment_training
+from app.services.task_store import get_active_task_payload, get_task_payload, list_task_payloads, upsert_task_payload
+from app.services.training_runner import start_experiment_training, stop_experiment_training
 
 
 MODEL_COMPARE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="autovisionlab-model-compare")
 MODEL_COMPARE_TASKS: dict[str, dict] = {}
 MODEL_COMPARE_LOCK = Lock()
 DEFAULT_COMPARE_CANDIDATE_MODELS = ("mobilenet_v2", "mobilenet_v3_small", "googlenet")
+
+
+class ModelCompareStoppedError(RuntimeError):
+    """Raised when one compare task is stopped by user request."""
+
+
+def _now_iso() -> str:
+    """Return one UTC timestamp string."""
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _append_task_log(task_id: str, message: str) -> None:
@@ -37,23 +51,45 @@ def _append_task_log(task_id: str, message: str) -> None:
             return
         task["logs"].append(message)
         task["logs"] = task["logs"][-200:]
+        task["updated_at"] = _now_iso()
+        payload = deepcopy(task)
+    upsert_task_payload("model_compare", payload)
 
 
 def _update_task(task_id: str, **updates) -> None:
     with MODEL_COMPARE_LOCK:
         task = MODEL_COMPARE_TASKS.get(task_id)
-        if task is None:
-            return
-        task.update(updates)
+        if task is not None:
+            task.update(updates)
+            task["updated_at"] = _now_iso()
+            payload = deepcopy(task)
+        else:
+            payload = get_task_payload("model_compare", task_id)
+            if payload is None:
+                return
+            payload.update(updates)
+            payload["updated_at"] = _now_iso()
+    upsert_task_payload("model_compare", payload)
 
 
 def _snapshot_task(task_id: str) -> ModelCompareTaskResponse | None:
     with MODEL_COMPARE_LOCK:
         task = MODEL_COMPARE_TASKS.get(task_id)
-        if task is None:
+        payload = deepcopy(task) if task is not None else None
+    if payload is None:
+        payload = get_task_payload("model_compare", task_id)
+        if payload is None:
             return None
-        payload = deepcopy(task)
     return ModelCompareTaskResponse.model_validate(payload)
+
+
+def _is_stop_requested(task_id: str) -> bool:
+    """Return whether one compare task has a pending stop request."""
+    with MODEL_COMPARE_LOCK:
+        task = MODEL_COMPARE_TASKS.get(task_id)
+        if task is None:
+            return False
+        return bool(task.get("stop_requested"))
 
 
 def _ensure_no_active_compare_task() -> None:
@@ -62,7 +98,7 @@ def _ensure_no_active_compare_task() -> None:
             (
                 task
                 for task in MODEL_COMPARE_TASKS.values()
-                if task["status"] in {"queued", "running"}
+                if task["status"] in {"queued", "running", "stopping"}
             ),
             None,
         )
@@ -120,6 +156,64 @@ def _build_shared_baseline_snapshot(base_config: ExperimentConfig) -> dict[str, 
     }
 
 
+def _build_compare_summary_prompt(summary: ModelCompareSummary) -> tuple[str, str]:
+    """Build the system and user prompts for one compare-result summary."""
+    candidate_payload = [
+        {
+            "model_name": candidate.model_name,
+            "status": candidate.status,
+            "top1_acc": candidate.top1_acc,
+            "latency_ms": candidate.latency_ms,
+            "parameter_count_million": candidate.parameter_count_million,
+            "normalized_config_notes": candidate.normalized_config_notes,
+        }
+        for candidate in summary.candidate_results
+    ]
+    system_prompt = (
+        "You summarize model comparison results for a machine learning workspace. "
+        "Return strict JSON with one key: summary_text. "
+        "The summary_text must be concise, factual, and written in English. "
+        "Do not mention being an AI. Do not recommend next steps. "
+        "Mention the leading successful model when one exists, including accuracy and latency. "
+        "If all candidates failed, state that clearly."
+    )
+    user_prompt = (
+        "Summarize the following compare results for one workspace results panel.\n"
+        f"Shared baseline config:\n{json.dumps(summary.shared_baseline_config, ensure_ascii=True)}\n"
+        f"Candidate results:\n{json.dumps(candidate_payload, ensure_ascii=True)}\n"
+    )
+    return system_prompt, user_prompt
+
+
+def _generate_compare_ai_summary(summary: ModelCompareSummary) -> str | None:
+    """Generate one concise compare-results summary using AIHubMix."""
+    if not summary.candidate_results:
+        return None
+    system_prompt, user_prompt = _build_compare_summary_prompt(summary)
+    client = AIHubMixClient()
+    response_payload = client.create_json_completion(system_prompt, user_prompt)
+    summary_text = response_payload.get("summary_text")
+    if not isinstance(summary_text, str):
+        raise ValueError("Model compare summary provider returned an invalid summary_text")
+    normalized_summary = " ".join(summary_text.split())
+    return normalized_summary or None
+
+
+def _try_attach_compare_ai_summary(task_id: str, summary: ModelCompareSummary) -> ModelCompareSummary:
+    """Attach one AI-generated summary to the compare payload when possible."""
+    updated_summary = summary.model_copy(deep=True)
+    try:
+        ai_summary = _generate_compare_ai_summary(updated_summary)
+    except Exception as error:
+        _append_task_log(task_id, f"Compare summary generation failed: {error}")
+        updated_summary.ai_summary = None
+        return updated_summary
+    if ai_summary:
+        updated_summary.ai_summary = ai_summary
+        _append_task_log(task_id, "Compare summary generated")
+    return updated_summary
+
+
 def _build_compare_config(
     *,
     base_config: ExperimentConfig,
@@ -165,7 +259,10 @@ def _build_compare_run_name(dataset: str, model_name: str, task_id: str) -> str:
 
 def _wait_for_experiment_terminal(task_id: str, experiment_id: str, *, started_at_monotonic: float) -> dict:
     """Poll experiment status until one terminal result is available."""
+    stop_requested = False
     while True:
+        if _is_stop_requested(task_id):
+            stop_requested = True
         elapsed_seconds = max(0.0, time.monotonic() - started_at_monotonic)
         _update_task(task_id, elapsed_seconds=elapsed_seconds)
         db = SessionLocal()
@@ -177,6 +274,8 @@ def _wait_for_experiment_terminal(task_id: str, experiment_id: str, *, started_a
             raise ValueError("Experiment not found during model compare")
         detail_payload = experiment_detail.model_dump()
         if detail_payload["status"] in {"success", "failed", "discarded"}:
+            if stop_requested:
+                raise ModelCompareStoppedError("Model compare stopped by user request")
             return detail_payload
         time.sleep(1)
 
@@ -199,6 +298,8 @@ def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> 
 
     try:
         for model_index, model_name in enumerate(candidate_models, start=1):
+            if _is_stop_requested(task_id):
+                raise ModelCompareStoppedError("Model compare stopped by user request")
             _update_task(
                 task_id,
                 current_model_name=model_name,
@@ -264,6 +365,9 @@ def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> 
                     summary=summary.model_dump(),
                 )
 
+                if _is_stop_requested(task_id):
+                    raise ModelCompareStoppedError("Model compare stopped by user request")
+
                 started_experiment = start_experiment_training(experiment_id)
                 if started_experiment is None:
                     raise ValueError("Failed to start compare experiment")
@@ -290,6 +394,14 @@ def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> 
                         f"top1_acc={candidate_result.top1_acc} | latency_ms={candidate_result.latency_ms}"
                     ),
                 )
+            except ModelCompareStoppedError:
+                candidate_result.status = "discarded"
+                if candidate_result not in summary.candidate_results:
+                    candidate_result.run_id = run_id
+                    candidate_result.baseline_experiment_id = experiment_id
+                    candidate_result.normalized_config_notes = compare_notes
+                    summary.candidate_results.append(candidate_result)
+                raise
             except Exception as error:
                 _append_task_log(task_id, f"{model_name}: compare failed | {error}")
                 if candidate_result not in summary.candidate_results:
@@ -308,6 +420,7 @@ def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> 
 
         final_status = "success" if successful_candidate_count > 0 else "failed"
         final_error = None if successful_candidate_count > 0 else "All model compare candidates failed"
+        summary = _try_attach_compare_ai_summary(task_id, summary)
         _update_task(
             task_id,
             status=final_status,
@@ -318,6 +431,20 @@ def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> 
             summary=summary.model_dump(),
             error=final_error,
         )
+    except ModelCompareStoppedError:
+        summary = _try_attach_compare_ai_summary(task_id, summary)
+        _update_task(
+            task_id,
+            status="stopped",
+            current_model_name=None,
+            current_run_id=None,
+            current_experiment_id=None,
+            elapsed_seconds=max(0.0, time.monotonic() - started_at_monotonic),
+            summary=summary.model_dump(),
+            error=None,
+            stop_reason="Stopped by user request.",
+        )
+        _append_task_log(task_id, "Model compare stopped and current experiment discarded")
     except Exception as error:
         _update_task(
             task_id,
@@ -343,21 +470,30 @@ def start_model_compare_task(request: ModelCompareStartRequest) -> ModelCompareT
     initial_summary = ModelCompareSummary(
         shared_baseline_config=_build_shared_baseline_snapshot(request.config),
     )
+    created_at = _now_iso()
     task_payload = {
         "task_id": task_id,
+        "title": request.title or f"Compare Models on {request.dataset}",
         "status": "queued",
+        "dataset": request.dataset,
+        "candidate_models": candidate_models,
         "elapsed_seconds": 0.0,
         "current_model_name": None,
         "current_model_index": 0,
         "total_models": len(candidate_models),
         "current_run_id": None,
         "current_experiment_id": None,
+        "created_at": created_at,
+        "updated_at": created_at,
         "logs": ["Model compare task queued."],
         "summary": initial_summary.model_dump(),
         "error": None,
+        "stop_requested": False,
+        "stop_reason": None,
     }
     with MODEL_COMPARE_LOCK:
         MODEL_COMPARE_TASKS[task_id] = task_payload
+    upsert_task_payload("model_compare", task_payload)
     MODEL_COMPARE_EXECUTOR.submit(_run_model_compare_task, task_id, request)
     return ModelCompareTaskResponse.model_validate(deepcopy(task_payload))
 
@@ -374,10 +510,81 @@ def get_active_model_compare_task() -> ModelCompareTaskResponse | None:
             (
                 task_id
                 for task_id, task in MODEL_COMPARE_TASKS.items()
-                if task["status"] in {"queued", "running"}
+                if task["status"] in {"queued", "running", "stopping"}
             ),
             None,
         )
-    if active_task_id is None:
+    if active_task_id is not None:
+        return _snapshot_task(active_task_id)
+    payload = get_active_task_payload("model_compare")
+    if payload is None:
         return None
-    return _snapshot_task(active_task_id)
+    return ModelCompareTaskResponse.model_validate(payload)
+
+
+def list_model_compare_tasks() -> list[TaskHistoryItemResponse]:
+    """Return compact model-compare task history items sorted by recency."""
+    history_items: list[TaskHistoryItemResponse] = []
+    for task in list_task_payloads("model_compare"):
+        candidate_models = list(task.get("candidate_models") or [])
+        summary_payload = task.get("summary") or {}
+        ai_summary = summary_payload.get("ai_summary") if isinstance(summary_payload, dict) else None
+        summary = ai_summary if isinstance(ai_summary, str) and ai_summary.strip() else None
+        stop_reason = task.get("stop_reason")
+        current_index = int(task.get("current_model_index") or 0)
+        total_models = int(task.get("total_models") or 0)
+        if summary:
+            pass
+        elif stop_reason:
+            summary = stop_reason
+        elif total_models > 0:
+            summary = f"{min(current_index, total_models)}/{total_models} models processed."
+        history_items.append(
+            TaskHistoryItemResponse(
+                task_id=task["task_id"],
+                task_type="model_compare",
+                title=task.get("title") or f"Compare Models on {task.get('dataset') or 'dataset'}",
+                status=task["status"],
+                summary=summary,
+                dataset=task.get("dataset"),
+                candidate_models=candidate_models,
+                created_at=task.get("created_at"),
+                updated_at=task.get("updated_at"),
+            )
+        )
+    return history_items
+
+
+def update_model_compare_task_title(task_id: str, title: str) -> ModelCompareTaskResponse | None:
+    """Update one model-compare task title."""
+    normalized_title = title.strip()
+    if not normalized_title:
+        return None
+    _update_task(task_id, title=normalized_title)
+    return _snapshot_task(task_id)
+
+
+def stop_model_compare_task(task_id: str) -> ModelCompareTaskResponse | None:
+    """Request stop for one running compare task."""
+    with MODEL_COMPARE_LOCK:
+        task = MODEL_COMPARE_TASKS.get(task_id)
+        if task is not None:
+            task["stop_requested"] = True
+            task["stop_reason"] = "Stopped by user request."
+            if task["status"] in {"queued", "running"}:
+                task["status"] = "stopping"
+                task["updated_at"] = _now_iso()
+            payload = deepcopy(task)
+            current_experiment_id = task.get("current_experiment_id")
+        else:
+            payload = get_task_payload("model_compare", task_id)
+            if payload is None:
+                return None
+            current_experiment_id = None
+    upsert_task_payload("model_compare", payload)
+    if current_experiment_id:
+        try:
+            stop_experiment_training(current_experiment_id)
+        except ValueError:
+            pass
+    return _snapshot_task(task_id)

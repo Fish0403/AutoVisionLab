@@ -267,6 +267,8 @@ def generate_aihubmix_proposal(
     search_policy = _load_latest_search_policy(db, run_id)
     parameter_space = _load_latest_parameter_space(db, run_id)
     allowed_fields = sorted(get_allowed_ai_search_fields(search_policy, parameter_space=parameter_space))
+    if not allowed_fields:
+        raise ValueError("No AI search fields are enabled for this run. Start search with at least one enabled search dimension.")
     preferred_fields, preference_notes = get_preferred_fields(
         set(allowed_fields),
         blocked_fields=blocked_fields,

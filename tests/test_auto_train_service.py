@@ -17,15 +17,25 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 from app.schemas.parameter_space import ExperimentConfig
 from app.services.auto_train_service import (
+    AUTO_TRAIN_TASKS,
+    _ensure_no_active_task,
     _build_followup_config,
     _load_auto_train_seed_experiment,
     _load_latest_search_policy_for_run,
+    _normalize_auto_train_history_summary,
     _try_attach_final_proposal,
+    stop_auto_train_task,
 )
 
 
 class AutoTrainServiceTest(unittest.TestCase):
     """Verify auto-train helper behavior around persisted config objects."""
+
+    def setUp(self) -> None:
+        AUTO_TRAIN_TASKS.clear()
+
+    def tearDown(self) -> None:
+        AUTO_TRAIN_TASKS.clear()
 
     def test_load_latest_search_policy_reads_experiment_config_object(self) -> None:
         experiment_config = ExperimentConfig.model_validate(
@@ -300,6 +310,86 @@ class AutoTrainServiceTest(unittest.TestCase):
         updated_summary = update_task.call_args.kwargs["summary"]
         self.assertIsNone(updated_summary["final_proposal"])
         self.assertEqual(updated_summary["final_suggestion_error"], "proposal failed")
+
+    def test_normalize_auto_train_history_summary_prefers_task_error(self) -> None:
+        summary = _normalize_auto_train_history_summary(
+            {
+                "status": "failed",
+                "error": "Auto train stopped after repeated invalid proposals.",
+                "summary": {
+                    "rounds": [
+                        {
+                            "result": {
+                                "summary": "Older round summary",
+                            }
+                        }
+                    ]
+                },
+            }
+        )
+
+        self.assertEqual(summary, "Auto train stopped after repeated invalid proposals.")
+
+    def test_normalize_auto_train_history_summary_keeps_stop_reason_before_error(self) -> None:
+        summary = _normalize_auto_train_history_summary(
+            {
+                "status": "stopped",
+                "stop_reason": "Stopped by user request.",
+                "error": "Should not win",
+                "summary": {},
+            }
+        )
+
+        self.assertEqual(summary, "Stopped by user request.")
+
+    def test_stop_auto_train_task_finishes_queued_task_immediately(self) -> None:
+        AUTO_TRAIN_TASKS["task_1"] = {
+            "task_id": "task_1",
+            "title": "Queued task",
+            "status": "queued",
+            "dataset": "cifar10",
+            "model_name": "mobilenet_v3_small",
+            "policy_preset": None,
+            "run_id": None,
+            "source_task_type": None,
+            "source_task_id": None,
+            "source_task_title": None,
+            "source_model_name": None,
+            "current_round": 0,
+            "elapsed_seconds": 0.0,
+            "current_experiment_id": None,
+            "created_at": None,
+            "updated_at": None,
+            "logs": [],
+            "summary": None,
+            "error": None,
+            "stop_requested": False,
+            "stop_reason": None,
+            "latest_prompt_tokens_estimate": None,
+            "estimated_prompt_tokens_total": 0,
+            "latest_prompt_history_items": None,
+            "latest_provider_prompt_tokens": None,
+            "latest_provider_completion_tokens": None,
+            "latest_provider_total_tokens": None,
+            "provider_prompt_tokens_total": 0,
+            "provider_completion_tokens_total": 0,
+            "provider_total_tokens_total": 0,
+        }
+
+        with patch("app.services.auto_train_service.upsert_task_payload"):
+            stopped_task = stop_auto_train_task("task_1")
+
+        self.assertIsNotNone(stopped_task)
+        self.assertEqual(stopped_task.status, "stopped")
+        self.assertEqual(stopped_task.stop_reason, "Stopped by user request.")
+
+    def test_ensure_no_active_task_mentions_stopping_task(self) -> None:
+        AUTO_TRAIN_TASKS["task_1"] = {
+            "status": "stopping",
+        }
+
+        with self.assertRaisesRegex(ValueError, "still stopping"):
+            _ensure_no_active_task()
 
 
 if __name__ == "__main__":

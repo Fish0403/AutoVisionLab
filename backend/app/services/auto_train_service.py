@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from datetime import datetime, timezone
 from threading import Lock
 import time
 from uuid import uuid4
@@ -23,7 +24,7 @@ from app.schemas.parameter_space import (
     build_model_recipe_change_payload,
     build_train_hyp_change_payload,
 )
-from app.schemas.run import AutoTrainStartRequest, AutoTrainTaskResponse, RunCreateRequest
+from app.schemas.run import AutoTrainStartRequest, AutoTrainTaskResponse, RunCreateRequest, TaskHistoryItemResponse
 from app.services.persistence import create_experiment, create_run, get_experiment_detail, get_run_detail
 from app.services.proposal_service import generate_aihubmix_proposal, get_run_history_payload
 from app.services.run_policy import (
@@ -31,6 +32,7 @@ from app.services.run_policy import (
     require_non_basic_change_after_warmup_rounds,
     should_stop_after_dimension_coverage,
 )
+from app.services.task_store import get_active_task_payload, get_task_payload, list_task_payloads, upsert_task_payload
 from app.services.training_runner import start_experiment_training, stop_experiment_training
 
 
@@ -51,6 +53,11 @@ def _get_elapsed_seconds(started_at_monotonic: float) -> float:
     return max(0.0, time.monotonic() - started_at_monotonic)
 
 
+def _now_iso() -> str:
+    """Return one UTC timestamp string."""
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _update_elapsed_seconds(task_id: str, started_at_monotonic: float) -> float:
     """Refresh the elapsed time stored in the task snapshot."""
     elapsed_seconds = _get_elapsed_seconds(started_at_monotonic)
@@ -65,6 +72,9 @@ def _append_task_log(task_id: str, message: str) -> None:
             return
         task["logs"].append(message)
         task["logs"] = task["logs"][-200:]
+        task["updated_at"] = _now_iso()
+        payload = deepcopy(task)
+    upsert_task_payload("auto_train", payload)
 
 
 def _record_prompt_token_estimate(task_id: str, prompt_metadata: dict) -> None:
@@ -78,6 +88,8 @@ def _record_prompt_token_estimate(task_id: str, prompt_metadata: dict) -> None:
         task["latest_prompt_tokens_estimate"] = prompt_tokens_estimate
         task["estimated_prompt_tokens_total"] = int(task.get("estimated_prompt_tokens_total") or 0) + prompt_tokens_estimate
         task["latest_prompt_history_items"] = int(history_items) if isinstance(history_items, int) else None
+        payload = deepcopy(task)
+    upsert_task_payload("auto_train", payload)
 
 
 def _record_provider_usage(task_id: str, provider_metadata: dict) -> None:
@@ -96,22 +108,34 @@ def _record_provider_usage(task_id: str, provider_metadata: dict) -> None:
         task["provider_prompt_tokens_total"] = int(task.get("provider_prompt_tokens_total") or 0) + prompt_tokens
         task["provider_completion_tokens_total"] = int(task.get("provider_completion_tokens_total") or 0) + completion_tokens
         task["provider_total_tokens_total"] = int(task.get("provider_total_tokens_total") or 0) + total_tokens
+        payload = deepcopy(task)
+    upsert_task_payload("auto_train", payload)
 
 
 def _update_task(task_id: str, **updates) -> None:
     with AUTO_TRAIN_LOCK:
         task = AUTO_TRAIN_TASKS.get(task_id)
-        if task is None:
-            return
-        task.update(updates)
+        if task is not None:
+            task.update(updates)
+            task["updated_at"] = _now_iso()
+            payload = deepcopy(task)
+        else:
+            payload = get_task_payload("auto_train", task_id)
+            if payload is None:
+                return
+            payload.update(updates)
+            payload["updated_at"] = _now_iso()
+    upsert_task_payload("auto_train", payload)
 
 
 def _snapshot_task(task_id: str) -> AutoTrainTaskResponse | None:
     with AUTO_TRAIN_LOCK:
         task = AUTO_TRAIN_TASKS.get(task_id)
-        if task is None:
+        payload = deepcopy(task) if task is not None else None
+    if payload is None:
+        payload = get_task_payload("auto_train", task_id)
+        if payload is None:
             return None
-        payload = deepcopy(task)
     return AutoTrainTaskResponse.model_validate(payload)
 
 
@@ -126,6 +150,8 @@ def _ensure_no_active_task() -> None:
             None,
         )
     if active_task is not None:
+        if active_task["status"] == "stopping":
+            raise ValueError("Previous search task is still stopping. Wait a moment and try again.")
         raise ValueError("Another auto train task is already running")
 
 
@@ -144,6 +170,58 @@ def _build_summary_snapshot(experiment_detail: dict) -> dict:
         "metrics": metrics,
         "summary": ", ".join(summary_parts) if summary_parts else "no metrics returned",
     }
+
+
+def _normalize_auto_train_history_summary(task: dict) -> str | None:
+    """Build one compact history summary for an auto-train task."""
+    summary_payload = task.get("summary") if isinstance(task.get("summary"), dict) else {}
+    stop_reason = task.get("stop_reason")
+    if isinstance(stop_reason, str) and stop_reason.strip():
+        return stop_reason
+    error_message = task.get("error")
+    if isinstance(error_message, str) and error_message.strip():
+        return error_message
+
+    final_proposal = summary_payload.get("final_proposal") if isinstance(summary_payload, dict) else None
+    if isinstance(final_proposal, dict):
+        final_hypothesis = final_proposal.get("hypothesis")
+        if isinstance(final_hypothesis, str) and final_hypothesis.strip():
+            return final_hypothesis.strip()
+
+    rounds = summary_payload.get("rounds") if isinstance(summary_payload, dict) else None
+    if isinstance(rounds, list) and rounds:
+        latest_round = rounds[-1] if isinstance(rounds[-1], dict) else {}
+        latest_result = latest_round.get("result") if isinstance(latest_round, dict) else {}
+        latest_round_summary = latest_result.get("summary") if isinstance(latest_result, dict) else None
+        if isinstance(latest_round_summary, str) and latest_round_summary.strip():
+            return latest_round_summary.strip()
+
+    source_task_type = task.get("source_task_type")
+    source_model_name = task.get("source_model_name")
+    if source_task_type == "model_compare" and isinstance(source_model_name, str) and source_model_name.strip():
+        return f"Search from compare · {source_model_name.strip()}"
+
+    current_round = task.get("current_round")
+    if isinstance(current_round, int) and current_round > 0:
+        return f"Round {current_round} in progress."
+    return None
+
+
+def _build_search_scope_summary(config: ExperimentConfig) -> str:
+    """Build one compact search-scope label from the current search policy."""
+    policy = config.search_policy
+    categories: list[str] = []
+    if policy.allow_basic_hparam_search:
+        categories.append("Basic")
+    if policy.allow_strategy_search:
+        categories.append("Strategy")
+    if policy.allow_loss_search:
+        categories.append("Loss")
+    if policy.allow_augmentation_search:
+        categories.append("Augmentation")
+    if policy.allow_model_module_search:
+        categories.append("Architecture")
+    return " / ".join(categories) if categories else "No search scope selected"
 
 
 def _is_retryable_proposal_error(error: Exception) -> bool:
@@ -338,15 +416,18 @@ def _load_latest_search_policy_for_run(db: SessionLocal, run_id: str) -> SearchP
     return experiment_config.search_policy
 
 
-def _load_auto_train_seed_experiment(db: SessionLocal, run_id: str) -> dict:
-    """Return the persisted experiment that auto-train should continue from."""
-    source_experiment_detail = _resolve_followup_source_experiment(
-        db,
-        run_id,
-        {"based_on_experiment_ids": []},
-    )
+def _load_auto_train_seed_experiment(db: SessionLocal, run_id: str) -> dict | None:
+    """Return the persisted successful experiment that model search should continue from."""
+    try:
+        source_experiment_detail = _resolve_followup_source_experiment(
+            db,
+            run_id,
+            {"based_on_experiment_ids": []},
+        )
+    except ValueError:
+        return None
     if source_experiment_detail["status"] != "success":
-        raise ValueError("Auto train requires one successful experiment in the selected run")
+        return None
     return source_experiment_detail
 
 
@@ -390,6 +471,9 @@ def _try_attach_final_proposal(
 
 def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
     try:
+        task_snapshot = _snapshot_task(task_id)
+        if task_snapshot is None or task_snapshot.stop_requested:
+            raise AutoTrainStoppedError("Auto train stopped before execution started")
         _update_task(task_id, status="running")
         started_at_monotonic = time.monotonic()
         run_policy = get_default_run_policy()
@@ -422,8 +506,37 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                 baseline_detail = _load_auto_train_seed_experiment(db, run_id)
             finally:
                 db.close()
-            _update_task(task_id, current_experiment_id=baseline_detail["id"], current_round=0)
-            _append_task_log(task_id, f"Reusing existing baseline: {baseline_detail['id']}")
+            if baseline_detail is not None:
+                _update_task(task_id, current_experiment_id=baseline_detail["id"], current_round=0)
+                _append_task_log(task_id, f"Reusing existing baseline: {baseline_detail['id']}")
+            else:
+                _append_task_log(task_id, f"No successful baseline found in run {run_id}; creating a new baseline")
+                baseline_request = ExperimentCreateRequest(
+                    run_id=run_id,
+                    config=request.config,
+                    parameter_space=request.parameter_space,
+                    proposal=None,
+                )
+                db = SessionLocal()
+                try:
+                    baseline_experiment = create_experiment(db, baseline_request)
+                    if baseline_experiment is None:
+                        raise ValueError("Failed to create baseline experiment")
+                finally:
+                    db.close()
+                _update_task(task_id, current_experiment_id=baseline_experiment.id, current_round=0)
+                _append_task_log(task_id, f"Baseline created: {baseline_experiment.id}")
+                start_experiment_training(baseline_experiment.id)
+                _append_task_log(task_id, f"Baseline training started: {baseline_experiment.id}")
+                baseline_detail = _wait_for_experiment_terminal(
+                    task_id,
+                    baseline_experiment.id,
+                    started_at_monotonic=started_at_monotonic,
+                )
+                if baseline_detail["status"] == "discarded":
+                    raise AutoTrainStoppedError("Baseline experiment was discarded")
+                if baseline_detail["status"] != "success":
+                    raise ValueError(f"Baseline experiment failed with status {baseline_detail['status']}")
         else:
             baseline_request = ExperimentCreateRequest(
                 run_id=run_id,
@@ -457,6 +570,7 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
             "run_id": run_id,
             "baseline": _build_summary_snapshot(baseline_detail),
             "rounds": [],
+            "current_proposal": None,
         }
         _update_task(task_id, summary=summary)
         _append_task_log(task_id, f"Baseline finished: {summary['baseline']['summary']}")
@@ -537,6 +651,8 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
             consecutive_invalid_proposals = 0
 
             proposal_payload = proposal.model_dump()
+            summary["current_proposal"] = proposal_payload
+            _update_task(task_id, summary=summary)
             _append_task_log(task_id, f"Round {round_index}: AI suggested {proposal.hypothesis}")
 
             db = SessionLocal()
@@ -587,6 +703,7 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                     "result": _build_summary_snapshot(current_experiment_detail),
                 }
             )
+            summary["current_proposal"] = proposal_payload
             _update_task(task_id, summary=summary)
             _append_task_log(task_id, f"Round {round_index}: {summary['rounds'][-1]['result']['summary']}")
             if current_experiment_detail.get("decision") == "keep":
@@ -626,13 +743,25 @@ def start_auto_train_task(request: AutoTrainStartRequest) -> AutoTrainTaskRespon
     """Start one background auto-train task."""
     _ensure_no_active_task()
     task_id = f"auto_{uuid4().hex[:8]}"
+    created_at = _now_iso()
     task_payload = {
         "task_id": task_id,
+        "title": request.title or request.run_name,
         "status": "queued",
+        "dataset": request.dataset,
+        "model_name": request.model_name,
+        "policy_preset": request.policy_preset,
+        "search_scope_summary": _build_search_scope_summary(request.config),
         "run_id": request.run_id,
+        "source_task_type": request.source_task_type,
+        "source_task_id": request.source_task_id,
+        "source_task_title": request.source_task_title,
+        "source_model_name": request.source_model_name,
         "current_round": 0,
         "elapsed_seconds": 0.0,
         "current_experiment_id": None,
+        "created_at": created_at,
+        "updated_at": created_at,
         "logs": [],
         "summary": None,
         "error": None,
@@ -650,6 +779,7 @@ def start_auto_train_task(request: AutoTrainStartRequest) -> AutoTrainTaskRespon
     }
     with AUTO_TRAIN_LOCK:
         AUTO_TRAIN_TASKS[task_id] = task_payload
+    upsert_task_payload("auto_train", task_payload)
     AUTO_TRAIN_EXECUTOR.submit(_run_auto_train_task, task_id, request)
     return AutoTrainTaskResponse.model_validate(task_payload)
 
@@ -670,22 +800,78 @@ def get_active_auto_train_task() -> AutoTrainTaskResponse | None:
             ),
             None,
         )
-        if active_task is None:
+        payload = deepcopy(active_task) if active_task is not None else None
+    if payload is None:
+        payload = get_active_task_payload("auto_train")
+        if payload is None:
             return None
-        payload = deepcopy(active_task)
     return AutoTrainTaskResponse.model_validate(payload)
+
+
+def list_auto_train_tasks() -> list[TaskHistoryItemResponse]:
+    """Return compact auto-train task history items sorted by recency."""
+    history_items: list[TaskHistoryItemResponse] = []
+    for task in list_task_payloads("auto_train"):
+        title = task.get("title") or task.get("model_name") or task["task_id"]
+        summary = _normalize_auto_train_history_summary(task)
+        history_items.append(
+            TaskHistoryItemResponse(
+                task_id=task["task_id"],
+                task_type="auto_train",
+                title=title,
+                status=task["status"],
+                summary=summary,
+                dataset=task.get("dataset"),
+                model_name=task.get("model_name"),
+                policy_preset=task.get("policy_preset"),
+                run_id=task.get("run_id"),
+                source_task_type=task.get("source_task_type"),
+                source_task_id=task.get("source_task_id"),
+                source_task_title=task.get("source_task_title"),
+                source_model_name=task.get("source_model_name"),
+                created_at=task.get("created_at"),
+                updated_at=task.get("updated_at"),
+            )
+        )
+    return history_items
+
+
+def update_auto_train_task_title(task_id: str, title: str) -> AutoTrainTaskResponse | None:
+    """Update one auto-train task title."""
+    normalized_title = title.strip()
+    if not normalized_title:
+        return None
+    _update_task(task_id, title=normalized_title)
+    return _snapshot_task(task_id)
 
 
 def stop_auto_train_task(task_id: str) -> AutoTrainTaskResponse | None:
     """Request stop for one running auto-train task."""
     with AUTO_TRAIN_LOCK:
         task = AUTO_TRAIN_TASKS.get(task_id)
-        if task is None:
-            return None
-        task["stop_requested"] = True
-        if task["status"] in {"queued", "running"}:
-            task["status"] = "stopping"
-        current_experiment_id = task.get("current_experiment_id")
+        if task is not None:
+            task["stop_requested"] = True
+            if task["status"] == "queued":
+                task["status"] = "stopped"
+                task["current_experiment_id"] = None
+                task["stop_reason"] = "Stopped by user request."
+            elif task["status"] in {"running", "stopping"}:
+                task["status"] = "stopping"
+            payload = deepcopy(task)
+            current_experiment_id = task.get("current_experiment_id")
+        else:
+            payload = get_task_payload("auto_train", task_id)
+            if payload is None:
+                return None
+            payload["stop_requested"] = True
+            if payload.get("status") == "queued":
+                payload["status"] = "stopped"
+                payload["current_experiment_id"] = None
+                payload["stop_reason"] = "Stopped by user request."
+            elif payload.get("status") in {"running", "stopping"}:
+                payload["status"] = "stopping"
+            current_experiment_id = None
+    upsert_task_payload("auto_train", payload)
     if current_experiment_id:
         try:
             stop_experiment_training(current_experiment_id)
