@@ -1,34 +1,42 @@
 # AutoVisionLab
 
-工业视觉实验平台。当前实现聚焦图像分类，提供结构化实验、后台自动搜索和跨模型比较。
+Industrial vision experimentation platform. The current implementation focuses on image classification and provides structured experiments, background auto-search, and cross-model comparison.
 
-English version: [README.en.md](README.en.md)
+English | [中文](README.zh.md)
 
-## 项目概览
+![React](https://img.shields.io/badge/Frontend-React-61DAFB?logo=react&logoColor=white)
+![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688?logo=fastapi&logoColor=white)
+![PyTorch](https://img.shields.io/badge/Training-PyTorch-EE4C2C?logo=pytorch&logoColor=white)
+![SQLite](https://img.shields.io/badge/Database-SQLite-003B57?logo=sqlite&logoColor=white)
+![Classification](https://img.shields.io/badge/Task-Classification-2E7D32)
 
-AutoVisionLab 以 `run` 为实验容器，以 `experiment` 为单次训练记录，以 `task` 为后台编排单元，以结构化 `proposal`、`result` 和 `reflection` 连接 AI 搜索、训练和复盘。
+## Overview
 
-当前实现包含：
+AutoVisionLab uses `run` as the experiment container, `experiment` as the unit of training history, `task` as the background orchestration unit, and structured `proposal`, `result`, and `reflection` objects to connect AI search, training, and review.
 
-- 图像分类训练闭环
-- 结构化 `model_recipe`、`train_hyp`、`dataset_recipe`
-- 白名单参数空间与搜索策略校验
-- `Auto Train` 后台持续搜索
-- `Compare Models` 后台跨模型 baseline 比较
-- SQLite 元数据存储与本地产物落盘
+Current implementation includes:
 
-## 当前支持
+- Image-classification training loop
+- Structured `model_recipe`, `train_hyp`, and `dataset_recipe`
+- Whitelisted parameter spaces and search-policy validation
+- Background `Auto Train`
+- Background `Compare Models`
+- SQLite metadata storage and local artifact persistence
 
-- 前端：`React`
-- 后端：`FastAPI`
-- 训练框架：`PyTorch`
-- 数据库：`SQLite`
-- 当前模型：`MobileNetV2`、`MobileNetV3 Small`、`GoogLeNet`、`ResNet18`
-- 当前任务类型：`classification`
+## Scope
 
-## 数据与产物
+| Item | Value |
+| --- | --- |
+| Frontend | `React` |
+| Backend | `FastAPI` |
+| Training | `PyTorch` |
+| Database | `SQLite` |
+| Task type | `classification` |
+| Supported models | `MobileNetV2`, `MobileNetV3 Small`, `GoogLeNet`, `ResNet18` |
 
-分类数据使用以下目录：
+## Data and Artifacts
+
+Classification data uses:
 
 ```text
 data/
@@ -41,12 +49,12 @@ data/
       test.txt
 ```
 
-训练产物写入本地目录：
+Training artifacts are written locally:
 
 - `artifacts/runs/<run_id>.log`
 - `artifacts/checkpoints/<experiment_id>.pt`
 
-## 快速开始
+## Quick Start
 
 ```bash
 python3 -m venv .venv
@@ -59,12 +67,12 @@ npm install
 ./scripts/run_frontend.sh
 ```
 
-默认地址：
+Default endpoints:
 
 - Backend: `http://127.0.0.1:8000`
 - Frontend: `http://127.0.0.1:5173`
 
-## 文档导航
+## Documentation
 
 - [docs/overview.md](docs/overview.md)
 - [docs/api.md](docs/api.md)
