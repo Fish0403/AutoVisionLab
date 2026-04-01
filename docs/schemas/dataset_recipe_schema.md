@@ -92,7 +92,8 @@ metadata:
 当前数据目录规则见：
 
 - [../policies/experiment_policy.md](../policies/experiment_policy.md)
-- [data/README.md](../data/README.md)
+
+本地数据准备补充说明如果存在，建议单独维护在 `data/README.md`，但默认不作为共享主文档引用。
 
 后续建议演进为：
 

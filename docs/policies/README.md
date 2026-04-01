@@ -34,5 +34,5 @@
 
 - 上层定位见 [../plan.md](../plan.md)
 - 执行状态见 [../tasks.md](../tasks.md)
-- 结构化对象见 [../schemas.md](../schemas.md)
+- 结构化对象见 [../schemas/README.md](../schemas/README.md)
 - HTTP 接口见 [../api.md](../api.md)

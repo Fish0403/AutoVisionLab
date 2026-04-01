@@ -23,7 +23,7 @@ AutoVisionLab 是一个面向图像分类实验的自主训练 Web 平台。
 当前任务范围：
 
 - 任务类型：图像分类
-- 前端：`Streamlit`
+- 前端：`React`
 - 后端：`FastAPI + SQLAlchemy + Pydantic`
 - 训练框架：`PyTorch`
 - 数据库：`SQLite`
@@ -337,5 +337,5 @@ data/
   - 跨模型 baseline 比较与公平比较口径
 - [docs/policies/ranking_policy.md](policies/ranking_policy.md)
   - Ranking Policy 与成本 gate
-- [CHANGELOG.md](../CHANGELOG.md)
-  - 历史变更记录
+
+本地变更笔记如果需要，可以单独维护在 `CHANGELOG.md`，但默认不作为共享主文档。

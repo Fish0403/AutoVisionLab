@@ -21,7 +21,7 @@
 
 ### 平台骨架
 
-- `FastAPI` 后端、`Streamlit` 前端、本地启动脚本已就位
+- `FastAPI` 后端、`React` 前端、本地启动脚本已就位
 - `SQLite` 持久化已接入
 - `runs / experiments / results` 基础链路已打通
 
