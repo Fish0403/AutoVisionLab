@@ -20,6 +20,7 @@ from app.services.model_compare_service import (
     _build_compare_config,
     _build_compare_summary_prompt,
     _try_attach_compare_ai_summary,
+    delete_model_compare_task,
     list_model_compare_tasks,
     start_model_compare_task,
 )
@@ -183,6 +184,69 @@ class ModelCompareServiceTest(unittest.TestCase):
 
         self.assertEqual(len(history_items), 1)
         self.assertEqual(history_items[0].summary, "GoogLeNet leads with 91.8% Top1 at 3.23 ms latency.")
+
+    def test_delete_model_compare_task_cascades_linked_search_tasks(self) -> None:
+        MODEL_COMPARE_TASKS["cmp_1"] = {
+            "task_id": "cmp_1",
+            "status": "stopped",
+            "owned_run_ids": ["run_cmp_1", "run_cmp_2"],
+            "summary": {"candidate_results": []},
+        }
+
+        with (
+            patch(
+                "app.services.model_compare_service.get_task_payload",
+                return_value={
+                    "task_id": "cmp_1",
+                    "status": "stopped",
+                    "owned_run_ids": ["run_cmp_1", "run_cmp_2"],
+                    "summary": {"candidate_results": []},
+                },
+            ),
+            patch(
+                "app.services.model_compare_service.list_task_payloads",
+                return_value=[
+                    {
+                        "task_id": "auto_1",
+                        "status": "stopped",
+                        "source_task_type": "model_compare",
+                        "source_task_id": "cmp_1",
+                    }
+                ],
+            ),
+            patch(
+                "app.services.model_compare_service.delete_auto_train_task",
+                return_value={
+                    "deleted_tasks": 1,
+                    "deleted_runs": 0,
+                    "deleted_experiments": 0,
+                    "deleted_results": 0,
+                    "deleted_artifact_files": 0,
+                },
+            ),
+            patch(
+                "app.services.model_compare_service.clear_run_records",
+                side_effect=[
+                    {"deleted_runs": 1, "deleted_experiments": 2, "deleted_results": 3, "deleted_artifact_files": 4},
+                    {"deleted_runs": 1, "deleted_experiments": 1, "deleted_results": 1, "deleted_artifact_files": 1},
+                ],
+            ),
+            patch("app.services.model_compare_service.delete_task_payload", return_value=True),
+        ):
+            deleted_counts = delete_model_compare_task("cmp_1")
+
+        self.assertEqual(
+            deleted_counts,
+            {
+                "deleted_tasks": 1,
+                "deleted_search_tasks": 1,
+                "deleted_runs": 2,
+                "deleted_experiments": 3,
+                "deleted_results": 4,
+                "deleted_artifact_files": 5,
+            },
+        )
+        self.assertNotIn("cmp_1", MODEL_COMPARE_TASKS)
 
 
 if __name__ == "__main__":

@@ -66,3 +66,7 @@ export function postJson<T>(path: string, body?: unknown) {
     body: body === undefined ? undefined : JSON.stringify(body)
   });
 }
+
+export function deleteJson<T>(path: string) {
+  return request<T>(path, { method: "DELETE" });
+}

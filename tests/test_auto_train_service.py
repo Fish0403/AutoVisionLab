@@ -24,6 +24,7 @@ from app.services.auto_train_service import (
     _load_latest_search_policy_for_run,
     _normalize_auto_train_history_summary,
     _try_attach_final_proposal,
+    delete_auto_train_task,
     stop_auto_train_task,
 )
 
@@ -390,6 +391,32 @@ class AutoTrainServiceTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "still stopping"):
             _ensure_no_active_task()
+
+    def test_delete_auto_train_task_removes_owned_runs(self) -> None:
+        AUTO_TRAIN_TASKS["task_1"] = {
+            "task_id": "task_1",
+            "status": "stopped",
+            "owned_run_ids": ["run_a"],
+        }
+
+        with (
+            patch("app.services.auto_train_service.get_task_payload", return_value={"task_id": "task_1", "status": "stopped", "owned_run_ids": ["run_a"]}),
+            patch("app.services.auto_train_service.clear_run_records", return_value={"deleted_runs": 1, "deleted_experiments": 2, "deleted_results": 3, "deleted_artifact_files": 4}),
+            patch("app.services.auto_train_service.delete_task_payload", return_value=True),
+        ):
+            deleted_counts = delete_auto_train_task("task_1")
+
+        self.assertEqual(
+            deleted_counts,
+            {
+                "deleted_tasks": 1,
+                "deleted_runs": 1,
+                "deleted_experiments": 2,
+                "deleted_results": 3,
+                "deleted_artifact_files": 4,
+            },
+        )
+        self.assertNotIn("task_1", AUTO_TRAIN_TASKS)
 
 
 if __name__ == "__main__":

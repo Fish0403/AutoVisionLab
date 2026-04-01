@@ -22,6 +22,7 @@ from app.schemas.run import (
     TaskTitleUpdateRequest,
 )
 from app.services.auto_train_service import (
+    delete_auto_train_task,
     get_active_auto_train_task,
     get_auto_train_task,
     list_auto_train_tasks,
@@ -30,6 +31,7 @@ from app.services.auto_train_service import (
     update_auto_train_task_title,
 )
 from app.services.model_compare_service import (
+    delete_model_compare_task,
     get_active_model_compare_task,
     get_model_compare_task,
     list_model_compare_tasks,
@@ -70,6 +72,24 @@ def update_task_title(task_type: str, task_id: str, request: TaskTitleUpdateRequ
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return build_success_response({"task_id": task.task_id, "title": task.title or request.title}, message="Task title updated.")
+
+
+@router.delete("/tasks/{task_type}/{task_id}", response_model=ApiResponse[dict[str, int]])
+def delete_task(task_type: str, task_id: str) -> ApiResponse[dict[str, int]]:
+    """Delete one task and any task-owned records that can be safely removed."""
+    try:
+        if task_type == "auto_train":
+            deleted_counts = delete_auto_train_task(task_id)
+        elif task_type == "model_compare":
+            deleted_counts = delete_model_compare_task(task_id)
+        else:
+            raise HTTPException(status_code=404, detail="Task type not found")
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+    if deleted_counts is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return build_success_response(deleted_counts, message="Task deleted.")
 
 
 @router.post("/model-compare", response_model=ApiResponse[ModelCompareTaskResponse], status_code=202)

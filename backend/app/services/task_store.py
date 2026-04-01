@@ -74,6 +74,17 @@ def get_task_payload(task_type: str, task_id: str) -> dict[str, Any] | None:
         return deepcopy(stored_task.payload)
 
 
+def delete_task_payload(task_type: str, task_id: str) -> bool:
+    """Delete one persisted task snapshot by identifier."""
+    with SessionLocal() as db:
+        stored_task = db.get(BackgroundTaskModel, task_id)
+        if stored_task is None or stored_task.task_type != task_type:
+            return False
+        db.delete(stored_task)
+        db.commit()
+        return True
+
+
 def list_task_payloads(task_type: str) -> list[dict[str, Any]]:
     """Return all persisted task snapshots of the given type."""
     with SessionLocal() as db:

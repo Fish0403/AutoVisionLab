@@ -955,6 +955,15 @@ thead th {
   min-width: 0;
 }
 
+.history-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+  position: relative;
+}
+
 .history-card-new .history-card-top {
   justify-items: center;
 }
@@ -1037,10 +1046,78 @@ thead th {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
-  margin-left: auto;
   white-space: nowrap;
   min-height: 30px;
   text-align: right;
+}
+
+.history-menu {
+  position: relative;
+}
+
+.history-menu-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.history-menu-button:hover {
+  color: var(--text-main);
+  background: #f6f8fc;
+}
+
+.history-menu-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 10;
+  display: grid;
+  gap: 2px;
+  min-width: 118px;
+  padding: 6px;
+  border: 1px solid #e2e8f4;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+}
+
+.history-menu-item {
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-main);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.2;
+  text-align: left;
+  cursor: pointer;
+  padding: 9px 10px;
+}
+
+.history-menu-item:hover {
+  background: #f6f8fc;
+}
+
+.history-menu-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.history-menu-item-danger {
+  color: #b05151;
 }
 
 .history-copy {

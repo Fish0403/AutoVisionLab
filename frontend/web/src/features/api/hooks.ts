@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 
-import { getJson, postJson } from "../../lib/api";
+import { deleteJson, getJson, postJson } from "../../lib/api";
 import type {
   AutoTrainTask,
   DatasetSummary,
@@ -159,5 +159,12 @@ export function useRenameTaskTitle() {
   return useMutation({
     mutationFn: ({ taskId, taskType, title }: { taskId: string; taskType: "auto_train" | "model_compare"; title: string }) =>
       postJson<{ task_id: string; title: string }>(`/runs/tasks/${taskType}/${taskId}/title`, { title })
+  });
+}
+
+export function useDeleteTask() {
+  return useMutation({
+    mutationFn: ({ taskId, taskType }: { taskId: string; taskType: "auto_train" | "model_compare" }) =>
+      deleteJson<{ deleted_tasks: number; deleted_search_tasks?: number; deleted_runs: number }>(`/runs/tasks/${taskType}/${taskId}`)
   });
 }

@@ -25,14 +25,14 @@ from app.schemas.parameter_space import (
     build_train_hyp_change_payload,
 )
 from app.schemas.run import AutoTrainStartRequest, AutoTrainTaskResponse, RunCreateRequest, TaskHistoryItemResponse
-from app.services.persistence import create_experiment, create_run, get_experiment_detail, get_run_detail
+from app.services.persistence import clear_run_records, create_experiment, create_run, get_experiment_detail, get_run_detail
 from app.services.proposal_service import generate_aihubmix_proposal, get_run_history_payload
 from app.services.run_policy import (
     get_default_run_policy,
     require_non_basic_change_after_warmup_rounds,
     should_stop_after_dimension_coverage,
 )
-from app.services.task_store import get_active_task_payload, get_task_payload, list_task_payloads, upsert_task_payload
+from app.services.task_store import delete_task_payload, get_active_task_payload, get_task_payload, list_task_payloads, upsert_task_payload
 from app.services.training_runner import start_experiment_training, stop_experiment_training
 
 
@@ -109,6 +109,29 @@ def _record_provider_usage(task_id: str, provider_metadata: dict) -> None:
         task["provider_completion_tokens_total"] = int(task.get("provider_completion_tokens_total") or 0) + completion_tokens
         task["provider_total_tokens_total"] = int(task.get("provider_total_tokens_total") or 0) + total_tokens
         payload = deepcopy(task)
+    upsert_task_payload("auto_train", payload)
+
+
+def _append_owned_run(task_id: str, run_id: str) -> None:
+    """Attach one task-owned run identifier for later cleanup."""
+    with AUTO_TRAIN_LOCK:
+        task = AUTO_TRAIN_TASKS.get(task_id)
+        if task is not None:
+            owned_run_ids = list(task.get("owned_run_ids") or [])
+            if run_id not in owned_run_ids:
+                owned_run_ids.append(run_id)
+            task["owned_run_ids"] = owned_run_ids
+            task["updated_at"] = _now_iso()
+            payload = deepcopy(task)
+        else:
+            payload = get_task_payload("auto_train", task_id)
+            if payload is None:
+                return
+            owned_run_ids = list(payload.get("owned_run_ids") or [])
+            if run_id not in owned_run_ids:
+                owned_run_ids.append(run_id)
+            payload["owned_run_ids"] = owned_run_ids
+            payload["updated_at"] = _now_iso()
     upsert_task_payload("auto_train", payload)
 
 
@@ -497,6 +520,8 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                 )
                 run_id = run_detail.id
             _update_task(task_id, run_id=run_id)
+            if not request.run_id:
+                _append_owned_run(task_id, run_id)
         finally:
             db.close()
 
@@ -776,6 +801,7 @@ def start_auto_train_task(request: AutoTrainStartRequest) -> AutoTrainTaskRespon
         "provider_prompt_tokens_total": 0,
         "provider_completion_tokens_total": 0,
         "provider_total_tokens_total": 0,
+        "owned_run_ids": [],
     }
     with AUTO_TRAIN_LOCK:
         AUTO_TRAIN_TASKS[task_id] = task_payload
@@ -878,3 +904,44 @@ def stop_auto_train_task(task_id: str) -> AutoTrainTaskResponse | None:
         except ValueError:
             pass
     return _snapshot_task(task_id)
+
+
+def delete_auto_train_task(task_id: str) -> dict[str, int] | None:
+    """Delete one stopped auto-train task and its task-owned runs."""
+    task_snapshot = _snapshot_task(task_id)
+    if task_snapshot is None:
+        return None
+    if task_snapshot.status in {"queued", "running", "stopping"}:
+        raise ValueError("Active search tasks must be stopped before deletion.")
+
+    payload = get_task_payload("auto_train", task_id)
+    if payload is None:
+        return None
+
+    deleted_runs = 0
+    deleted_experiments = 0
+    deleted_results = 0
+    deleted_artifact_files = 0
+    for run_id in list(dict.fromkeys(payload.get("owned_run_ids") or [])):
+        db = SessionLocal()
+        try:
+            deleted_counts = clear_run_records(db, run_id)
+        finally:
+            db.close()
+        if deleted_counts is None:
+            continue
+        deleted_runs += deleted_counts.get("deleted_runs", 0)
+        deleted_experiments += deleted_counts.get("deleted_experiments", 0)
+        deleted_results += deleted_counts.get("deleted_results", 0)
+        deleted_artifact_files += deleted_counts.get("deleted_artifact_files", 0)
+
+    with AUTO_TRAIN_LOCK:
+        AUTO_TRAIN_TASKS.pop(task_id, None)
+    delete_task_payload("auto_train", task_id)
+    return {
+        "deleted_tasks": 1,
+        "deleted_runs": deleted_runs,
+        "deleted_experiments": deleted_experiments,
+        "deleted_results": deleted_results,
+        "deleted_artifact_files": deleted_artifact_files,
+    }

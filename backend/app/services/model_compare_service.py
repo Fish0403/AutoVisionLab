@@ -22,10 +22,10 @@ from app.schemas.run import (
     RunCreateRequest,
     TaskHistoryItemResponse,
 )
-from app.services.auto_train_service import get_active_auto_train_task
+from app.services.auto_train_service import delete_auto_train_task, get_active_auto_train_task
 from app.services.parameter_space import get_parameter_space
-from app.services.persistence import create_experiment, create_run, get_experiment_detail
-from app.services.task_store import get_active_task_payload, get_task_payload, list_task_payloads, upsert_task_payload
+from app.services.persistence import clear_run_records, create_experiment, create_run, get_experiment_detail
+from app.services.task_store import delete_task_payload, get_active_task_payload, get_task_payload, list_task_payloads, upsert_task_payload
 from app.services.training_runner import start_experiment_training, stop_experiment_training
 
 
@@ -68,6 +68,29 @@ def _update_task(task_id: str, **updates) -> None:
             if payload is None:
                 return
             payload.update(updates)
+            payload["updated_at"] = _now_iso()
+    upsert_task_payload("model_compare", payload)
+
+
+def _append_owned_run(task_id: str, run_id: str) -> None:
+    """Attach one compare-owned run identifier for later cleanup."""
+    with MODEL_COMPARE_LOCK:
+        task = MODEL_COMPARE_TASKS.get(task_id)
+        if task is not None:
+            owned_run_ids = list(task.get("owned_run_ids") or [])
+            if run_id not in owned_run_ids:
+                owned_run_ids.append(run_id)
+            task["owned_run_ids"] = owned_run_ids
+            task["updated_at"] = _now_iso()
+            payload = deepcopy(task)
+        else:
+            payload = get_task_payload("model_compare", task_id)
+            if payload is None:
+                return
+            owned_run_ids = list(payload.get("owned_run_ids") or [])
+            if run_id not in owned_run_ids:
+                owned_run_ids.append(run_id)
+            payload["owned_run_ids"] = owned_run_ids
             payload["updated_at"] = _now_iso()
     upsert_task_payload("model_compare", payload)
 
@@ -338,6 +361,7 @@ def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> 
                         ),
                     )
                     run_id = run_detail.id
+                    _append_owned_run(task_id, run_id)
                     experiment_detail = create_experiment(
                         db,
                         ExperimentCreateRequest(
@@ -490,6 +514,7 @@ def start_model_compare_task(request: ModelCompareStartRequest) -> ModelCompareT
         "error": None,
         "stop_requested": False,
         "stop_reason": None,
+        "owned_run_ids": [],
     }
     with MODEL_COMPARE_LOCK:
         MODEL_COMPARE_TASKS[task_id] = task_payload
@@ -588,3 +613,83 @@ def stop_model_compare_task(task_id: str) -> ModelCompareTaskResponse | None:
         except ValueError:
             pass
     return _snapshot_task(task_id)
+
+
+def delete_model_compare_task(task_id: str) -> dict[str, int] | None:
+    """Delete one stopped compare task, linked searches, and compare-owned runs."""
+    task_snapshot = _snapshot_task(task_id)
+    if task_snapshot is None:
+        return None
+    if task_snapshot.status in {"queued", "running", "stopping"}:
+        raise ValueError("Active compare tasks must be stopped before deletion.")
+
+    payload = get_task_payload("model_compare", task_id)
+    if payload is None:
+        return None
+
+    linked_search_payloads = [
+        search_task
+        for search_task in list_task_payloads("auto_train")
+        if search_task.get("source_task_type") == "model_compare" and search_task.get("source_task_id") == task_id
+    ]
+    active_linked_search = next(
+        (
+            search_task
+            for search_task in linked_search_payloads
+            if search_task.get("status") in {"queued", "running", "stopping"}
+        ),
+        None,
+    )
+    if active_linked_search is not None:
+        raise ValueError("Stop linked search tasks before deleting this compare task.")
+
+    deleted_tasks = 1
+    deleted_search_tasks = 0
+    deleted_runs = 0
+    deleted_experiments = 0
+    deleted_results = 0
+    deleted_artifact_files = 0
+
+    for search_task in linked_search_payloads:
+        deleted_counts = delete_auto_train_task(str(search_task["task_id"]))
+        if deleted_counts is None:
+            continue
+        deleted_search_tasks += deleted_counts.get("deleted_tasks", 0)
+        deleted_runs += deleted_counts.get("deleted_runs", 0)
+        deleted_experiments += deleted_counts.get("deleted_experiments", 0)
+        deleted_results += deleted_counts.get("deleted_results", 0)
+        deleted_artifact_files += deleted_counts.get("deleted_artifact_files", 0)
+
+    owned_run_ids = list(dict.fromkeys(payload.get("owned_run_ids") or []))
+    if not owned_run_ids:
+        summary_payload = payload.get("summary") or {}
+        candidate_results = summary_payload.get("candidate_results") if isinstance(summary_payload, dict) else []
+        for candidate in candidate_results or []:
+            run_id = candidate.get("run_id") if isinstance(candidate, dict) else None
+            if isinstance(run_id, str) and run_id not in owned_run_ids:
+                owned_run_ids.append(run_id)
+
+    for run_id in owned_run_ids:
+        db = SessionLocal()
+        try:
+            deleted_counts = clear_run_records(db, run_id)
+        finally:
+            db.close()
+        if deleted_counts is None:
+            continue
+        deleted_runs += deleted_counts.get("deleted_runs", 0)
+        deleted_experiments += deleted_counts.get("deleted_experiments", 0)
+        deleted_results += deleted_counts.get("deleted_results", 0)
+        deleted_artifact_files += deleted_counts.get("deleted_artifact_files", 0)
+
+    with MODEL_COMPARE_LOCK:
+        MODEL_COMPARE_TASKS.pop(task_id, None)
+    delete_task_payload("model_compare", task_id)
+    return {
+        "deleted_tasks": deleted_tasks,
+        "deleted_search_tasks": deleted_search_tasks,
+        "deleted_runs": deleted_runs,
+        "deleted_experiments": deleted_experiments,
+        "deleted_results": deleted_results,
+        "deleted_artifact_files": deleted_artifact_files,
+    }
