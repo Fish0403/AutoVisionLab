@@ -25,6 +25,12 @@ AutoVisionLab 以 `run` 为实验容器，以 `experiment` 为单次训练记录
 - `Compare Models` 后台跨模型 baseline 比较
 - SQLite 元数据存储与本地产物落盘
 
+![Task 页](docs/screenshots/task-page.png)
+
+![Search 模式页](docs/screenshots/search-mode.png)
+
+![Compare 模式页](docs/screenshots/compare-mode.png)
+
 ## 数据与产物
 
 分类数据分成两层：
@@ -89,6 +95,12 @@ python3 data/prepare_classification_split.py \
 
 - Backend: `http://127.0.0.1:8000`
 - Frontend: `http://127.0.0.1:5173`
+
+环境配置：
+
+- 复制 `.env.example` 为 `.env`
+- 启动后先把 API key、模型和 base URL 配好
+- 直接参考 `.env.example` 里的示例值开始填
 
 ## 文档导航
 

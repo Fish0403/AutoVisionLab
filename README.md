@@ -25,6 +25,12 @@ Current implementation includes:
 - Background `Compare Models`
 - SQLite metadata storage and local artifact persistence
 
+![Task page](docs/screenshots/task-page.png)
+
+![Search mode](docs/screenshots/search-mode.png)
+
+![Compare mode](docs/screenshots/compare-mode.png)
+
 ## Data and Artifacts
 
 Classification data is prepared in two layers:
@@ -89,6 +95,12 @@ Default endpoints:
 
 - Backend: `http://127.0.0.1:8000`
 - Frontend: `http://127.0.0.1:5173`
+
+Environment configuration:
+
+- Copy `.env.example` to `.env`
+- Configure the API key, model, and base URL before starting the backend
+- Use the values shown in `.env.example` as the starting point
 
 ## Documentation
 
