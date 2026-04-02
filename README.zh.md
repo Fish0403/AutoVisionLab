@@ -1,11 +1,19 @@
+<div align="center">
+
 # AutoVisionLab
 
-[English](README.md) | 中文
+<p>用 AI 自动化计算机视觉模型优化流程，构建实验分析工作流。</p>
 
-![React](https://img.shields.io/badge/前端-React-61DAFB?logo=react&logoColor=white)
-![FastAPI](https://img.shields.io/badge/后端-FastAPI-009688?logo=fastapi&logoColor=white)
-![PyTorch](https://img.shields.io/badge/训练-PyTorch-EE4C2C?logo=pytorch&logoColor=white)
-![SQLite](https://img.shields.io/badge/数据库-SQLite-003B57?logo=sqlite&logoColor=white)
+<p><a href="README.md">English</a> | 中文</p>
+
+<p>
+  <img src="https://img.shields.io/badge/前端-React-61DAFB?logo=react&logoColor=white" alt="React" />
+  <img src="https://img.shields.io/badge/后端-FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/训练-PyTorch-EE4C2C?logo=pytorch&logoColor=white" alt="PyTorch" />
+  <img src="https://img.shields.io/badge/数据库-SQLite-003B57?logo=sqlite&logoColor=white" alt="SQLite" />
+</p>
+
+</div>
 
 工业视觉里的模型优化，很多时候仍然是偏手工的工作：调参数、跑实验、看结果、再改一轮。真正耗时的往往不是问题本身，而是重复试验、零散对比和来回切换工具。
 

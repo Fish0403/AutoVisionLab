@@ -1,11 +1,19 @@
+<div align="center">
+
 # AutoVisionLab
 
-English | [中文](README.zh.md)
+<p>AI-powered automation for computer vision model optimization and experiment analysis workflows.</p>
 
-![React](https://img.shields.io/badge/Frontend-React-61DAFB?logo=react&logoColor=white)
-![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688?logo=fastapi&logoColor=white)
-![PyTorch](https://img.shields.io/badge/Training-PyTorch-EE4C2C?logo=pytorch&logoColor=white)
-![SQLite](https://img.shields.io/badge/Database-SQLite-003B57?logo=sqlite&logoColor=white)
+<p>English | <a href="README.zh.md">中文</a></p>
+
+<p>
+  <img src="https://img.shields.io/badge/Frontend-React-61DAFB?logo=react&logoColor=white" alt="React" />
+  <img src="https://img.shields.io/badge/Backend-FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/Training-PyTorch-EE4C2C?logo=pytorch&logoColor=white" alt="PyTorch" />
+  <img src="https://img.shields.io/badge/Database-SQLite-003B57?logo=sqlite&logoColor=white" alt="SQLite" />
+</p>
+
+</div>
 
 Industrial vision model optimization still involves a lot of manual work: tuning parameters, running experiments, checking results, and iterating again. The real cost is often not the problem itself, but the repetition, scattered comparisons, and constant tool switching.
 
