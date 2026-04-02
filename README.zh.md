@@ -105,6 +105,8 @@ python3 data/prepare_classification_split.py \
 ## 文档导航
 
 - [docs/overview.md](docs/overview.md)
+- [docs/artifacts.md](docs/artifacts.md)
+- [docs/llm.md](docs/llm.md)
 - [docs/api.md](docs/api.md)
 - [docs/schemas/model_recipe.md](docs/schemas/model_recipe.md)
 - [docs/schemas/train_hyp.md](docs/schemas/train_hyp.md)

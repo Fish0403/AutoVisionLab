@@ -58,8 +58,10 @@ python3 data/prepare_classification_split.py \
 
 Training artifacts are written locally:
 
-- `artifacts/runs/<run_id>.log`
-- `artifacts/checkpoints/<experiment_id>.pt`
+- `artifacts/runs/<run_id>/run.log`
+- `artifacts/runs/<run_id>/llm.jsonl`
+- `artifacts/runs/<run_id>/experiments/<experiment_id>/recipe.json`
+- `artifacts/runs/<run_id>/experiments/<experiment_id>/checkpoint.pt`
 
 ## Quick Start
 
@@ -105,6 +107,8 @@ Environment configuration:
 ## Documentation
 
 - [docs/overview.md](docs/overview.md)
+- [docs/artifacts.md](docs/artifacts.md)
+- [docs/llm.md](docs/llm.md)
 - [docs/api.md](docs/api.md)
 - [docs/schemas/model_recipe.md](docs/schemas/model_recipe.md)
 - [docs/schemas/train_hyp.md](docs/schemas/train_hyp.md)
