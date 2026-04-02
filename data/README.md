@@ -94,8 +94,3 @@ data/raw/neu/classification_source/
 之后再运行通用 split 脚本。
 
 ## 当前仓库中的数据
-
-- `data/raw/DT`
-- `data/raw/KDSC`
-- `data/raw/NT`
-- `data/raw/neu`

@@ -85,7 +85,7 @@
 - `model_name` 不可修改
 - `epochs` 不可修改
 - `changes` 至少包含一个非空字段
-- `hypothesis` 和 `reason` 使用简洁中文
+- `hypothesis` 和 `reason` 使用简洁英文
 - 只能使用当前参数空间和白名单字段
 - 结合整个 run 的历史，而不是只看最后一轮
 
@@ -115,7 +115,7 @@
   "task_type": "classification",
   "model_name": "mobilenet_v3_small",
   "based_on_experiment_ids": ["exp_001", "exp_003"],
-  "hypothesis": "适当降低学习率并加强正则化，可能提升验证集稳定性。",
+  "hypothesis": "A slightly lower learning rate with stronger regularization may improve validation stability.",
   "changes": {
     "optimizer": null,
     "learning_rate": 0.0005,
@@ -138,10 +138,33 @@
   },
   "train_hyp_changes": null,
   "recipe_changes": null,
-  "reason": "当前 best 已经收敛到较稳的区间，优先尝试更保守的调参组合。",
+  "reason": "The current best result already sits in a stable range, so a more conservative tuning step is a reasonable next move.",
   "risk": "low"
 }
 ```
+
+## Auto Train 停止摘要通讯
+
+### 目标
+
+当 `Auto Train` 因用户停止或任务结束进入收尾阶段时，系统会为 workspace results panel 生成一段简短英文摘要。
+
+系统提示词要求模型：
+
+- 只返回一个键 `summary_text`
+- 内容客观、英文、简短
+- 不要说自己是 AI
+- 不要给下一步建议
+- 固定覆盖四个方面：
+  - 停止原因和本次搜索范围
+  - 最终领先 experiment 及核心指标
+  - 本轮搜索里效果最好或最稳定的策略
+  - 本轮搜索里无效、不稳定或反复失败的策略
+
+说明：
+
+- 输出仍然保持单段文本，不扩展结构化字段
+- 详细 prompt 约束以代码实现为准
 
 ## Compare Summary 通讯
 
@@ -226,7 +249,7 @@
 
 ```text
 [2026-04-02T08:00:00] [proposal-meta] attempt=1 | history_items=4 | prompt_chars=8124 | prompt_tokens_estimate=2140
-[2026-04-02T08:00:05] [proposal] based_on=exp_001,exp_003 | changed_fields=["learning_rate","weight_decay","scheduler"] | prompt_tokens_estimate=2140 | provider_usage={"prompt_tokens":2140,"completion_tokens":312,"total_tokens":2452} | hypothesis=适当降低学习率并加强正则化，可能提升验证集稳定性。 | changes={"learning_rate":0.0005,"weight_decay":0.0001,"scheduler":"cosine"} | reason=当前 best 已经收敛到较稳的区间，优先尝试更保守的调参组合。
+[2026-04-02T08:00:05] [proposal] based_on=exp_001,exp_003 | changed_fields=["learning_rate","weight_decay","scheduler"] | prompt_tokens_estimate=2140 | provider_usage={"prompt_tokens":2140,"completion_tokens":312,"total_tokens":2452} | hypothesis=A slightly lower learning rate with stronger regularization may improve validation stability. | changes={"learning_rate":0.0005,"weight_decay":0.0001,"scheduler":"cosine"} | reason=The current best result already sits in a stable range, so a more conservative tuning step is a reasonable next move.
 ```
 
 ### `compare summary` 日志示例

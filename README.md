@@ -76,7 +76,7 @@ Training artifacts are written locally:
 2. Install the backend dependencies.
 
    ```bash
-   pip install -r requirements.txt
+   pip install -e ./backend
    ```
 
 3. Install the frontend dependencies.
@@ -103,6 +103,7 @@ Environment configuration:
 - Copy `.env.example` to `.env`
 - Configure the API key, model, and base URL before starting the backend
 - Use the values shown in `.env.example` as the starting point
+- The frontend development server proxies `/api` to the backend, so browser requests can stay on the same origin during local development
 
 ## Documentation
 
@@ -113,5 +114,9 @@ Environment configuration:
 - [docs/schemas/model_recipe.md](docs/schemas/model_recipe.md)
 - [docs/schemas/train_hyp.md](docs/schemas/train_hyp.md)
 - [docs/schemas/dataset_recipe.md](docs/schemas/dataset_recipe.md)
+
+## License
+
+This project is licensed under the [Apache License 2.0](LICENSE).
 
 If this project is useful to you, please leave a star.

@@ -58,8 +58,10 @@ python3 data/prepare_classification_split.py \
 
 训练产物写入本地目录：
 
-- `artifacts/runs/<run_id>.log`
-- `artifacts/checkpoints/<experiment_id>.pt`
+- `artifacts/runs/<run_id>/run.log`
+- `artifacts/runs/<run_id>/llm.jsonl`
+- `artifacts/runs/<run_id>/experiments/<experiment_id>/recipe.json`
+- `artifacts/runs/<run_id>/experiments/<experiment_id>/checkpoint.pt`
 
 ## 快速开始
 
@@ -74,7 +76,7 @@ python3 data/prepare_classification_split.py \
 2. 安装后端依赖。
 
    ```bash
-   pip install -r requirements.txt
+   pip install -e ./backend
    ```
 
 3. 安装前端依赖。
@@ -101,6 +103,7 @@ python3 data/prepare_classification_split.py \
 - 复制 `.env.example` 为 `.env`
 - 启动后先把 API key、模型和 base URL 配好
 - 直接参考 `.env.example` 里的示例值开始填
+- 前端开发服务会把 `/api` 代理到后端，因此本地调试时浏览器请求可以保持同源
 
 ## 文档导航
 
@@ -111,5 +114,9 @@ python3 data/prepare_classification_split.py \
 - [docs/schemas/model_recipe.md](docs/schemas/model_recipe.md)
 - [docs/schemas/train_hyp.md](docs/schemas/train_hyp.md)
 - [docs/schemas/dataset_recipe.md](docs/schemas/dataset_recipe.md)
+
+## 许可
+
+本项目采用 [Apache License 2.0](LICENSE)。
 
 如果这个项目对你有帮助，欢迎点个 star。
