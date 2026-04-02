@@ -46,7 +46,7 @@
 | 字段 | 值 |
 | --- | --- |
 | `task_type` | `classification` |
-| `model_name` | `mobilenet_v2`、`mobilenet_v3_small`、`googlenet`、`resnet18` |
+| `model_name` | `mobilenet_v2`、`mobilenet_v3_small`、`mobilenet_v3_large`、`efficientnet_b0`、`efficientnet_b1`、`googlenet`、`resnet18`、`resnet34`、`resnet50` |
 | `model_family` | `mobilenet`、`googlenet`、`resnet` |
 | `run.status` | `draft`、`active`、`paused`、`completed`、`failed` |
 | `experiment.status` | `draft`、`queued`、`running`、`success`、`failed`、`discarded` |
@@ -98,14 +98,9 @@
 
 ### Run 相关对象
 
-`RunDetailResponse` 和 `RunSummaryResponse` 都包含这些持久化锚点：
+`RunDetailResponse` 和 `RunSummaryResponse` 当前围绕唯一的主搜索状态返回：
 
-- `baseline_experiment_id`
 - `best_experiment_id`
-- `frontier_experiment_id`
-- `best_quality_experiment_id`
-- `best_efficiency_experiment_id`
-- `best_tradeoff_experiment_id`
 
 `AutoTrainTaskResponse` 和 `ModelCompareTaskResponse` 返回任务状态、日志、活动信息、停止状态和 summary 快照。
 

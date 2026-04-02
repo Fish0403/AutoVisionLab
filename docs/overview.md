@@ -15,8 +15,8 @@ AutoVisionLab 是一个面向工业视觉实验的结构化平台。当前实现
 ## 核心对象
 
 - `run`
-  - 维护 `baseline_experiment_id`、`best_experiment_id`、`frontier_experiment_id`
-  - 运行时派生 `best_quality_experiment_id`、`best_efficiency_experiment_id`、`best_tradeoff_experiment_id`
+  - 维护当前唯一主搜索状态 `best_experiment_id`
+  - `baseline` 只作为起点参考保留在实验记录里
 - `experiment`
   - 保存配置、参数空间快照、proposal、result、reflection 和决策状态
 - `task`
@@ -44,7 +44,6 @@ data/
       test.txt
 artifacts/
   runs/
-  checkpoints/
 ```
 
 ## 相关文档

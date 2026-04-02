@@ -113,3 +113,5 @@ Environment configuration:
 - [docs/schemas/model_recipe.md](docs/schemas/model_recipe.md)
 - [docs/schemas/train_hyp.md](docs/schemas/train_hyp.md)
 - [docs/schemas/dataset_recipe.md](docs/schemas/dataset_recipe.md)
+
+If this project is useful to you, please leave a star.

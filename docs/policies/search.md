@@ -38,7 +38,29 @@
 - `allow_strategy_search` 目前存在，但没有对应的可搜索字段
 - `model_module` 是否生效取决于模型的 editable `parameter_space`
 - `GoogLeNet` 主要使用 `aux_logits`
-- `MobileNetV3 Small` 主要使用 `neck_name` 和 `head_name`
+- `MobileNetV2`、`MobileNetV3 Small`、`MobileNetV3 Large`、`EfficientNet-B0`、`EfficientNet-B1`、`ResNet18`、`ResNet34`、`ResNet50` 主要使用 `neck_name` 和 `head_name`
+
+### 当前结构白名单
+
+- `neck_name` 和 `head_name` 的允许值以后端 `parameter_space` 白名单为准
+
+| 模型 | 可搜索结构字段 | `neck_name` 允许值 | `head_name` 允许值 | 备注 |
+| --- | --- | --- | --- | --- |
+| `mobilenet_v2` | `neck_name`, `head_name` | `avg_pool`, `gem_pool` | `native_classifier`, `linear`, `dropout_linear` | 使用当前模型自己的 backbone，不是跨模型复用 head |
+| `mobilenet_v3_small` | `neck_name`, `head_name` | `avg_pool`, `gem_pool` | `native_classifier`, `linear`, `dropout_linear` | 使用当前模型自己的 backbone，不是跨模型复用 head |
+| `mobilenet_v3_large` | `neck_name`, `head_name` | `avg_pool`, `gem_pool` | `native_classifier`, `linear`, `dropout_linear` | 使用当前模型自己的 backbone，不是跨模型复用 head |
+| `efficientnet_b0` | `neck_name`, `head_name` | `avg_pool`, `gem_pool` | `native_classifier`, `linear`, `dropout_linear` | 使用当前模型自己的 backbone，不是跨模型复用 head |
+| `efficientnet_b1` | `neck_name`, `head_name` | `avg_pool`, `gem_pool` | `native_classifier`, `linear`, `dropout_linear` | 使用当前模型自己的 backbone，不是跨模型复用 head |
+| `resnet18` | `neck_name`, `head_name` | `avg_pool`, `gem_pool` | `native_classifier`, `linear`, `dropout_linear` | 使用当前模型自己的 backbone，不是跨模型复用 head |
+| `resnet34` | `neck_name`, `head_name` | `avg_pool`, `gem_pool` | `native_classifier`, `linear`, `dropout_linear` | 使用当前模型自己的 backbone，不是跨模型复用 head |
+| `resnet50` | `neck_name`, `head_name` | `avg_pool`, `gem_pool` | `native_classifier`, `linear`, `dropout_linear` | 使用当前模型自己的 backbone，不是跨模型复用 head |
+| `googlenet` | `aux_logits` | - | - | 当前不开放 `neck_name` / `head_name` 替换 |
+
+| 字段 | 含义 | 当前允许值 |
+| --- | --- | --- |
+| `neck_name` | backbone 输出后的 pooling / neck 类型 | `avg_pool`, `gem_pool` |
+| `head_name` | 当前模型特征后接的分类头类型，不是跨模型复用别的模型 head | `native_classifier`, `linear`, `dropout_linear` |
+| `aux_logits` | GoogLeNet 的辅助分类头开关 | `true`, `false` |
 
 ## Proposal 约束
 

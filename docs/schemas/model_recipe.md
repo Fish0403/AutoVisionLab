@@ -17,7 +17,7 @@
 - `model_family`
   - 例如 `mobilenet`、`googlenet`、`resnet`
 - `base_model`
-  - 例如 `mobilenet_v3_small`、`mobilenet_v2`、`googlenet`、`resnet18`
+  - 例如 `mobilenet_v3_small`、`mobilenet_v3_large`、`mobilenet_v2`、`efficientnet_b0`、`efficientnet_b1`、`googlenet`、`resnet18`、`resnet34`、`resnet50`
 - `nc`
   - 类别数
 - `input_channels`
@@ -57,14 +57,31 @@
 
 - `mobilenet_v2`
   - 直接使用内置分类结构
+  - 当前允许的受限结构字段包括 `neck_name`、`head_name`
+- `efficientnet_b0`
+  - 使用内置分类结构
+  - 当前允许的受限结构字段包括 `neck_name`、`head_name`
+- `efficientnet_b1`
+  - 使用内置分类结构
+  - 当前允许的受限结构字段包括 `neck_name`、`head_name`
 - `mobilenet_v3_small`
-  - 直接使用内置 recipe 模板
-  - 当前允许的受限结构字段包括 `neck_name`、`head_name`、`aux_logits`
+  - 使用内置分类结构
+  - 当前允许的受限结构字段包括 `neck_name`、`head_name`
+- `mobilenet_v3_large`
+  - 使用内置分类结构
+  - 当前允许的受限结构字段包括 `neck_name`、`head_name`
 - `googlenet`
   - 使用内置分类结构
   - `aux_logits` 通过 `modules` 保存
 - `resnet18`
   - 使用内置分类结构
+  - 当前允许的受限结构字段包括 `neck_name`、`head_name`
+- `resnet34`
+  - 使用内置分类结构
+  - 当前允许的受限结构字段包括 `neck_name`、`head_name`
+- `resnet50`
+  - 使用内置分类结构
+  - 当前允许的受限结构字段包括 `neck_name`、`head_name`
 
 ## 当前兼容层
 
@@ -85,8 +102,29 @@
 - `mobilenet_v3_small`
   - `neck_name`
   - `head_name`
+- `mobilenet_v2`
+  - `neck_name`
+  - `head_name`
+- `efficientnet_b0`
+  - `neck_name`
+  - `head_name`
+- `efficientnet_b1`
+  - `neck_name`
+  - `head_name`
 - `googlenet`
   - `aux_logits`
+- `mobilenet_v3_large`
+  - `neck_name`
+  - `head_name`
+- `resnet18`
+  - `neck_name`
+  - `head_name`
+- `resnet34`
+  - `neck_name`
+  - `head_name`
+- `resnet50`
+  - `neck_name`
+  - `head_name`
 - 当前基础超参数和增强字段不在 `model_recipe` 里，而在 `train_hyp` 里
 
 ## 默认模板

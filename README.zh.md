@@ -111,3 +111,5 @@ python3 data/prepare_classification_split.py \
 - [docs/schemas/model_recipe.md](docs/schemas/model_recipe.md)
 - [docs/schemas/train_hyp.md](docs/schemas/train_hyp.md)
 - [docs/schemas/dataset_recipe.md](docs/schemas/dataset_recipe.md)
+
+如果这个项目对你有帮助，欢迎点个 star。
