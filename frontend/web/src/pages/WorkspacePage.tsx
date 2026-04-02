@@ -1,5 +1,5 @@
 import { useQueries, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Link, useOutletContext, useSearchParams } from "react-router-dom";
 
 import { EMPTY_APP_SHELL_HEADER_CONTENT, type AppShellOutletContext } from "../app/AppShell";
@@ -210,19 +210,6 @@ export function WorkspacePage() {
     }));
   }, [currentCompareTask, defaultDataset, selectedTaskId]);
 
-  useEffect(() => {
-    if (formValues.modelName === "mobilenet_v3_small") {
-      return;
-    }
-    if (!formValues.allowModelModuleSearch) {
-      return;
-    }
-    setFormValues((previous) => ({
-      ...previous,
-      allowModelModuleSearch: false
-    }));
-  }, [formValues.allowModelModuleSearch, formValues.modelName]);
-
   const isSearchDraftFromCompare = Boolean(mode === "search" && selectedTaskType === "model_compare" && !currentAutoTask);
   const controlMode: WorkspaceMode = mode;
   const parameterSpaceModelName = controlMode === "compare" ? COMPARE_ANCHOR_MODEL : formValues.modelName;
@@ -275,11 +262,6 @@ export function WorkspacePage() {
 
   const isCompareRunning = Boolean(compareTask && !isCompareTerminalStatus(compareDisplayStatus));
   const isSearchRunning = Boolean(displayAutoTask && !["stopped", "stopped_by_policy", "failed"].includes(displayAutoTask.status));
-  const hasEnabledSearchDimension =
-    formValues.allowBasicHparamSearch ||
-    formValues.allowLossSearch ||
-    formValues.allowAugmentationSearch ||
-    formValues.allowModelModuleSearch;
   const isPrimaryActionBusy =
     startAutoTrainMutation.isPending || startModelCompareMutation.isPending || (controlMode === "compare" ? isCompareRunning : isSearchRunning);
   const controlErrorMessage =
@@ -292,12 +274,16 @@ export function WorkspacePage() {
     null;
 
   const currentSearchRunId = displayAutoTask?.run_id ?? null;
+  const shouldPollSearchArtifacts = Boolean(currentSearchRunId);
   const runDetailQuery = useRunDetail(currentSearchRunId);
   const searchMetricQueries = useQueries({
     queries: SEARCH_TREND_METRICS.map((metric) => ({
       queryKey: ["run-metrics", currentSearchRunId, metric.metricName],
       queryFn: () => getJson<MetricsPayload>(`/runs/${currentSearchRunId}/metrics?metric_name=${metric.metricName}`),
-      enabled: Boolean(currentSearchRunId)
+      enabled: Boolean(currentSearchRunId),
+      refetchIntervalInBackground: true,
+      refetchOnWindowFocus: true,
+      refetchInterval: shouldPollSearchArtifacts ? 2000 : false
     }))
   });
   const runDetail = runDetailQuery.data ?? null;
@@ -310,6 +296,8 @@ export function WorkspacePage() {
       })).filter((series) => series.points.length > 0),
     [searchMetricQueries]
   );
+  const persistedSearchTrendSeries = useMemo(() => buildPersistedSearchTrendSeries(autoTrainSummary), [autoTrainSummary]);
+  const displayedSearchTrendSeries = searchTrendSeries.length > 0 ? searchTrendSeries : persistedSearchTrendSeries;
 
   const recentExperimentIds = useMemo(() => {
     if (!runDetail?.experiments?.length) {
@@ -322,13 +310,18 @@ export function WorkspacePage() {
     queries: recentExperimentIds.map((experimentId) => ({
       queryKey: ["experiment-detail", experimentId],
       queryFn: () => getJson<ExperimentDetail>(`/experiments/${experimentId}`),
-      enabled: Boolean(experimentId)
+      enabled: Boolean(experimentId),
+      refetchIntervalInBackground: true,
+      refetchOnWindowFocus: true,
+      refetchInterval: shouldPollSearchArtifacts ? 2000 : false
     }))
   });
 
   const recentExperiments = recentExperimentQueries
     .map((query) => query.data)
     .filter((experiment): experiment is ExperimentDetail => Boolean(experiment));
+  const persistedRecentExperiments = useMemo(() => buildPersistedRecentExperiments(autoTrainSummary), [autoTrainSummary]);
+  const displayedRecentExperiments = recentExperiments.length > 0 ? recentExperiments : persistedRecentExperiments;
 
   const handleModeSelect = (nextMode: WorkspaceMode) => {
     setMode(nextMode);
@@ -742,63 +735,11 @@ export function WorkspacePage() {
             {controlMode === "search" ? (
               <div className="popover-panel mode-options-panel">
                 <div className="section-heading">
-                  <h3>Search Scope</h3>
+                  <h3>AI Search</h3>
                 </div>
-                <div className="option-stack">
-                  <label className="option-row">
-                    <input
-                      checked={formValues.allowBasicHparamSearch}
-                      onChange={(event) =>
-                        setFormValues((previous) => ({
-                          ...previous,
-                          allowBasicHparamSearch: event.target.checked
-                        }))
-                      }
-                      type="checkbox"
-                    />
-                    <span>Hyperparameter Search</span>
-                  </label>
-                  <label className="option-row">
-                    <input
-                      checked={formValues.allowLossSearch}
-                      onChange={(event) =>
-                        setFormValues((previous) => ({
-                          ...previous,
-                          allowLossSearch: event.target.checked
-                        }))
-                      }
-                      type="checkbox"
-                    />
-                    <span>Loss Search</span>
-                  </label>
-                  <label className="option-row">
-                    <input
-                      checked={formValues.allowAugmentationSearch}
-                      onChange={(event) =>
-                        setFormValues((previous) => ({
-                          ...previous,
-                          allowAugmentationSearch: event.target.checked
-                        }))
-                      }
-                      type="checkbox"
-                    />
-                    <span>Data Augmentation Search</span>
-                  </label>
-                  <label className="option-row">
-                    <input
-                      checked={formValues.allowModelModuleSearch}
-                      disabled={formValues.modelName !== "mobilenet_v3_small"}
-                      onChange={(event) =>
-                        setFormValues((previous) => ({
-                          ...previous,
-                          allowModelModuleSearch: event.target.checked
-                        }))
-                      }
-                      type="checkbox"
-                    />
-                    <span>Model Architecture Search</span>
-                  </label>
-                </div>
+                <p className="control-hint-copy">
+                  AI explores all supported settings for the selected model and continues searching until you stop it.
+                </p>
               </div>
             ) : null}
           </div>
@@ -810,17 +751,13 @@ export function WorkspacePage() {
                 isPrimaryActionBusy ||
                 !areDatasetsReady ||
                 !parameterSpaceQuery.data ||
-                (controlMode === "compare" && formValues.compareCandidateModels.length === 0) ||
-                (controlMode === "search" && !hasEnabledSearchDimension)
+                (controlMode === "compare" && formValues.compareCandidateModels.length === 0)
               }
               onClick={() => void handleRun()}
               type="button"
             >
               {isPrimaryActionBusy ? "Running..." : controlMode === "compare" ? "Run Compare" : "Start Search"}
             </button>
-            {controlMode === "search" && !hasEnabledSearchDimension ? (
-              <p className="control-hint-copy">Enable at least one search dimension to start search.</p>
-            ) : null}
             {displayAutoTask ? (
               <button
                 className="secondary-button"
@@ -859,7 +796,7 @@ export function WorkspacePage() {
 
           <div className="display-header">
             <div>
-              <h2>{mode === "compare" ? "Compare Results" : "Search Results"}</h2>
+              <h2>Results</h2>
             </div>
             <div className="segmented-control">
               <button
@@ -945,7 +882,7 @@ export function WorkspacePage() {
                   <p className="result-summary-copy">{searchResultSummary}</p>
                 </div>
               ) : null}
-              <MetricTrendChart series={searchTrendSeries} />
+              <MetricTrendChart series={displayedSearchTrendSeries} />
             </div>
           ) : (
             <div className="table-card">
@@ -960,12 +897,12 @@ export function WorkspacePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {recentExperiments.length === 0 ? (
+                  {displayedRecentExperiments.length === 0 ? (
                     <tr>
                       <td colSpan={5}>No experiment results yet.</td>
                     </tr>
                   ) : (
-                    recentExperiments.map((experiment) => (
+                    displayedRecentExperiments.map((experiment) => (
                       <tr key={experiment.id}>
                         <td className="experiment-cell" title={experiment.id}>
                           {experiment.id}
@@ -1005,10 +942,10 @@ function CompareProgressCard({
   const failureNotice = buildTaskFailureNotice(task, externalErrorMessage);
 
   return (
-    <div>
+      <div>
       <div className="progress-activity-block">
         <div className="progress-activity-header">
-          <h2>Activity Log</h2>
+          <h2>Status</h2>
         </div>
         <div className="progress-activity-divider" />
       </div>
@@ -1051,6 +988,8 @@ function SearchProgressCard({ task, externalErrorMessage }: { task: AutoTrainTas
   const searchFocus = describeProposalChangeSummary(activeProposal);
   const suggestionText = getSearchSuggestionText(task, summary, activeProposal);
   const datasetSummaryText = buildTaskDatasetSummary(task);
+  const startupMessage = buildTaskStartupMessage(task);
+  const primaryStatusText = datasetSummaryText ?? startupMessage;
   const [elapsedDisplay, setElapsedDisplay] = useState(task?.elapsed_seconds ?? 0);
 
   useEffect(() => {
@@ -1069,25 +1008,25 @@ function SearchProgressCard({ task, externalErrorMessage }: { task: AutoTrainTas
 
   const progressHeadline = searchFocus ? `Focus ${searchFocus}` : null;
   const metaInlineText = buildSearchMetaInlineText(task, elapsedDisplay);
-  const startupMessage = buildTaskStartupMessage(task);
+  const warningNotice = buildTaskWarningNotice(task);
   const failureNotice = buildTaskFailureNotice(task, externalErrorMessage);
-  const hasInsightRows = Boolean(datasetSummaryText || progressHeadline || suggestionText);
+  const hasInsightRows = Boolean(primaryStatusText || progressHeadline || suggestionText);
 
   return (
     <div>
       <div className="progress-activity-block">
         <div className="progress-activity-header">
-          <h2>Activity Log</h2>
+          <h2>Status</h2>
         </div>
         <div className="progress-activity-divider" />
         {metaInlineText ? <div className="search-meta-inline">{metaInlineText}</div> : null}
       </div>
       {hasInsightRows ? (
         <div className="progress-insight-group">
-          {datasetSummaryText ? (
+          {primaryStatusText ? (
             <div className="progress-inline-note">
-              <DatasetSummaryIcon />
-              <span>{datasetSummaryText}</span>
+              {datasetSummaryText ? <DatasetSummaryIcon /> : <SearchFocusIcon />}
+              <span>{primaryStatusText}</span>
             </div>
           ) : null}
           {progressHeadline ? (
@@ -1104,7 +1043,12 @@ function SearchProgressCard({ task, externalErrorMessage }: { task: AutoTrainTas
           ) : null}
         </div>
       ) : null}
-      {task && startupMessage ? <p className="progress-footer-copy">{startupMessage}</p> : null}
+      {warningNotice ? (
+        <p className="progress-footer-copy progress-footer-copy-warning">
+          <WarningNoticeIcon />
+          <span>{warningNotice}</span>
+        </p>
+      ) : null}
       {failureNotice ? (
         <p className="progress-footer-copy progress-footer-copy-error">
           <ErrorNoticeIcon />
@@ -1166,6 +1110,21 @@ function ErrorNoticeIcon() {
     <svg aria-hidden="true" className="progress-inline-icon" viewBox="0 0 16 16">
       <circle cx="8" cy="8" fill="none" r="6.25" stroke="currentColor" strokeWidth="1.5" />
       <path d="M8 4.75v4.25M8 11.5h.01" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function WarningNoticeIcon() {
+  return (
+    <svg aria-hidden="true" className="progress-inline-icon" viewBox="0 0 16 16">
+      <path
+        d="M8 2.1 14 13.2c.2.36-.06.8-.47.8H2.47c-.41 0-.67-.44-.47-.8L8 2.1Z"
+        fill="none"
+        stroke="currentColor"
+        strokeLinejoin="round"
+        strokeWidth="1.5"
+      />
+      <path d="M8 6v3.7M8 11.9h.01" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
     </svg>
   );
 }
@@ -1368,6 +1327,7 @@ function MetricTrendChart({
 
   const width = 760;
   const height = 380;
+  const svgRef = useRef<SVGSVGElement | null>(null);
   const padding = {
     top: 30,
     right: 68,
@@ -1379,6 +1339,14 @@ function MetricTrendChart({
   const [visibleMetricNames, setVisibleMetricNames] = useState<string[]>(() =>
     series.filter((item) => item.defaultVisible).map((item) => item.metricName)
   );
+  const [zoomRange, setZoomRange] = useState<{ startExperimentIndex: number; endExperimentIndex: number } | null>(null);
+  const [dragSelection, setDragSelection] = useState<{ startX: number; currentX: number } | null>(null);
+  const [activeTooltipPoint, setActiveTooltipPoint] = useState<{
+    experimentIndex: number;
+    experimentId: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const availableMetricNames = series.map((item) => item.metricName);
 
   useEffect(() => {
@@ -1398,8 +1366,33 @@ function MetricTrendChart({
     return <EmptyStateCard copy="Select at least one metric to display the trend chart." />;
   }
 
+  const allSeriesByMetricName = new Map(series.map((item) => [item.metricName, item]));
+  const top1AccPoints = [...(allSeriesByMetricName.get("top1_acc")?.points ?? [])].sort(
+    (left, right) => left.experiment_index - right.experiment_index
+  );
+  const baselineMetricValues = new Map(
+    series.flatMap((item) => {
+      const firstPoint = [...item.points].sort((left, right) => left.experiment_index - right.experiment_index)[0];
+      if (!firstPoint) {
+        return [];
+      }
+      return [[item.metricName, firstPoint.metric_value] as const];
+    })
+  );
+  const displayedVisibleSeries = visibleSeries;
+  const zoomedVisibleSeries = displayedVisibleSeries.map((item) => ({
+    ...item,
+    points: zoomRange
+      ? item.points.filter(
+          (point) =>
+            point.experiment_index >= zoomRange.startExperimentIndex &&
+            point.experiment_index <= zoomRange.endExperimentIndex
+        )
+      : item.points
+  }));
+
   const experimentIndexes = Array.from(
-    new Set(visibleSeries.flatMap((item) => item.points.map((point) => point.experiment_index)))
+    new Set(zoomedVisibleSeries.flatMap((item) => item.points.map((point) => point.experiment_index)))
   ).sort((left, right) => left - right);
   const firstExperimentIndex = experimentIndexes[0] ?? 1;
   const lastExperimentIndex = experimentIndexes[experimentIndexes.length - 1] ?? firstExperimentIndex;
@@ -1408,10 +1401,14 @@ function MetricTrendChart({
       ? experimentIndexes
       : Array.from(new Set([firstExperimentIndex, ...sampleTickIndexes(experimentIndexes, 6), lastExperimentIndex]));
 
-  const leftValues = visibleSeries.filter((item) => item.axis === "left").flatMap((item) => item.points.map((point) => point.metric_value));
-  const rightFamilies = Array.from(new Set(visibleSeries.filter((item) => item.axis === "right").map((item) => item.family)));
+  const leftValues = zoomedVisibleSeries
+    .filter((item) => item.axis === "left")
+    .flatMap((item) => item.points.map((point) => point.metric_value));
+  const rightFamilies = Array.from(new Set(zoomedVisibleSeries.filter((item) => item.axis === "right").map((item) => item.family)));
   const rightFamily = (rightFamilies[0] as "loss" | "latency" | "epoch" | undefined) ?? "loss";
-  const rightValues = visibleSeries.filter((item) => item.axis === "right").flatMap((item) => item.points.map((point) => point.metric_value));
+  const rightValues = zoomedVisibleSeries
+    .filter((item) => item.axis === "right")
+    .flatMap((item) => item.points.map((point) => point.metric_value));
   const leftDomain = buildMetricDomain(leftValues, "accuracy");
   const rightDomain = buildMetricDomain(rightValues, rightFamily);
   const leftTicks = buildYAxisTicks(leftDomain.min, leftDomain.max, 5);
@@ -1425,7 +1422,7 @@ function MetricTrendChart({
     return height - padding.bottom - normalized * chartHeight;
   };
 
-  const chartSeries = visibleSeries.map((item) => {
+  const chartSeries = zoomedVisibleSeries.map((item) => {
     const points = [...item.points]
       .sort((left, right) => left.experiment_index - right.experiment_index)
       .map((point) => ({
@@ -1440,6 +1437,54 @@ function MetricTrendChart({
       pathData
     };
   });
+  const activeRoundEntries =
+    activeTooltipPoint === null
+      ? []
+      : SEARCH_TREND_METRICS.flatMap((metric) => {
+          const sourceSeries = allSeriesByMetricName.get(metric.metricName);
+          const activePoint = sourceSeries?.points.find(
+            (point) => point.experiment_index === activeTooltipPoint.experimentIndex
+          );
+          if (!sourceSeries || !activePoint) {
+            return [];
+          }
+          return [
+            {
+              metricName: metric.metricName,
+              label: metric.label,
+              color: metric.color,
+              family: metric.family,
+              experimentId: activePoint.experiment_id,
+              metricValue: activePoint.metric_value,
+              baselineMetricValue: baselineMetricValues.get(metric.metricName) ?? null,
+            }
+          ];
+        });
+  const activeAnchorPoint = activeTooltipPoint;
+  const tooltipWidth = 188;
+  const tooltipHeaderHeight = activeRoundEntries[0]?.experimentId ? 50 : 36;
+  const tooltipHeight = tooltipHeaderHeight + activeRoundEntries.length * 15 + 10;
+  const tooltipOffset = 14;
+  const tooltipX = activeAnchorPoint
+    ? Math.min(
+        Math.max(
+          activeAnchorPoint.x + (activeAnchorPoint.x > width - padding.right - tooltipWidth ? -tooltipWidth - tooltipOffset : tooltipOffset),
+          padding.left + 6
+        ),
+        width - padding.right - tooltipWidth - 6
+      )
+    : 0;
+  const tooltipY = activeAnchorPoint
+    ? Math.min(
+        Math.max(
+          activeAnchorPoint.y + (activeAnchorPoint.y < padding.top + tooltipHeight ? tooltipOffset : -tooltipHeight - tooltipOffset),
+          padding.top + 6
+        ),
+        height - padding.bottom - tooltipHeight - 6
+      )
+    : 0;
+  const selectionStartX = dragSelection ? Math.min(dragSelection.startX, dragSelection.currentX) : null;
+  const selectionWidth = dragSelection ? Math.abs(dragSelection.currentX - dragSelection.startX) : 0;
 
   const toggleMetricVisibility = (metricName: string) => {
     const selectedMetric = series.find((item) => item.metricName === metricName);
@@ -1463,28 +1508,103 @@ function MetricTrendChart({
         return metric ? allowedFamilies.has(metric.family) : false;
       });
       return [...next, metricName];
+      });
+  };
+
+  const clampChartX = (value: number) => Math.min(Math.max(value, padding.left), width - padding.right);
+
+  const getSvgXFromClientX = (clientX: number) => {
+    const svgElement = svgRef.current;
+    if (!svgElement) {
+      return null;
+    }
+    const rect = svgElement.getBoundingClientRect();
+    if (rect.width <= 0) {
+      return null;
+    }
+    const relativeX = ((clientX - rect.left) / rect.width) * width;
+    return clampChartX(relativeX);
+  };
+
+  const handleChartMouseDown = (event: ReactMouseEvent<SVGSVGElement>) => {
+    const svgX = getSvgXFromClientX(event.clientX);
+    if (svgX === null) {
+      return;
+    }
+    setActiveTooltipPoint(null);
+    setDragSelection({ startX: svgX, currentX: svgX });
+  };
+
+  const handleChartMouseMove = (event: ReactMouseEvent<SVGSVGElement>) => {
+    if (!dragSelection) {
+      return;
+    }
+    const svgX = getSvgXFromClientX(event.clientX);
+    if (svgX === null) {
+      return;
+    }
+    setDragSelection((previous) => (previous ? { ...previous, currentX: svgX } : previous));
+  };
+
+  const finishChartZoom = () => {
+    if (!dragSelection) {
+      return;
+    }
+    const minX = Math.min(dragSelection.startX, dragSelection.currentX);
+    const maxX = Math.max(dragSelection.startX, dragSelection.currentX);
+    setDragSelection(null);
+    if (maxX - minX < 18) {
+      return;
+    }
+    const selectedExperimentIndexes = experimentIndexes.filter((experimentIndex) => {
+      const x = getX(experimentIndex);
+      return x >= minX && x <= maxX;
+    });
+    if (selectedExperimentIndexes.length < 2) {
+      return;
+    }
+    setZoomRange({
+      startExperimentIndex: selectedExperimentIndexes[0],
+      endExperimentIndex: selectedExperimentIndexes[selectedExperimentIndexes.length - 1]
     });
   };
 
   return (
     <div className="chart-card">
-      <div className="chart-legend">
-        {series.map((item) => {
-          const isActive = visibleMetricNames.includes(item.metricName);
-          return (
-            <button
-              className={`chart-legend-item${isActive ? " chart-legend-item-active" : ""}`}
-              key={item.metricName}
-              onClick={() => toggleMetricVisibility(item.metricName)}
-              type="button"
-            >
-            <span aria-hidden="true" className="chart-legend-swatch" style={{ backgroundColor: item.color }} />
-            {item.label}
-            </button>
-          );
-        })}
+      <div className="chart-header">
+        <div className="chart-legend">
+          {series.map((item) => {
+            const isActive = visibleMetricNames.includes(item.metricName);
+            return (
+              <button
+                className={`chart-legend-item${isActive ? " chart-legend-item-active" : ""}`}
+                key={item.metricName}
+                onClick={() => toggleMetricVisibility(item.metricName)}
+                type="button"
+              >
+              <span aria-hidden="true" className="chart-legend-swatch" style={{ backgroundColor: item.color }} />
+              {item.label}
+              </button>
+            );
+          })}
+        </div>
+        {zoomRange ? (
+          <button className="text-button chart-reset-button" onClick={() => setZoomRange(null)} type="button">
+            Reset Zoom
+          </button>
+        ) : null}
       </div>
-      <svg aria-label="Metric trend chart" className="chart-svg" role="img" viewBox={`0 0 ${width} ${height}`}>
+      <svg
+        aria-label="Metric trend chart"
+        className="chart-svg"
+        onMouseDown={handleChartMouseDown}
+        onMouseMove={handleChartMouseMove}
+        onMouseUp={finishChartZoom}
+        onMouseLeave={finishChartZoom}
+        ref={svgRef}
+        role="img"
+        viewBox={`0 0 ${width} ${height}`}
+      >
         {leftValues.length > 0
           ? leftTicks.map((tick) => {
           const y = getY(tick, "left");
@@ -1519,6 +1639,17 @@ function MetricTrendChart({
             </g>
           );
         })}
+        {selectionStartX !== null && selectionWidth > 0 ? (
+          <rect
+            className="chart-zoom-selection"
+            height={chartHeight}
+            rx={10}
+            ry={10}
+            width={selectionWidth}
+            x={selectionStartX}
+            y={padding.top}
+          />
+        ) : null}
         <line className="chart-axis" x1={padding.left} x2={width - padding.right} y1={height - padding.bottom} y2={height - padding.bottom} />
         {leftValues.length > 0 ? (
           <line className="chart-axis" x1={padding.left} x2={padding.left} y1={padding.top} y2={height - padding.bottom} />
@@ -1532,17 +1663,58 @@ function MetricTrendChart({
               <path className="chart-line trend-chart-line" d={item.pathData} style={{ stroke: item.color }} />
             ) : null}
             {item.plottedPoints.map((point) => (
-              <circle
-                className="chart-dot trend-chart-dot"
-                cx={point.x}
-                cy={point.y}
+              <g
                 key={`${item.metricName}-${point.experiment_id}`}
-                r={3.25}
-                style={{ fill: item.color, stroke: item.color }}
-              />
+                onMouseEnter={() =>
+                  setActiveTooltipPoint({
+                    experimentIndex: point.experiment_index,
+                    experimentId: point.experiment_id,
+                    x: point.x,
+                    y: point.y
+                  })
+                }
+                onMouseLeave={() =>
+                  setActiveTooltipPoint((previous) =>
+                    previous?.experimentIndex === point.experiment_index ? null : previous
+                  )
+                }
+              >
+                <circle
+                  className="chart-dot trend-chart-dot"
+                  cx={point.x}
+                  cy={point.y}
+                  r={activeTooltipPoint?.experimentIndex === point.experiment_index ? 5 : 3.25}
+                  style={{ fill: item.color, stroke: item.color }}
+                />
+              </g>
             ))}
           </g>
         ))}
+        {activeAnchorPoint ? (
+          <g transform={`translate(${tooltipX} ${tooltipY})`}>
+            <rect className="chart-tooltip-box" height={tooltipHeight} rx={14} ry={14} width={tooltipWidth} x={0} y={0} />
+            <text className="chart-tooltip-title" x={14} y={20}>
+              {`Round ${activeTooltipPoint?.experimentIndex}`}
+            </text>
+            {activeRoundEntries[0]?.experimentId ? (
+              <text className="chart-tooltip-line" x={14} y={34}>
+                {activeRoundEntries[0].experimentId}
+              </text>
+            ) : null}
+            {activeRoundEntries.map((entry, index) => (
+              <g key={`tooltip-${entry.metricName}`} transform={`translate(14 ${tooltipHeaderHeight + index * 15})`}>
+                <circle cx={4} cy={0} fill={entry.color} r={3.5} />
+                <text className="chart-tooltip-line" x={14} y={4}>
+                  {`${entry.label} ${formatTrendMetricValue(entry.metricValue, entry.family)}${formatTooltipBaselineDelta(
+                    entry.metricValue,
+                    entry.baselineMetricValue,
+                    entry.family
+                  )}`}
+                </text>
+              </g>
+            ))}
+          </g>
+        ) : null}
         <text className="chart-axis-title" textAnchor="middle" x={width / 2} y={height - 10}>
           Experiment Round
         </text>
@@ -1578,6 +1750,10 @@ type ProposalSnapshot = {
 
 type SummarySnapshot = {
   experiment_id?: string;
+  status?: string;
+  decision?: string | null;
+  decision_reason?: string | null;
+  metrics?: Record<string, number>;
   summary?: string;
 };
 
@@ -1588,6 +1764,7 @@ type RoundSnapshot = {
 };
 
 type AutoTrainSummarySnapshot = {
+  baseline?: SummarySnapshot;
   rounds?: RoundSnapshot[];
   current_proposal?: ProposalSnapshot | null;
   final_proposal?: ProposalSnapshot | null;
@@ -1600,6 +1777,95 @@ function readAutoTrainSummary(task: AutoTrainTask | null): AutoTrainSummarySnaps
     return null;
   }
   return task.summary as AutoTrainSummarySnapshot;
+}
+
+function buildPersistedSearchTrendSeries(summary: AutoTrainSummarySnapshot | null) {
+  if (!summary) {
+    return [];
+  }
+
+  const resultRows: Array<{ experiment_id: string; experiment_index: number; metrics: Record<string, number> }> = [];
+  const baseline = summary.baseline;
+  if (baseline?.experiment_id && baseline.metrics) {
+    resultRows.push({
+      experiment_id: baseline.experiment_id,
+      experiment_index: 1,
+      metrics: baseline.metrics
+    });
+  }
+
+  (summary.rounds ?? []).forEach((round, index) => {
+    const result = round.result;
+    if (!result?.experiment_id || !result.metrics) {
+      return;
+    }
+    resultRows.push({
+      experiment_id: result.experiment_id,
+      experiment_index: baseline?.experiment_id ? index + 2 : index + 1,
+      metrics: result.metrics
+    });
+  });
+
+  return SEARCH_TREND_METRICS.map((metric) => ({
+    ...metric,
+    points: resultRows.flatMap((row) => {
+      const metricValue = row.metrics[metric.metricName];
+      if (typeof metricValue !== "number") {
+        return [];
+      }
+      return [
+        {
+          experiment_id: row.experiment_id,
+          experiment_index: row.experiment_index,
+          metric_name: metric.metricName,
+          metric_value: metricValue
+        }
+      ];
+    })
+  })).filter((series) => series.points.length > 0);
+}
+
+function buildPersistedRecentExperiments(summary: AutoTrainSummarySnapshot | null) {
+  if (!summary) {
+    return [];
+  }
+
+  const experiments: Array<{
+    id: string;
+    status: string;
+    decision?: string | null;
+    result?: {
+      metrics?: Record<string, number>;
+      resource?: Record<string, number>;
+    } | null;
+  }> = [];
+
+  if (summary.baseline?.experiment_id) {
+    experiments.push({
+      id: summary.baseline.experiment_id,
+      status: summary.baseline.status ?? "unknown",
+      decision: summary.baseline.decision ?? null,
+      result: {
+        metrics: summary.baseline.metrics
+      }
+    });
+  }
+
+  for (const round of summary.rounds ?? []) {
+    if (!round.result?.experiment_id) {
+      continue;
+    }
+    experiments.push({
+      id: round.result.experiment_id,
+      status: round.result.status ?? "unknown",
+      decision: round.result.decision ?? null,
+      result: {
+        metrics: round.result.metrics
+      }
+    });
+  }
+
+  return experiments.slice(-6).reverse();
 }
 
 function resolveCurrentAutoTask(
@@ -1691,7 +1957,10 @@ function buildCompareResultSummary(task: ModelCompareTask | null) {
 function buildCompareResultSummarySource(task: ModelCompareTask | null) {
   const aiSummary = task?.summary?.ai_summary?.trim();
   const aiModelLabel = formatAiModelLabel(task?.ai_model_name);
-  return aiSummary && aiModelLabel ? `AI · ${aiModelLabel}` : null;
+  if (!aiSummary) {
+    return null;
+  }
+  return aiModelLabel ? `Summary from ${aiModelLabel}` : "Summary";
 }
 
 function buildCompareSearchCandidate(
@@ -1749,7 +2018,12 @@ function getSearchSuggestionText(
     return activeHypothesis;
   }
   if (task && isAutoTrainTerminalStatus(task.status)) {
-    return summary?.final_proposal?.hypothesis?.trim() ?? null;
+    return (
+      summary?.final_proposal?.hypothesis?.trim() ??
+      summary?.current_proposal?.hypothesis?.trim() ??
+      [...(summary?.rounds ?? [])].reverse().find((round) => round.proposal?.hypothesis?.trim())?.proposal?.hypothesis?.trim() ??
+      null
+    );
   }
   return null;
 }
@@ -1763,6 +2037,8 @@ function buildSearchResultSummary(
   }
   const aiSummary =
     summary?.final_proposal?.hypothesis?.trim() ??
+    summary?.current_proposal?.hypothesis?.trim() ??
+    [...(summary?.rounds ?? [])].reverse().find((round) => round.proposal?.hypothesis?.trim())?.proposal?.hypothesis?.trim() ??
     null;
   return aiSummary || null;
 }
@@ -1776,9 +2052,14 @@ function buildSearchResultSummarySource(
   }
   const aiSummary =
     summary?.final_proposal?.hypothesis?.trim() ??
+    summary?.current_proposal?.hypothesis?.trim() ??
+    [...(summary?.rounds ?? [])].reverse().find((round) => round.proposal?.hypothesis?.trim())?.proposal?.hypothesis?.trim() ??
     null;
   const aiModelLabel = formatAiModelLabel(task.ai_model_name);
-  return aiSummary && aiModelLabel ? `AI · ${aiModelLabel}` : null;
+  if (!aiSummary) {
+    return null;
+  }
+  return aiModelLabel ? `Summary from ${aiModelLabel}` : "Summary";
 }
 
 function formatAiModelLabel(modelName: string | null | undefined) {
@@ -1857,6 +2138,32 @@ function buildTaskFailureNotice(task: AutoTrainTask | ModelCompareTask | null, e
     return "Provider is under high load (529). Retry after a short wait.";
   }
   return task.error?.trim() ?? null;
+}
+
+function buildTaskWarningNotice(task: AutoTrainTask | null) {
+  if (!task || task.status === "failed") {
+    return null;
+  }
+  const latestRetryLog = [...task.logs].reverse().find((entry) => /retrying in \d+s/i.test(entry));
+  if (!latestRetryLog) {
+    return null;
+  }
+  const normalizedLog = latestRetryLog.trim();
+  const attemptMatch = normalizedLog.match(/\((\d+)\/(\d+)\)/);
+  const delayMatch = normalizedLog.match(/retrying in (\d+)s/i);
+  const attemptText = attemptMatch ? ` (${attemptMatch[1]}/${attemptMatch[2]})` : "";
+  const delayText = delayMatch ? `${delayMatch[1]}s` : "a moment";
+  const normalizedLower = normalizedLog.toLowerCase();
+  if (normalizedLower.includes("read timed out") || normalizedLower.includes("connect timeout")) {
+    return `Provider timeout. Retrying in ${delayText}${attemptText}.`;
+  }
+  if (normalizedLower.includes("status=429") || normalizedLower.includes("high load") || normalizedLower.includes("overloaded")) {
+    return `Provider is busy. Retrying in ${delayText}${attemptText}.`;
+  }
+  if (normalizedLower.includes("round ") || normalizedLower.includes("baseline")) {
+    return `Experiment failed. Retrying in ${delayText}${attemptText}.`;
+  }
+  return `Request failed. Retrying in ${delayText}${attemptText}.`;
 }
 
 const PROPOSAL_CHANGE_LABELS: Record<string, string> = {
@@ -1984,6 +2291,50 @@ function getRightAxisLabel(family: "loss" | "latency" | "epoch") {
     return "Best Epoch";
   }
   return "Loss";
+}
+
+function formatTrendMetricValue(value: number, family: "accuracy" | "loss" | "latency" | "epoch") {
+  if (family === "accuracy") {
+    return formatAccuracy(value);
+  }
+  if (family === "latency") {
+    return formatLatency(value);
+  }
+  if (family === "epoch") {
+    return `${Math.round(value)}`;
+  }
+  return formatLossTick(value);
+}
+
+function formatSignedAccuracyDelta(value: number) {
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `${sign}${Math.abs(value * 100).toFixed(2)}%`;
+}
+
+function formatTooltipBaselineDelta(
+  metricValue: number,
+  baselineMetricValue: number | null,
+  family: "accuracy" | "loss" | "latency" | "epoch"
+) {
+  if (baselineMetricValue === null) {
+    return "";
+  }
+  const delta = metricValue - baselineMetricValue;
+  if (family === "accuracy") {
+    return ` (${formatSignedAccuracyDelta(delta)})`;
+  }
+  if (family === "latency") {
+    return ` (${formatSignedNumberDelta(delta, 2)} ms)`;
+  }
+  if (family === "epoch") {
+    return ` (${formatSignedNumberDelta(delta, 0)})`;
+  }
+  return ` (${formatSignedNumberDelta(delta, 4)})`;
+}
+
+function formatSignedNumberDelta(value: number, digits: number) {
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  return `${sign}${Math.abs(value).toFixed(digits)}`;
 }
 
 function sampleTickIndexes(values: number[], limit: number) {

@@ -131,6 +131,10 @@ export interface AutoTrainTask {
     run_id?: string;
     baseline?: {
       experiment_id?: string;
+      status?: string;
+      decision?: string | null;
+      decision_reason?: string | null;
+      metrics?: Record<string, number>;
       summary?: string;
     };
     rounds?: Array<{
@@ -143,6 +147,10 @@ export interface AutoTrainTask {
       };
       result?: {
         experiment_id?: string;
+        status?: string;
+        decision?: string | null;
+        decision_reason?: string | null;
+        metrics?: Record<string, number>;
         summary?: string;
       };
     }>;

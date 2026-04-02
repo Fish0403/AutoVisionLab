@@ -257,7 +257,7 @@ button:disabled {
 }
 
 .display-panel {
-  gap: 40px;
+  gap: 28px;
 }
 
 .task-panel,
@@ -677,10 +677,10 @@ button:disabled {
 
 .result-summary-copy {
   margin: 0;
-  color: var(--text-soft);
-  font-size: 0.88rem;
-  font-weight: 450;
-  line-height: 1.5;
+  color: #2a3040;
+  font-size: 0.98rem;
+  font-weight: 520;
+  line-height: 1.62;
   letter-spacing: -0.01em;
 }
 
@@ -694,15 +694,16 @@ button:disabled {
 .result-summary-source {
   display: inline-flex;
   align-items: center;
-  font-size: 0.7rem;
+  font-size: 0.8rem;
   font-weight: 700;
-  line-height: 1.1;
-  letter-spacing: 0.04em;
+  line-height: 1.2;
+  letter-spacing: 0.03em;
   text-transform: uppercase;
-  background-image: linear-gradient(90deg, #5b8cff 0%, #6e78ff 28%, #9a68ff 52%, #ff7b9d 76%, #ffb36b 100%);
+  background-image: linear-gradient(90deg, #2b59ff 0%, #0f9d7a 34%, #ff8a00 68%, #d9485f 100%);
   color: transparent;
   -webkit-background-clip: text;
   background-clip: text;
+  filter: saturate(1.1);
 }
 
 .progress-meta {
@@ -726,7 +727,7 @@ button:disabled {
 .progress-inline-note span {
   min-width: 0;
   flex: 1 1 auto;
-  font-size: 0.82rem;
+  font-size: 0.88rem;
   white-space: normal;
   overflow-wrap: anywhere;
 }
@@ -758,7 +759,7 @@ button:disabled {
   min-width: 0;
   flex: 1 1 auto;
   margin: 0;
-  font-size: 0.82rem;
+  font-size: 0.88rem;
   color: var(--text-soft);
   line-height: 1.4;
   white-space: normal;
@@ -955,6 +956,20 @@ button:disabled {
   color: #b42336;
 }
 
+.progress-footer-copy-warning {
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr);
+  align-items: start;
+  column-gap: 8px;
+  margin-top: 12px;
+  padding: 9px 10px;
+  border: 1px solid #f4d68a;
+  border-left: 3px solid #d4a72c;
+  border-radius: 10px;
+  background: #fff8e6;
+  color: #8a6116;
+}
+
 .display-header {
   padding-bottom: 6px;
   border-bottom: 1px solid var(--line);
@@ -963,10 +978,19 @@ button:disabled {
 .chart-card {
   display: grid;
   gap: 10px;
+  width: min(100%, 860px);
+  justify-self: center;
   padding: 12px;
   border: 0;
   border-radius: 0;
   background: transparent;
+}
+
+.chart-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .chart-legend {
@@ -974,6 +998,12 @@ button:disabled {
   flex-wrap: wrap;
   gap: 10px;
   padding: 0 4px;
+}
+
+.chart-reset-button {
+  flex: 0 0 auto;
+  padding-top: 2px;
+  white-space: nowrap;
 }
 
 .chart-legend-item {
@@ -989,6 +1019,11 @@ button:disabled {
   font-size: 0.77rem;
   font-weight: 600;
   cursor: pointer;
+}
+
+.chart-legend-item:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .chart-legend-item-active {
@@ -1009,6 +1044,13 @@ button:disabled {
   background: #fcfcfd;
 }
 
+.chart-zoom-selection {
+  fill: rgba(43, 89, 255, 0.12);
+  stroke: rgba(43, 89, 255, 0.45);
+  stroke-width: 1.2;
+  stroke-dasharray: 6 5;
+}
+
 .chart-axis {
   stroke: #d0d5dd;
   stroke-width: 1.2;
@@ -1025,13 +1067,13 @@ button:disabled {
 }
 
 .chart-axis-label {
-  fill: #8d94a1;
+  fill: #6f7785;
   font-size: 9px;
   font-weight: 600;
 }
 
 .chart-axis-title {
-  fill: #6d7483;
+  fill: #505866;
   font-size: 10px;
   font-weight: 700;
 }
@@ -1065,7 +1107,7 @@ button:disabled {
 
 .chart-label {
   fill: #262a31;
-  font-size: 9.5px;
+  font-size: 8.5px;
   font-weight: 600;
 }
 
@@ -1078,13 +1120,13 @@ button:disabled {
 
 .chart-tooltip-title {
   fill: #1e2533;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
 }
 
 .chart-tooltip-line {
   fill: #5b6475;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 600;
 }
 
@@ -1093,11 +1135,14 @@ button:disabled {
 }
 
 .table-card {
-  overflow: hidden;
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .table-card table {
-  font-size: 0.92rem;
+  min-width: 920px;
+  font-size: 0.88rem;
 }
 
 table {
@@ -1123,7 +1168,7 @@ thead th {
   max-width: 240px;
   color: #20242d;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 0.82rem;
+  font-size: 0.88rem;
   line-height: 1.4;
   white-space: normal;
   overflow-wrap: anywhere;
