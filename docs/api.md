@@ -116,7 +116,6 @@
 | `POST` | `/experiments` | 创建 experiment | 请求体包含 `run_id`、`config`、`parameter_space`，`proposal` 可选 |
 | `GET` | `/experiments/{experiment_id}` | 获取 experiment 详情 |  |
 | `POST` | `/experiments/{experiment_id}/result` | 保存训练结果 | 请求体为 `ResultSchema` |
-| `POST` | `/experiments/{experiment_id}/decision` | 写入研究决策 | `keep` / `discard` / `crash` / `timeout` |
 | `POST` | `/experiments/{experiment_id}/train` | 启动 experiment 训练 |  |
 | `POST` | `/experiments/{experiment_id}/stop` | 停止 experiment 训练 | 停止后会进入丢弃流程 |
 | `POST` | `/experiments/{experiment_id}/suggestion` | 启动实验建议任务 | `202 Accepted` |
@@ -185,4 +184,3 @@ AI 生成的结构化 proposal，主要字段：
 - [docs/schemas/dataset_recipe.md](schemas/dataset_recipe.md)
 - [docs/policies/rank.md](policies/rank.md)
 - [docs/policies/search.md](policies/search.md)
-- [docs/policies/stop.md](policies/stop.md)
