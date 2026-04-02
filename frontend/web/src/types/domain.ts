@@ -40,17 +40,13 @@ export interface RunDetail {
   dataset: string;
   model_name: string;
   status: string;
-  baseline_experiment_id?: string | null;
   best_experiment_id?: string | null;
-  frontier_experiment_id?: string | null;
   experiments: ExperimentSummary[];
 }
 
 export interface RunSummary {
   run_id: string;
-  baseline_experiment_id?: string | null;
   best_experiment_id?: string | null;
-  frontier_experiment_id?: string | null;
   keep_count: number;
   discard_count: number;
   crash_count: number;

@@ -25,6 +25,7 @@ import {
   COMPARE_CANDIDATE_MODELS,
   defaultFormValues,
   getDatasetImageOptions,
+  getModelFamily,
   getPreferredDatasetName,
   MODEL_LABELS,
   type SupportedModelName,
@@ -34,7 +35,6 @@ import { getJson } from "../lib/api";
 import { readLocalStorage, writeLocalStorage } from "../lib/storage";
 import type {
   AutoTrainTask,
-  ExperimentDetail,
   MetricsPayload,
   ModelCompareCandidateResult,
   ModelCompareTask,
@@ -43,6 +43,14 @@ import type {
 const SELECTED_TASK_ID_STORAGE_KEY = "autovisionlab:selected-task-id";
 const SELECTED_TASK_TYPE_STORAGE_KEY = "autovisionlab:selected-task-type";
 const COMPARE_ANCHOR_MODEL: SupportedModelName = "mobilenet_v3_small";
+const DEFAULT_COMPARE_MODEL_COUNT = 3;
+const MODEL_FAMILY_ORDER = ["mobilenet", "efficientnet", "resnet", "googlenet"] as const;
+const MODEL_FAMILY_LABELS: Record<(typeof MODEL_FAMILY_ORDER)[number], string> = {
+  mobilenet: "MobileNet",
+  efficientnet: "EfficientNet",
+  resnet: "ResNet",
+  googlenet: "GoogLeNet"
+};
 const SEARCH_TREND_METRICS = [
   { metricName: "top1_acc", label: "Top1 Acc", color: "#2b59ff", axis: "left" as const, family: "accuracy" as const, defaultVisible: true },
   { metricName: "val_loss", label: "Val Loss", color: "#d9485f", axis: "right" as const, family: "loss" as const, defaultVisible: true },
@@ -53,7 +61,6 @@ const SEARCH_TREND_METRICS = [
 
 type WorkspaceMode = "compare" | "search";
 type TaskType = "auto_train" | "model_compare";
-type DisplayMode = "chart" | "table";
 type CompareSearchCandidate = {
   modelName: SupportedModelName;
   runId: string;
@@ -87,9 +94,9 @@ export function WorkspacePage() {
     () => requestedTaskType ?? (readLocalStorage(SELECTED_TASK_TYPE_STORAGE_KEY) as TaskType | null)
   );
   const [mode, setMode] = useState<WorkspaceMode>(() => (requestedTaskType === "model_compare" ? "compare" : "search"));
-  const [displayMode, setDisplayMode] = useState<DisplayMode>("chart");
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [isSearchLaunchPending, setIsSearchLaunchPending] = useState(false);
+  const [showAllCompareModels, setShowAllCompareModels] = useState(false);
   const [draftTaskTitle, setDraftTaskTitle] = useState("Untitled task");
   const [formValues, setFormValues] = useState<TrainingFormValues>(() => defaultFormValues(defaultDataset, defaultImageSize));
   const [selectedCompareCandidate, setSelectedCompareCandidate] = useState<CompareSearchCandidate | null>(null);
@@ -97,6 +104,15 @@ export function WorkspacePage() {
   const selectedDatasetOptionLabel = selectedDatasetOption?.name ?? formValues.dataset;
   const hasPersistedTaskContext = Boolean(requestedTaskId || selectedTaskId);
   const isDatasetSelectorReady = areDatasetsReady || hasPersistedTaskContext;
+  const selectedModelFamily = getModelFamily(formValues.modelName);
+  const availableSearchModels = MODEL_FAMILY_ORDER.flatMap((familyName) =>
+    (Object.keys(MODEL_LABELS) as SupportedModelName[]).filter((modelName) => getModelFamily(modelName) === familyName)
+  );
+  const visibleSearchModels = availableSearchModels.filter((modelName) => getModelFamily(modelName) === selectedModelFamily);
+  const visibleCompareModels = showAllCompareModels
+    ? COMPARE_CANDIDATE_MODELS
+    : COMPARE_CANDIDATE_MODELS.slice(0, DEFAULT_COMPARE_MODEL_COUNT);
+  const areAllCompareModelsSelected = formValues.compareCandidateModels.length === COMPARE_CANDIDATE_MODELS.length;
 
   const autoTrainTaskQuery = useAutoTrainTask(selectedTaskType === "auto_train" ? selectedTaskId : null);
   const modelCompareTaskQuery = useModelCompareTask(selectedTaskType === "model_compare" ? selectedTaskId : null);
@@ -125,7 +141,6 @@ export function WorkspacePage() {
       setSelectedTaskId(null);
       setSelectedTaskType(null);
       setSelectedCompareCandidate(null);
-      setDisplayMode("chart");
       setIsEditingTitle(false);
       setIsSearchLaunchPending(false);
       setDraftTaskTitle("Untitled task");
@@ -188,7 +203,6 @@ export function WorkspacePage() {
       return;
     }
     setSelectedCompareCandidate(null);
-    setDisplayMode("chart");
     setDraftTaskTitle(currentAutoTask.title ?? buildTaskTitle("search", currentAutoTask.dataset ?? defaultDataset, (currentAutoTask.model_name as SupportedModelName | undefined) ?? "mobilenet_v3_small"));
     setFormValues((previous) => ({
       ...previous,
@@ -201,7 +215,6 @@ export function WorkspacePage() {
     if (!selectedTaskId || !currentCompareTask) {
       return;
     }
-    setDisplayMode("chart");
     setDraftTaskTitle(currentCompareTask.title ?? buildTaskTitle("compare", currentCompareTask.dataset ?? defaultDataset));
     setFormValues((previous) => ({
       ...previous,
@@ -299,33 +312,8 @@ export function WorkspacePage() {
   const persistedSearchTrendSeries = useMemo(() => buildPersistedSearchTrendSeries(autoTrainSummary), [autoTrainSummary]);
   const displayedSearchTrendSeries = searchTrendSeries.length > 0 ? searchTrendSeries : persistedSearchTrendSeries;
 
-  const recentExperimentIds = useMemo(() => {
-    if (!runDetail?.experiments?.length) {
-      return [];
-    }
-    return [...runDetail.experiments].slice(-6).reverse().map((experiment) => experiment.id);
-  }, [runDetail?.experiments]);
-
-  const recentExperimentQueries = useQueries({
-    queries: recentExperimentIds.map((experimentId) => ({
-      queryKey: ["experiment-detail", experimentId],
-      queryFn: () => getJson<ExperimentDetail>(`/experiments/${experimentId}`),
-      enabled: Boolean(experimentId),
-      refetchIntervalInBackground: true,
-      refetchOnWindowFocus: true,
-      refetchInterval: shouldPollSearchArtifacts ? 2000 : false
-    }))
-  });
-
-  const recentExperiments = recentExperimentQueries
-    .map((query) => query.data)
-    .filter((experiment): experiment is ExperimentDetail => Boolean(experiment));
-  const persistedRecentExperiments = useMemo(() => buildPersistedRecentExperiments(autoTrainSummary), [autoTrainSummary]);
-  const displayedRecentExperiments = recentExperiments.length > 0 ? recentExperiments : persistedRecentExperiments;
-
   const handleModeSelect = (nextMode: WorkspaceMode) => {
     setMode(nextMode);
-    setDisplayMode("chart");
     if (selectedTaskType && selectedTaskType !== toTaskType(nextMode) && selectedTaskType !== "model_compare") {
       setSelectedTaskId(null);
       setSelectedTaskType(null);
@@ -431,7 +419,6 @@ export function WorkspacePage() {
   const prepareSearchFromCompareCandidate = (candidate: CompareSearchCandidate) => {
     setSelectedCompareCandidate(candidate);
     setMode("search");
-    setDisplayMode("chart");
     setIsEditingTitle(false);
     setIsSearchLaunchPending(false);
     setDraftTaskTitle(buildTaskTitle("search", candidate.dataset, candidate.modelName));
@@ -448,7 +435,6 @@ export function WorkspacePage() {
     setSelectedTaskId(taskId);
     setSelectedTaskType(taskType);
     setMode(taskType === "model_compare" ? "compare" : "search");
-    setDisplayMode("chart");
     setSearchParams({
       taskId,
       taskType
@@ -666,39 +652,87 @@ export function WorkspacePage() {
               <>
                 {hasCompareBackLink ? (
                   <div className="form-field">
-                    <select
-                      value={formValues.modelName}
-                      onChange={(event) =>
-                        setFormValues((previous) => ({
-                          ...previous,
-                          modelName: event.target.value as SupportedModelName
-                        }))
-                      }
-                    >
-                      {Object.entries(MODEL_LABELS).map(([value, label]) => (
-                        <option key={value} value={value}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="model-select-grid">
+                      <select
+                        aria-label="Model family"
+                        value={selectedModelFamily}
+                        onChange={(event) => {
+                          const nextFamily = event.target.value as (typeof MODEL_FAMILY_ORDER)[number];
+                          const nextModelName = availableSearchModels.find((modelName) => getModelFamily(modelName) === nextFamily);
+                          if (!nextModelName) {
+                            return;
+                          }
+                          setFormValues((previous) => ({
+                            ...previous,
+                            modelName: nextModelName
+                          }));
+                        }}
+                      >
+                        {MODEL_FAMILY_ORDER.map((familyName) => (
+                          <option key={familyName} value={familyName}>
+                            {MODEL_FAMILY_LABELS[familyName]}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        aria-label="Model"
+                        value={formValues.modelName}
+                        onChange={(event) =>
+                          setFormValues((previous) => ({
+                            ...previous,
+                            modelName: event.target.value as SupportedModelName
+                          }))
+                        }
+                      >
+                        {visibleSearchModels.map((modelName) => (
+                          <option key={modelName} value={modelName}>
+                            {MODEL_LABELS[modelName]}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                 ) : (
                   <FormField label="Model">
-                    <select
-                      value={formValues.modelName}
-                      onChange={(event) =>
-                        setFormValues((previous) => ({
-                          ...previous,
-                          modelName: event.target.value as SupportedModelName
-                        }))
-                      }
-                    >
-                      {Object.entries(MODEL_LABELS).map(([value, label]) => (
-                        <option key={value} value={value}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="model-select-grid">
+                      <select
+                        aria-label="Model family"
+                        value={selectedModelFamily}
+                        onChange={(event) => {
+                          const nextFamily = event.target.value as (typeof MODEL_FAMILY_ORDER)[number];
+                          const nextModelName = availableSearchModels.find((modelName) => getModelFamily(modelName) === nextFamily);
+                          if (!nextModelName) {
+                            return;
+                          }
+                          setFormValues((previous) => ({
+                            ...previous,
+                            modelName: nextModelName
+                          }));
+                        }}
+                      >
+                        {MODEL_FAMILY_ORDER.map((familyName) => (
+                          <option key={familyName} value={familyName}>
+                            {MODEL_FAMILY_LABELS[familyName]}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        aria-label="Model"
+                        value={formValues.modelName}
+                        onChange={(event) =>
+                          setFormValues((previous) => ({
+                            ...previous,
+                            modelName: event.target.value as SupportedModelName
+                          }))
+                        }
+                      >
+                        {visibleSearchModels.map((modelName) => (
+                          <option key={modelName} value={modelName}>
+                            {MODEL_LABELS[modelName]}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </FormField>
                 )}
               </>
@@ -707,9 +741,32 @@ export function WorkspacePage() {
               <div className="popover-panel mode-options-panel">
                 <div className="section-heading">
                   <h3>Models</h3>
+                  <div className="mode-options-actions">
+                    <button
+                      className="text-button mode-options-link"
+                      onClick={() =>
+                        setFormValues((previous) => ({
+                          ...previous,
+                          compareCandidateModels: areAllCompareModelsSelected ? [] : [...COMPARE_CANDIDATE_MODELS]
+                        }))
+                      }
+                      type="button"
+                    >
+                      {areAllCompareModelsSelected ? "Reset" : "All"}
+                    </button>
+                    {COMPARE_CANDIDATE_MODELS.length > DEFAULT_COMPARE_MODEL_COUNT ? (
+                      <button
+                        className="text-button mode-options-link"
+                        onClick={() => setShowAllCompareModels((previous) => !previous)}
+                        type="button"
+                      >
+                        {showAllCompareModels ? "Less" : "More"}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
                 <div className="option-stack">
-                  {COMPARE_CANDIDATE_MODELS.map((modelName) => {
+                  {visibleCompareModels.map((modelName) => {
                     const isChecked = formValues.compareCandidateModels.includes(modelName);
                     return (
                       <label className="option-row" key={modelName}>
@@ -730,16 +787,6 @@ export function WorkspacePage() {
                     );
                   })}
                 </div>
-              </div>
-            ) : null}
-            {controlMode === "search" ? (
-              <div className="popover-panel mode-options-panel">
-                <div className="section-heading">
-                  <h3>AI Search</h3>
-                </div>
-                <p className="control-hint-copy">
-                  AI explores all supported settings for the selected model and continues searching until you stop it.
-                </p>
               </div>
             ) : null}
           </div>
@@ -798,124 +845,32 @@ export function WorkspacePage() {
             <div>
               <h2>Results</h2>
             </div>
-            <div className="segmented-control">
-              <button
-                className={`segment-button${displayMode === "chart" ? " segment-button-active" : ""}`}
-                onClick={() => setDisplayMode("chart")}
-                type="button"
-              >
-                Chart
-              </button>
-              <button
-                className={`segment-button${displayMode === "table" ? " segment-button-active" : ""}`}
-                onClick={() => setDisplayMode("table")}
-                type="button"
-              >
-                Table
-              </button>
-            </div>
           </div>
 
           {mode === "compare" ? (
-            displayMode === "chart" ? (
-              <div className="display-stack">
-                {compareResultSummary ? (
-                  <div className="result-summary-row">
-                    {compareResultSummarySource ? <span className="result-summary-source">{compareResultSummarySource}</span> : null}
-                    <p className="result-summary-copy">{compareResultSummary}</p>
-                  </div>
-                ) : null}
-                <CompareScatterChart
-                  candidates={successfulCandidates}
-                  dataset={compareTask?.dataset ?? formValues.dataset}
-                  onSelectCandidate={(candidate) => prepareSearchFromCompareCandidate(candidate)}
-                  selectedCandidateModelName={selectedCompareCandidate?.modelName ?? null}
-                />
-              </div>
-            ) : (
-              <div className="table-card">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Model</th>
-                      <th>Status</th>
-                      <th>Top1 Acc</th>
-                      <th>Latency</th>
-                      <th>Params</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {candidateResults.length === 0 ? (
-                      <tr>
-                        <td colSpan={5}>No compare results yet.</td>
-                      </tr>
-                    ) : (
-                      candidateResults.map((candidate) => (
-                        <tr
-                          className={candidate.run_id && selectedCompareCandidate?.runId === candidate.run_id ? "compare-result-row-selected" : ""}
-                          key={candidate.model_name}
-                          onClick={() => {
-                            const searchCandidate = buildCompareSearchCandidate(candidate, compareTask?.dataset ?? formValues.dataset);
-                            if (!searchCandidate) {
-                              return;
-                            }
-                            prepareSearchFromCompareCandidate(searchCandidate);
-                          }}
-                        >
-                          <td>{MODEL_LABELS[candidate.model_name as SupportedModelName] ?? candidate.model_name}</td>
-                          <td>{formatStatusLabel(candidate.status)}</td>
-                          <td>{formatAccuracyDetailed(candidate.top1_acc)}</td>
-                          <td>{formatLatency(candidate.latency_ms)}</td>
-                          <td>{formatParameterCount(candidate.parameter_count_million)}</td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            )
-          ) : displayMode === "chart" ? (
+            <div className="display-stack">
+              {compareResultSummary ? (
+                <div className="result-summary-row">
+                  {compareResultSummarySource ? <span className="result-summary-source">{compareResultSummarySource}</span> : null}
+                  <p className="result-summary-copy">{compareResultSummary}</p>
+                </div>
+              ) : null}
+              <CompareScatterChart
+                candidates={successfulCandidates}
+                dataset={compareTask?.dataset ?? formValues.dataset}
+                onSelectCandidate={(candidate) => prepareSearchFromCompareCandidate(candidate)}
+                selectedCandidateModelName={selectedCompareCandidate?.modelName ?? null}
+              />
+            </div>
+          ) : (
             <div className="display-stack">
               {showSearchResultSummary && searchResultSummary ? (
                 <div className="result-summary-row">
                   {searchResultSummarySource ? <span className="result-summary-source">{searchResultSummarySource}</span> : null}
                   <p className="result-summary-copy">{searchResultSummary}</p>
                 </div>
-              ) : null}
+                ) : null}
               <MetricTrendChart series={displayedSearchTrendSeries} />
-            </div>
-          ) : (
-            <div className="table-card">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Experiment</th>
-                    <th>Status</th>
-                    <th>Decision</th>
-                    <th>Top1 Acc</th>
-                    <th>Latency</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {displayedRecentExperiments.length === 0 ? (
-                    <tr>
-                      <td colSpan={5}>No experiment results yet.</td>
-                    </tr>
-                  ) : (
-                    displayedRecentExperiments.map((experiment) => (
-                      <tr key={experiment.id}>
-                        <td className="experiment-cell" title={experiment.id}>
-                          {experiment.id}
-                        </td>
-                        <td>{formatStatusLabel(experiment.status)}</td>
-                        <td>{experiment.decision ?? "—"}</td>
-                        <td>{formatAccuracyDetailed(experiment.result?.metrics?.top1_acc)}</td>
-                        <td>{formatLatency(experiment.result?.resource?.latency_ms)}</td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
             </div>
           )}
         </section>
@@ -1174,12 +1129,15 @@ function CompareScatterChart({
     const accuracy = candidate.top1_acc ?? 0;
     const x = padding + ((latency - minLatency) / latencyRange) * plotWidth;
     const y = height - padding - ((accuracy - minAccuracy) / accuracyRange) * plotHeight;
+    const label = MODEL_LABELS[candidate.model_name as SupportedModelName] ?? candidate.model_name;
     return {
       candidate,
+      label,
       x,
       y
     };
   });
+  const labelPlacements = buildScatterLabelPlacements(points, width, height, padding);
   const activePoint =
     points.find((point) => point.candidate.model_name === activeModelName) ??
     null;
@@ -1264,8 +1222,13 @@ function CompareScatterChart({
                     : "#f7f8fb"
               }}
             />
-            <text className="chart-label" x={point.x + 10} y={point.y - 8}>
-              {MODEL_LABELS[point.candidate.model_name as SupportedModelName] ?? point.candidate.model_name}
+            <text
+              className="chart-label"
+              textAnchor={labelPlacements[point.candidate.model_name]?.textAnchor ?? "start"}
+              x={labelPlacements[point.candidate.model_name]?.x ?? point.x + 12}
+              y={labelPlacements[point.candidate.model_name]?.y ?? point.y - 10}
+            >
+              {point.label}
             </text>
             {activePoint?.candidate.model_name === point.candidate.model_name && point.candidate.run_id ? (
               <g transform={`translate(${tooltipX} ${tooltipY})`}>
@@ -1301,6 +1264,167 @@ function CompareScatterChart({
       </svg>
     </div>
   );
+}
+
+type ScatterLabelPlacement = {
+  textAnchor: "start" | "middle" | "end";
+  x: number;
+  y: number;
+};
+
+function buildScatterLabelPlacements(
+  points: Array<{ candidate: ModelCompareCandidateResult; label: string; x: number; y: number }>,
+  width: number,
+  height: number,
+  padding: number
+): Record<string, ScatterLabelPlacement> {
+  const fontSize = 10;
+  const lineHeight = 12;
+  const characterWidth = 6.4;
+  const pointRadius = 9;
+  const horizontalGap = 7;
+  const verticalGap = 6;
+  const overlapPadding = 4;
+  const pointCollisionPadding = 5;
+  const bounds = {
+    left: padding + 4,
+    right: width - padding - 4,
+    top: padding + lineHeight,
+    bottom: height - padding - 4
+  };
+  const occupiedRects: Array<{ left: number; right: number; top: number; bottom: number }> = [];
+  const placements: Record<string, ScatterLabelPlacement> = {};
+  const sortedPoints = [...points].sort((left, right) => left.y - right.y || left.x - right.x);
+  const pointRects = points.map((point) => ({
+    modelName: point.candidate.model_name,
+    rect: {
+      left: point.x - pointRadius - pointCollisionPadding,
+      right: point.x + pointRadius + pointCollisionPadding,
+      top: point.y - pointRadius - pointCollisionPadding,
+      bottom: point.y + pointRadius + pointCollisionPadding
+    }
+  }));
+
+  for (const point of sortedPoints) {
+    const labelWidth = Math.max(point.label.length * characterWidth, fontSize * 4);
+    const candidates = [
+      { textAnchor: "start" as const, x: point.x + pointRadius + horizontalGap, y: point.y - verticalGap },
+      { textAnchor: "end" as const, x: point.x - pointRadius - horizontalGap, y: point.y - verticalGap },
+      { textAnchor: "middle" as const, x: point.x, y: point.y - pointRadius - verticalGap },
+      { textAnchor: "middle" as const, x: point.x, y: point.y + pointRadius + lineHeight },
+      { textAnchor: "start" as const, x: point.x + pointRadius + horizontalGap, y: point.y + lineHeight * 0.45 },
+      { textAnchor: "end" as const, x: point.x - pointRadius - horizontalGap, y: point.y + lineHeight * 0.45 },
+      { textAnchor: "start" as const, x: point.x + pointRadius + horizontalGap + 8, y: point.y - verticalGap - 8 },
+      { textAnchor: "end" as const, x: point.x - pointRadius - horizontalGap - 8, y: point.y - verticalGap - 8 }
+    ];
+
+    let bestPlacement: ScatterLabelPlacement | null = null;
+    let bestRect: { left: number; right: number; top: number; bottom: number } | null = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+
+    for (const candidate of candidates) {
+      const rect = getScatterLabelRect(candidate, labelWidth, lineHeight);
+      const clampedPlacement = clampScatterLabelPlacement(candidate, rect, bounds);
+      const clampedRect = getScatterLabelRect(clampedPlacement, labelWidth, lineHeight);
+      const overlapPenalty = occupiedRects.reduce((totalPenalty, occupiedRect) => {
+        if (!doRectsOverlap(expandRect(occupiedRect, overlapPadding), expandRect(clampedRect, overlapPadding))) {
+          return totalPenalty;
+        }
+        return totalPenalty + getRectOverlapArea(occupiedRect, clampedRect);
+      }, 0);
+      const pointPenalty = pointRects.reduce((totalPenalty, pointRect) => {
+        if (!doRectsOverlap(pointRect.rect, clampedRect)) {
+          return totalPenalty;
+        }
+        const collisionPenalty = pointRect.modelName === point.candidate.model_name ? 160 : 240;
+        return totalPenalty + collisionPenalty + getRectOverlapArea(pointRect.rect, clampedRect) * 3;
+      }, 0);
+      const distancePenalty = Math.abs(clampedPlacement.x - point.x) * 0.35 + Math.abs(clampedPlacement.y - point.y) * 0.85;
+      const score = overlapPenalty * 100 + pointPenalty * 100 + distancePenalty;
+      if (score < bestScore) {
+        bestPlacement = clampedPlacement;
+        bestRect = clampedRect;
+        bestScore = score;
+      }
+    }
+
+    const finalPlacement = bestPlacement ?? { textAnchor: "start", x: point.x + horizontalGap, y: point.y - verticalGap };
+    occupiedRects.push(bestRect ?? getScatterLabelRect(finalPlacement, labelWidth, lineHeight));
+    placements[point.candidate.model_name] = finalPlacement;
+  }
+
+  return placements;
+}
+
+function getScatterLabelRect(placement: ScatterLabelPlacement, labelWidth: number, lineHeight: number) {
+  const left =
+    placement.textAnchor === "start"
+      ? placement.x
+      : placement.textAnchor === "end"
+        ? placement.x - labelWidth
+        : placement.x - labelWidth / 2;
+  return {
+    left,
+    right: left + labelWidth,
+    top: placement.y - lineHeight + 2,
+    bottom: placement.y + 2
+  };
+}
+
+function clampScatterLabelPlacement(
+  placement: ScatterLabelPlacement,
+  rect: { left: number; right: number; top: number; bottom: number },
+  bounds: { left: number; right: number; top: number; bottom: number }
+): ScatterLabelPlacement {
+  let x = placement.x;
+  let y = placement.y;
+  if (rect.left < bounds.left) {
+    x += bounds.left - rect.left;
+  }
+  if (rect.right > bounds.right) {
+    x -= rect.right - bounds.right;
+  }
+  if (rect.top < bounds.top) {
+    y += bounds.top - rect.top;
+  }
+  if (rect.bottom > bounds.bottom) {
+    y -= rect.bottom - bounds.bottom;
+  }
+  return {
+    textAnchor: placement.textAnchor,
+    x,
+    y
+  };
+}
+
+function doRectsOverlap(
+  left: { left: number; right: number; top: number; bottom: number },
+  right: { left: number; right: number; top: number; bottom: number }
+) {
+  return !(
+    left.right < right.left ||
+    left.left > right.right ||
+    left.bottom < right.top ||
+    left.top > right.bottom
+  );
+}
+
+function expandRect(rect: { left: number; right: number; top: number; bottom: number }, padding: number) {
+  return {
+    left: rect.left - padding,
+    right: rect.right + padding,
+    top: rect.top - padding,
+    bottom: rect.bottom + padding
+  };
+}
+
+function getRectOverlapArea(
+  left: { left: number; right: number; top: number; bottom: number },
+  right: { left: number; right: number; top: number; bottom: number }
+) {
+  const overlapWidth = Math.max(0, Math.min(left.right, right.right) - Math.max(left.left, right.left));
+  const overlapHeight = Math.max(0, Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top));
+  return overlapWidth * overlapHeight;
 }
 
 function MetricTrendChart({
@@ -1367,9 +1491,6 @@ function MetricTrendChart({
   }
 
   const allSeriesByMetricName = new Map(series.map((item) => [item.metricName, item]));
-  const top1AccPoints = [...(allSeriesByMetricName.get("top1_acc")?.points ?? [])].sort(
-    (left, right) => left.experiment_index - right.experiment_index
-  );
   const baselineMetricValues = new Map(
     series.flatMap((item) => {
       const firstPoint = [...item.points].sort((left, right) => left.experiment_index - right.experiment_index)[0];
@@ -1823,49 +1944,6 @@ function buildPersistedSearchTrendSeries(summary: AutoTrainSummarySnapshot | nul
       ];
     })
   })).filter((series) => series.points.length > 0);
-}
-
-function buildPersistedRecentExperiments(summary: AutoTrainSummarySnapshot | null) {
-  if (!summary) {
-    return [];
-  }
-
-  const experiments: Array<{
-    id: string;
-    status: string;
-    decision?: string | null;
-    result?: {
-      metrics?: Record<string, number>;
-      resource?: Record<string, number>;
-    } | null;
-  }> = [];
-
-  if (summary.baseline?.experiment_id) {
-    experiments.push({
-      id: summary.baseline.experiment_id,
-      status: summary.baseline.status ?? "unknown",
-      decision: summary.baseline.decision ?? null,
-      result: {
-        metrics: summary.baseline.metrics
-      }
-    });
-  }
-
-  for (const round of summary.rounds ?? []) {
-    if (!round.result?.experiment_id) {
-      continue;
-    }
-    experiments.push({
-      id: round.result.experiment_id,
-      status: round.result.status ?? "unknown",
-      decision: round.result.decision ?? null,
-      result: {
-        metrics: round.result.metrics
-      }
-    });
-  }
-
-  return experiments.slice(-6).reverse();
 }
 
 function resolveCurrentAutoTask(
@@ -2386,10 +2464,20 @@ function getComparePointColor(modelName: string) {
       return "#ff8a00";
     case "mobilenet_v3_small":
       return "#2b59ff";
+    case "mobilenet_v3_large":
+      return "#6a5cff";
+    case "efficientnet_b0":
+      return "#0f8b8d";
+    case "efficientnet_b1":
+      return "#1b9aaa";
     case "googlenet":
       return "#11a36a";
     case "resnet18":
       return "#d9485f";
+    case "resnet34":
+      return "#c83f57";
+    case "resnet50":
+      return "#b5314e";
     default:
       return "#5b6475";
   }
@@ -2403,16 +2491,6 @@ function formatAccuracy(value: number | null | undefined) {
     return `${(value * 100).toFixed(2)}%`;
   }
   return value.toFixed(3);
-}
-
-function formatAccuracyDetailed(value: number | null | undefined) {
-  if (typeof value !== "number" || Number.isNaN(value)) {
-    return "—";
-  }
-  if (value >= 0 && value <= 1) {
-    return `${(value * 100).toFixed(3)}%`;
-  }
-  return value.toFixed(4);
 }
 
 function formatLatency(value: number | null | undefined) {

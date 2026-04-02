@@ -175,11 +175,11 @@ export function HistoryPage() {
                   <p>{taskItem.summary ?? buildTaskSummary(taskItem)}</p>
                 </div>
                 <div className="history-meta">
-                  <span className={`history-status-pill history-status-pill-${normalizeStatusTone(taskItem.status)}`}>
+                  <span className={`status-pill status-${normalizeStatusTone(taskItem.status)}`}>
                     {formatStatusLabel(taskItem.status)}
                   </span>
-                  <span>{taskItem.dataset ?? "Unknown dataset"}</span>
-                  <span>{taskItem.model_name ?? "Multi-model"}</span>
+                  <span className="history-meta-chip">{taskItem.dataset ?? "Unknown dataset"}</span>
+                  <span className="history-meta-chip">{taskItem.model_name ?? "Multi-model"}</span>
                 </div>
               </div>
             ))
@@ -213,6 +213,9 @@ function formatTaskTypeLabel(taskType: "auto_train" | "model_compare") {
 }
 
 function formatStatusLabel(status: string) {
+  if (["stopped", "stopped_by_policy", "stopped_by_user"].includes(status)) {
+    return "Stopped";
+  }
   return status.replace(/_/g, " ");
 }
 

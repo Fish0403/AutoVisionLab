@@ -4,24 +4,47 @@ const KNOWN_DATASET_IMAGE_OPTIONS: Record<string, number[]> = {
   neu: [200, 224, 256]
 };
 
-export type SupportedModelName = "mobilenet_v2" | "mobilenet_v3_small" | "googlenet" | "resnet18";
+export type SupportedModelName =
+  | "mobilenet_v2"
+  | "mobilenet_v3_small"
+  | "mobilenet_v3_large"
+  | "efficientnet_b0"
+  | "efficientnet_b1"
+  | "googlenet"
+  | "resnet18"
+  | "resnet34"
+  | "resnet50";
 
 export const MODEL_LABELS: Record<SupportedModelName, string> = {
   mobilenet_v2: "MobileNetV2",
   mobilenet_v3_small: "MobileNetV3 Small",
+  mobilenet_v3_large: "MobileNetV3 Large",
+  efficientnet_b0: "EfficientNet-B0",
+  efficientnet_b1: "EfficientNet-B1",
   googlenet: "GoogLeNet",
-  resnet18: "ResNet18"
+  resnet18: "ResNet18",
+  resnet34: "ResNet34",
+  resnet50: "ResNet50"
 };
 
 export const COMPARE_CANDIDATE_MODELS: SupportedModelName[] = [
   "mobilenet_v2",
   "mobilenet_v3_small",
-  "googlenet"
+  "mobilenet_v3_large",
+  "efficientnet_b0",
+  "efficientnet_b1",
+  "googlenet",
+  "resnet18",
+  "resnet34",
+  "resnet50"
 ];
 
 export function getModelFamily(modelName: SupportedModelName): string {
   if (modelName.startsWith("mobilenet")) {
     return "mobilenet";
+  }
+  if (modelName.startsWith("efficientnet")) {
+    return "efficientnet";
   }
   if (modelName === "googlenet") {
     return "googlenet";
