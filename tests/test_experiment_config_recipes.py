@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from uuid import uuid4
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -81,13 +82,13 @@ class ExperimentConfigRecipeTest(unittest.TestCase):
             "data/classification/neu/train.txt",
         )
 
-    def test_default_dataset_recipe_infers_dt_class_names_and_model_output_classes(self) -> None:
+    def test_default_dataset_recipe_leaves_class_names_empty_without_manifests(self) -> None:
         payload = _build_config_payload()
-        payload["dataset"] = "DT"
+        payload["dataset"] = f"dataset_{uuid4().hex}"
         config = ExperimentConfig.model_validate(payload)
 
-        self.assertEqual(config.dataset_recipe.class_names, ["0", "1", "2"])
-        self.assertEqual(config.model_recipe.nc, 3)
+        self.assertEqual(config.dataset_recipe.class_names, [])
+        self.assertIsNone(config.model_recipe.nc)
 
     def test_mobilenet_v2_defaults_attach_native_components_and_dropout(self) -> None:
         payload = _build_config_payload()
@@ -174,6 +175,42 @@ class ExperimentConfigRecipeTest(unittest.TestCase):
             config.dataset_recipe.source.prepared_source_dir,
             "data/raw/neu/classification_source",
         )
+
+    def test_legacy_params_null_label_smoothing_is_normalized_to_zero(self) -> None:
+        payload = _build_config_payload()
+        payload["params"]["label_smoothing"] = None
+
+        config = ExperimentConfig.model_validate(payload)
+
+        self.assertEqual(config.params.label_smoothing, 0.0)
+        self.assertEqual(config.train_hyp.label_smoothing, 0.0)
+
+    def test_explicit_train_hyp_null_label_smoothing_is_normalized_to_zero(self) -> None:
+        payload = _build_config_payload()
+        payload["train_hyp"] = {
+            "version": "train_hyp@v1",
+            "task_type": "classification",
+            "optimizer": "adamw",
+            "lr0": 0.001,
+            "weight_decay": 0.0005,
+            "scheduler": "cosine",
+            "epochs": 20,
+            "batch_size": 32,
+            "image_size": 96,
+            "label_smoothing": None,
+            "augmentation": {
+                "policy": "basic",
+                "mixup": 0.3,
+                "cutmix": 0.1,
+                "random_erasing": 0.2,
+            },
+            "loss": {"name": "cross_entropy_with_label_smoothing"},
+        }
+
+        config = ExperimentConfig.model_validate(payload)
+
+        self.assertEqual(config.train_hyp.label_smoothing, 0.0)
+        self.assertEqual(config.result_params().label_smoothing, 0.0)
 
     def test_result_params_are_derived_from_train_hyp(self) -> None:
         payload = _build_config_payload()

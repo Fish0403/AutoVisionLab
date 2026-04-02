@@ -27,10 +27,10 @@ class ClassificationAugmentationsTest(unittest.TestCase):
     """Verify dataset-aware normalization behavior."""
 
     def test_resolve_classification_normalization_returns_dataset_stats(self) -> None:
-        mean, std = resolve_classification_normalization("DT")  # type: ignore[misc]
+        mean, std = resolve_classification_normalization("NEU")  # type: ignore[misc]
 
-        self.assertEqual(mean, (0.4707, 0.4707, 0.4707))
-        self.assertEqual(std, (0.0587, 0.0587, 0.0587))
+        self.assertEqual(mean, (0.5002, 0.5002, 0.5002))
+        self.assertEqual(std, (0.1103, 0.1103, 0.1103))
 
     def test_build_train_transform_uses_dataset_specific_normalization(self) -> None:
         augmentation = TrainHypAugmentation(policy="basic", mixup=0.0, cutmix=0.0, random_erasing=0.0)
