@@ -60,7 +60,6 @@ export interface TrainingFormValues {
   optimizer: "adamw" | "adam" | "sgd";
   learningRate: number;
   batchSize: number;
-  imageSize: number;
   epochs: number;
   weightDecay: number;
   scheduler: "cosine" | "step" | "none";
@@ -68,7 +67,7 @@ export interface TrainingFormValues {
   labelSmoothing: number;
 }
 
-export function defaultFormValues(dataset: string, imageSize: number): TrainingFormValues {
+export function defaultFormValues(dataset: string): TrainingFormValues {
   return {
     dataset,
     modelName: "mobilenet_v3_small",
@@ -77,7 +76,6 @@ export function defaultFormValues(dataset: string, imageSize: number): TrainingF
     optimizer: "adamw",
     learningRate: 0.003,
     batchSize: 64,
-    imageSize,
     epochs: 10,
     weightDecay: 0.0001,
     scheduler: "cosine",
@@ -122,6 +120,15 @@ export function getDatasetImageOptions(datasets: DatasetSummary[], datasetName: 
   return [64];
 }
 
+export function getDatasetBaselineImageSize(datasets: DatasetSummary[], datasetName: string): number {
+  const dataset = datasets.find((item) => item.name === datasetName);
+  const originalImageSize = Number(dataset?.original_image_size ?? 0);
+  if (originalImageSize > 0) {
+    return originalImageSize;
+  }
+  return getDatasetImageOptions(datasets, datasetName)[0] ?? 64;
+}
+
 export function buildSearchPolicy() {
   return {
     allow_basic_hparam_search: true,
@@ -157,6 +164,7 @@ export function buildRankingPolicy() {
 
 export function buildExperimentConfig(
   values: TrainingFormValues,
+  imageSize: number,
   parameterSpaceVersion: string,
   modelName?: SupportedModelName,
 ) {
@@ -175,7 +183,7 @@ export function buildExperimentConfig(
       optimizer: values.optimizer,
       learning_rate: values.learningRate,
       batch_size: values.batchSize,
-      image_size: values.imageSize,
+      image_size: imageSize,
       epochs: values.epochs,
       weight_decay: values.weightDecay,
       scheduler: values.scheduler,

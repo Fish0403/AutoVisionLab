@@ -9,6 +9,7 @@
 - `AI` 在当前模型 `parameter_space` 声明的可编辑字段内自主搜索
 - 前端不再要求用户手动勾选搜索维度
 - proposal 可以自由决定修改一个或多个字段，只要字段和值都合法
+- `image_size` 不再使用固定候选集合；若 proposal 修改它，只能相对当前 source experiment 严格减小
 
 ## 搜索维度
 
@@ -67,6 +68,7 @@
 - proposal 必须是结构化 JSON
 - proposal 必须通过 schema 校验
 - proposal 必须通过 parameter space 校验
+- proposal 若修改 `image_size`，新值必须是正整数，且严格小于当前 source experiment 的 `image_size`
 - proposal 不能为空
 - proposal 不再受单变量 / 双变量预算约束
 - proposal 不再受“基础字段优先”或“非基础字段优先”这类人工引导约束

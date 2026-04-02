@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from uuid import uuid4
 
 from PIL import Image
 
@@ -72,10 +73,11 @@ class ClassificationManifestLoaderTest(unittest.TestCase):
     def test_manifest_dataset_loads_images_from_raw_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root_dir = Path(temp_dir)
-            source_root = root_dir / "raw" / "KDSC"
+            dataset_name = f"dataset_{uuid4().hex}"
+            source_root = root_dir / "raw" / dataset_name
             image_path = source_root / "0" / "sample_1.jpg"
             _write_image(image_path)
-            manifest_path = root_dir / "classification" / "KDSC" / "train.txt"
+            manifest_path = root_dir / "classification" / dataset_name / "train.txt"
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
             manifest_path.write_text("0/sample_1.jpg\t0\n", encoding="utf-8")
 
@@ -92,8 +94,9 @@ class ClassificationManifestLoaderTest(unittest.TestCase):
     def test_resolver_finds_manifest_and_raw_roots_case_insensitively(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root_dir = Path(temp_dir)
-            raw_root = root_dir / "raw" / "KDSC"
-            classification_root = root_dir / "classification" / "KDSC"
+            dataset_name = f"dataset_{uuid4().hex}"
+            raw_root = root_dir / "raw" / dataset_name
+            classification_root = root_dir / "classification" / dataset_name
             _write_image(raw_root / "0" / "sample_1.jpg")
             _write_image(raw_root / "1" / "sample_2.jpg")
             classification_root.mkdir(parents=True, exist_ok=True)
@@ -106,7 +109,7 @@ class ClassificationManifestLoaderTest(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            train_manifest, val_manifest, source_root = resolve_classification_dataset_files(root_dir, "kdsc")
+            train_manifest, val_manifest, source_root = resolve_classification_dataset_files(root_dir, dataset_name)
 
             self.assertEqual(train_manifest, classification_root / "train.txt")
             self.assertEqual(val_manifest, classification_root / "val.txt")
@@ -135,6 +138,37 @@ class ClassificationManifestLoaderTest(unittest.TestCase):
             self.assertEqual(train_manifest, classification_root / "train.txt")
             self.assertEqual(val_manifest, classification_root / "val.txt")
             self.assertEqual(source_root, prepared_root)
+
+    def test_resolver_falls_back_to_shared_raw_root_when_dataset_dir_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root_dir = Path(temp_dir)
+            raw_parent = root_dir / "raw"
+            classification_root = root_dir / "classification" / "NEU"
+            source_root = raw_parent / "NEU-CLS"
+            _write_image(source_root / "Cr_1.bmp")
+            classification_root.mkdir(parents=True, exist_ok=True)
+            classification_root.joinpath("train.txt").write_text(
+                "NEU-CLS/Cr_1.bmp\tCr\n",
+                encoding="utf-8",
+            )
+            classification_root.joinpath("val.txt").write_text(
+                "NEU-CLS/Cr_1.bmp\tCr\n",
+                encoding="utf-8",
+            )
+
+            train_manifest, val_manifest, resolved_source_root = resolve_classification_dataset_files(root_dir, "NEU")
+            dataset = ManifestClassificationDataset(
+                manifest_path=train_manifest,
+                source_root=resolved_source_root,
+                class_to_idx={"Cr": 0},
+            )
+
+            image, label = dataset[0]
+            self.assertEqual(train_manifest, classification_root / "train.txt")
+            self.assertEqual(val_manifest, classification_root / "val.txt")
+            self.assertEqual(resolved_source_root, raw_parent)
+            self.assertEqual(image.size, (16, 16))
+            self.assertEqual(label, 0)
 
     def test_demo_subset_indices_mix_multiple_classes(self) -> None:
         trainer = _DummyTrainer(config=_build_config("demo"), experiment_id="exp_1", run_id="run_1")

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import json
 from threading import Lock
 import time
+from typing import Callable
 from uuid import uuid4
 
 import requests
@@ -18,7 +19,6 @@ from app.llm.aihubmix_client import AIHubMixClient, AIHubMixRequestError
 from app.schemas.experiment import ExperimentCreateRequest
 from app.schemas.parameter_space import (
     ExperimentConfig,
-    SearchPolicy,
     apply_model_recipe_change_payload,
     apply_proposal_changes_to_model_recipe,
     apply_train_hyp_change_payload,
@@ -340,6 +340,12 @@ def _build_error_summary_snapshot(
     }
 
 
+def _normalize_status_fragment(text: str | None) -> str:
+    """Return one short status fragment without trailing sentence punctuation."""
+    normalized_text = (text or "").strip()
+    return normalized_text.rstrip(".!?:;，。！？：； ").strip()
+
+
 def _build_auto_train_summary_prompt(
     *,
     run_payload: dict[str, object],
@@ -351,11 +357,15 @@ def _build_auto_train_summary_prompt(
     system_prompt = (
         "You summarize the outcome of an image classification search task for a machine learning workspace. "
         "Return strict JSON with one key: summary_text. "
-        "The summary_text must be concise, factual, and written in English. "
+        "The summary_text must be factual, written in English, and formatted as exactly four sentences. "
         "Do not mention being an AI. Do not recommend next steps. "
-        "If there is a leading successful experiment, mention it clearly. "
+        "Sentence 1 must state why the search ended and the overall search scope. "
+        "Sentence 2 must identify the leading experiment, include its experiment id, and summarize its key metrics when available. "
+        "Sentence 3 must summarize the main strategy or strategies that produced the strongest gains or the most stable results. "
+        "Sentence 4 must summarize the strategy or strategies that were ineffective, unstable, or repeatedly unsuccessful. "
         "If the search stopped by user request, state that neutrally. "
-        "If no experiment succeeded, state that clearly."
+        "If no experiment succeeded, state that clearly and still keep the four-sentence format. "
+        "If the history does not support a clear positive or negative trend, say that explicitly."
     )
     user_prompt = (
         "Summarize the following search task for one workspace results panel.\n"
@@ -437,16 +447,20 @@ def _try_attach_auto_train_ai_summary(
 def _generate_auto_train_proposal(
     task_id: str,
     run_id: str,
+    *,
+    proposal_validator: Callable[[object], str | None] | None = None,
 ) -> object:
     """Generate one proposal and keep retrying transient or invalid responses."""
     attempt_index = 0
+    retry_feedback: str | None = None
     while True:
         attempt_index += 1
         db = SessionLocal()
         try:
-            return generate_aihubmix_proposal(
+            proposal = generate_aihubmix_proposal(
                 db,
                 run_id,
+                retry_feedback=retry_feedback,
                 on_prompt_metadata=lambda prompt_metadata: _record_prompt_token_estimate(
                     task_id,
                     prompt_metadata,
@@ -456,16 +470,23 @@ def _generate_auto_train_proposal(
                     provider_metadata,
                 ),
             )
+            if proposal_validator is not None:
+                validation_error = proposal_validator(proposal)
+                if validation_error:
+                    retry_feedback = validation_error
+                    raise ValueError(validation_error)
+            return proposal
         except AutoTrainStoppedError:
             raise
         except Exception as error:
             if not _is_retryable_proposal_error(error):
                 raise
+            retry_feedback = str(error)
             retry_delay_seconds = _build_proposal_retry_delay_seconds(attempt_index)
             _append_task_log(
                 task_id,
                 (
-                    f"Proposal request failed (attempt {attempt_index}) | "
+                    f"Proposal attempt failed (attempt {attempt_index}) | "
                     f"{error} | retrying in {retry_delay_seconds}s"
                 ),
             )
@@ -564,6 +585,20 @@ def _build_followup_config(latest_experiment: dict, proposal_payload: dict) -> d
     }
 
 
+def _validate_followup_proposal(run_id: str, proposal_payload: dict) -> str | None:
+    """Return one rejection reason when a proposal cannot build a valid follow-up config."""
+    db = SessionLocal()
+    try:
+        source_experiment_detail = _resolve_followup_source_experiment(db, run_id, proposal_payload)
+    finally:
+        db.close()
+    try:
+        _build_followup_config(source_experiment_detail, proposal_payload)
+    except Exception as error:
+        return f"Proposal cannot build a valid follow-up config: {error}"
+    return None
+
+
 def _resolve_followup_source_experiment(db: SessionLocal, run_id: str, proposal_payload: dict) -> dict:
     """Pick the current best experiment that the next round should branch from."""
     run_detail = get_run_detail(db, run_id)
@@ -581,20 +616,6 @@ def _resolve_followup_source_experiment(db: SessionLocal, run_id: str, proposal_
             return latest_experiment_detail.model_dump()
 
     raise ValueError("No valid source experiment found for the next auto-train round")
-
-
-def _load_latest_search_policy_for_run(db: SessionLocal, run_id: str) -> SearchPolicy:
-    """Return the latest persisted search policy for one run."""
-    run_detail = get_run_detail(db, run_id)
-    if run_detail is None or not run_detail.experiments:
-        return SearchPolicy()
-    latest_experiment_detail = get_experiment_detail(db, run_detail.experiments[-1].id)
-    if latest_experiment_detail is None:
-        return SearchPolicy()
-    experiment_config = latest_experiment_detail.config
-    if experiment_config is None:
-        return SearchPolicy()
-    return experiment_config.search_policy
 
 
 def _load_auto_train_seed_experiment(db: SessionLocal, run_id: str) -> dict | None:
@@ -834,9 +855,14 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
         _update_task(task_id, summary=summary)
         _append_task_log(task_id, f"Baseline finished: {summary['baseline']['summary']}")
         if baseline_detail["status"] != "success":
-            _append_task_log(
-                task_id,
-                "Baseline did not succeed, but search will continue from the latest available experiment.",
+            baseline_snapshot = summary["baseline"]
+            baseline_experiment_id = baseline_snapshot.get("experiment_id") or "unknown"
+            baseline_failure_summary = _normalize_status_fragment(
+                baseline_snapshot.get("summary") or baseline_detail.get("status") or "unknown error"
+            )
+            raise ValueError(
+                f"Baseline {baseline_experiment_id} failed: {baseline_failure_summary}. "
+                "Auto train stopped before generating any AI proposals."
             )
 
         round_index = 0
@@ -849,7 +875,14 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
             _update_task(task_id, current_round=round_index)
             _append_task_log(task_id, f"Round {round_index}: generating AI proposal")
             _set_activity_message(task_id, f"Generating proposal for round {round_index}")
-            proposal = _generate_auto_train_proposal(task_id, run_id)
+            proposal = _generate_auto_train_proposal(
+                task_id,
+                run_id,
+                proposal_validator=lambda current_proposal: _validate_followup_proposal(
+                    run_id,
+                    current_proposal.model_dump(),
+                ),
+            )
 
             proposal_payload = proposal.model_dump()
             summary["current_proposal"] = proposal_payload

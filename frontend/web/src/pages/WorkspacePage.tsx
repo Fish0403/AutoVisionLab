@@ -24,7 +24,7 @@ import {
   buildTaskTitle,
   COMPARE_CANDIDATE_MODELS,
   defaultFormValues,
-  getDatasetImageOptions,
+  getDatasetBaselineImageSize,
   getModelFamily,
   getPreferredDatasetName,
   MODEL_LABELS,
@@ -84,7 +84,6 @@ export function WorkspacePage() {
 
   const datasets = datasetsQuery.data ?? [];
   const defaultDataset = getPreferredDatasetName(datasets, "neu");
-  const defaultImageSize = getDatasetImageOptions(datasets, defaultDataset)[0] ?? 64;
   const areDatasetsReady = !datasetsQuery.isPending && !datasetsQuery.isError && datasets.length > 0;
 
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(
@@ -98,7 +97,7 @@ export function WorkspacePage() {
   const [isSearchLaunchPending, setIsSearchLaunchPending] = useState(false);
   const [showAllCompareModels, setShowAllCompareModels] = useState(false);
   const [draftTaskTitle, setDraftTaskTitle] = useState("Untitled task");
-  const [formValues, setFormValues] = useState<TrainingFormValues>(() => defaultFormValues(defaultDataset, defaultImageSize));
+  const [formValues, setFormValues] = useState<TrainingFormValues>(() => defaultFormValues(defaultDataset));
   const [selectedCompareCandidate, setSelectedCompareCandidate] = useState<CompareSearchCandidate | null>(null);
   const selectedDatasetOption = datasets.find((dataset) => dataset.name === formValues.dataset) ?? null;
   const selectedDatasetOptionLabel = selectedDatasetOption?.name ?? formValues.dataset;
@@ -145,7 +144,7 @@ export function WorkspacePage() {
       setIsSearchLaunchPending(false);
       setDraftTaskTitle("Untitled task");
       setMode("compare");
-      setFormValues(defaultFormValues(defaultDataset, defaultImageSize));
+      setFormValues(defaultFormValues(defaultDataset));
       writeLocalStorage(SELECTED_TASK_ID_STORAGE_KEY, null);
       writeLocalStorage(SELECTED_TASK_TYPE_STORAGE_KEY, null);
       return;
@@ -159,7 +158,7 @@ export function WorkspacePage() {
       setMode(requestedTaskType === "model_compare" ? "compare" : "search");
       setSelectedCompareCandidate(null);
     }
-  }, [defaultDataset, defaultImageSize, requestedNewTask, requestedTaskId, requestedTaskType]);
+  }, [defaultDataset, requestedNewTask, requestedTaskId, requestedTaskType]);
 
   useEffect(() => {
     writeLocalStorage(SELECTED_TASK_ID_STORAGE_KEY, selectedTaskId);
@@ -188,12 +187,9 @@ export function WorkspacePage() {
     }
     setFormValues((previous) => {
       const nextDataset = datasets.some((dataset) => dataset.name === previous.dataset) ? previous.dataset : defaultDataset;
-      const imageOptions = getDatasetImageOptions(datasets, nextDataset);
-      const nextImageSize = imageOptions.includes(previous.imageSize) ? previous.imageSize : imageOptions[0] ?? previous.imageSize;
       return {
         ...previous,
-        dataset: nextDataset,
-        imageSize: nextImageSize
+        dataset: nextDataset
       };
     });
   }, [datasets, defaultDataset]);
@@ -241,6 +237,7 @@ export function WorkspacePage() {
   const compareDisplayStatus = getCompareDisplayStatus(compareTask);
   const compareResultSummary = buildCompareResultSummary(compareTask);
   const compareResultSummarySource = buildCompareResultSummarySource(compareTask);
+  const baselineImageSize = getDatasetBaselineImageSize(datasets, formValues.dataset);
 
   const isDetachedSearchDraft = Boolean(
     currentAutoTask &&
@@ -250,7 +247,7 @@ export function WorkspacePage() {
   );
   const displayAutoTask = isDetachedSearchDraft || isSearchLaunchPending ? null : currentAutoTask;
   const autoTrainSummary = readAutoTrainSummary(displayAutoTask);
-  const searchResultSummary = buildSearchResultSummary(displayAutoTask, autoTrainSummary);
+  const searchResultSummary = buildSearchResultSummary(autoTrainSummary);
   const searchResultSummarySource = buildSearchResultSummarySource(displayAutoTask, autoTrainSummary);
   const searchSummaryLoadingText = buildSearchSummaryLoadingText(displayAutoTask, searchResultSummary);
 
@@ -336,7 +333,7 @@ export function WorkspacePage() {
         title: generatedTitle,
         dataset: formValues.dataset,
         candidate_models: formValues.compareCandidateModels,
-        config: buildExperimentConfig(formValues, parameterSpace.version, COMPARE_ANCHOR_MODEL)
+        config: buildExperimentConfig(formValues, baselineImageSize, parameterSpace.version, COMPARE_ANCHOR_MODEL)
       });
       await queryClient.invalidateQueries({ queryKey: ["task-history"] });
       selectTask(response.task_id, "model_compare");
@@ -360,7 +357,7 @@ export function WorkspacePage() {
         source_task_id: isSearchFromCompareContext ? selectedTaskId : null,
         source_task_title: isSearchFromCompareContext ? currentCompareTask?.title ?? null : null,
         source_model_name: isSearchFromCompareContext ? selectedCompareCandidate?.modelName ?? formValues.modelName : null,
-        config: buildExperimentConfig(formValues, parameterSpace.version),
+        config: buildExperimentConfig(formValues, baselineImageSize, parameterSpace.version),
         parameter_space: parameterSpace
       });
       await Promise.all([
@@ -515,11 +512,9 @@ export function WorkspacePage() {
                   value={formValues.dataset}
                   onChange={(event) => {
                     const nextDataset = event.target.value;
-                    const nextImageSize = getDatasetImageOptions(datasets, nextDataset)[0] ?? formValues.imageSize;
                     setFormValues((previous) => ({
                       ...previous,
-                      dataset: nextDataset,
-                      imageSize: nextImageSize
+                      dataset: nextDataset
                     }));
                   }}
                 >
@@ -539,19 +534,6 @@ export function WorkspacePage() {
                   {datasets.filter((dataset) => dataset.name !== selectedDatasetOptionLabel).map((dataset) => (
                     <option key={dataset.name} value={dataset.name}>
                       {dataset.name}
-                    </option>
-                  ))}
-                </select>
-              </FormField>
-              <FormField label="Image Size">
-                <select
-                  disabled={!isDatasetSelectorReady}
-                  value={formValues.imageSize}
-                  onChange={(event) => setFormValues((previous) => ({ ...previous, imageSize: Number(event.target.value) }))}
-                >
-                  {(areDatasetsReady ? getDatasetImageOptions(datasets, formValues.dataset) : [formValues.imageSize]).map((value) => (
-                    <option key={value} value={value}>
-                      {value}
                     </option>
                   ))}
                 </select>
@@ -880,7 +862,11 @@ export function WorkspacePage() {
                   <p className="result-summary-copy result-summary-copy-loading">{searchSummaryLoadingText}</p>
                 </div>
               ) : null}
-              <MetricTrendChart series={displayedSearchTrendSeries} />
+              <MetricTrendChart
+                series={displayedSearchTrendSeries}
+                showBestPathToggle={Boolean(displayAutoTask && isAutoTrainTerminalStatus(displayAutoTask.status))}
+                summary={autoTrainSummary}
+              />
             </div>
           )}
         </section>
@@ -952,7 +938,6 @@ function SearchProgressCard({ task, externalErrorMessage }: { task: AutoTrainTas
   const activeProposal = task && !isAutoTrainTerminalStatus(task.status) ? summary?.current_proposal ?? null : getActiveSearchProposal(summary);
   const searchFocus = describeProposalChangeSummary(activeProposal);
   const suggestionText = getSearchSuggestionText(task, summary, activeProposal);
-  const suggestionLoadingText = buildSearchSuggestionLoadingText(task, suggestionText);
   const datasetSummaryText = buildTaskDatasetSummary(task);
   const startupMessage = buildTaskStartupMessage(task);
   const primaryStatusText = datasetSummaryText ?? startupMessage;
@@ -1005,11 +990,6 @@ function SearchProgressCard({ task, externalErrorMessage }: { task: AutoTrainTas
             <div className="progress-suggestion-row">
               <SuggestionIcon />
               <p className="progress-suggestion-copy">{suggestionText}</p>
-            </div>
-          ) : suggestionLoadingText ? (
-            <div className="progress-suggestion-row progress-suggestion-row-loading">
-              <LoadingDotsIcon />
-              <p className="progress-suggestion-copy progress-suggestion-copy-loading">{suggestionLoadingText}</p>
             </div>
           ) : null}
         </div>
@@ -1453,23 +1433,40 @@ function getRectOverlapArea(
   return overlapWidth * overlapHeight;
 }
 
+type TrendMetricPoint = {
+  experiment_id: string;
+  experiment_index: number;
+  metric_name: string;
+  metric_value: number;
+};
+
+type TrendMetricSeries = {
+  metricName: string;
+  label: string;
+  color: string;
+  axis: "left" | "right";
+  family: "accuracy" | "loss" | "latency" | "epoch";
+  defaultVisible: boolean;
+  points: TrendMetricPoint[];
+};
+
+type BestPathNode = {
+  experimentId: string;
+  experimentIndex: number;
+  proposal: ProposalSnapshot | null;
+  isBaseline: boolean;
+  isCurrentBest: boolean;
+  changeSummary: string | null;
+};
+
 function MetricTrendChart({
-  series
+  series,
+  showBestPathToggle,
+  summary
 }: {
-  series: Array<{
-    metricName: string;
-    label: string;
-    color: string;
-    axis: "left" | "right";
-    family: "accuracy" | "loss" | "latency" | "epoch";
-    defaultVisible: boolean;
-    points: Array<{
-      experiment_id: string;
-      experiment_index: number;
-      metric_name: string;
-      metric_value: number;
-    }>;
-  }>;
+  series: TrendMetricSeries[];
+  showBestPathToggle: boolean;
+  summary: AutoTrainSummarySnapshot | null;
 }) {
   if (!series.length) {
     return <EmptyStateCard copy="Start or continue a search task to populate the trend chart." />;
@@ -1486,6 +1483,7 @@ function MetricTrendChart({
   };
   const chartWidth = width - padding.left - padding.right;
   const chartHeight = height - padding.top - padding.bottom;
+  const [chartMode, setChartMode] = useState<"all" | "best">("all");
   const [visibleMetricNames, setVisibleMetricNames] = useState<string[]>(() =>
     series.filter((item) => item.defaultVisible).map((item) => item.metricName)
   );
@@ -1511,14 +1509,28 @@ function MetricTrendChart({
     });
   }, [availableMetricNames, series]);
 
-  const visibleSeries = series.filter((item) => visibleMetricNames.includes(item.metricName));
+  const bestPathNodes = useMemo(() => buildBestPathNodes(series, summary), [series, summary]);
+  useEffect(() => {
+    if (chartMode === "best" && bestPathNodes.length === 0) {
+      setChartMode("all");
+    }
+  }, [bestPathNodes.length, chartMode]);
+  useEffect(() => {
+    if (!showBestPathToggle && chartMode === "best") {
+      setChartMode("all");
+    }
+  }, [chartMode, showBestPathToggle]);
+
+  const sourceSeries =
+    chartMode === "best" && bestPathNodes.length > 0 ? buildBestPathSeries(series, bestPathNodes) : series;
+  const visibleSeries = sourceSeries.filter((item) => visibleMetricNames.includes(item.metricName));
   if (!visibleSeries.length) {
     return <EmptyStateCard copy="Select at least one metric to display the trend chart." />;
   }
 
-  const allSeriesByMetricName = new Map(series.map((item) => [item.metricName, item]));
+  const allSeriesByMetricName = new Map(sourceSeries.map((item) => [item.metricName, item]));
   const baselineMetricValues = new Map(
-    series.flatMap((item) => {
+    sourceSeries.flatMap((item) => {
       const firstPoint = [...item.points].sort((left, right) => left.experiment_index - right.experiment_index)[0];
       if (!firstPoint) {
         return [];
@@ -1584,6 +1596,40 @@ function MetricTrendChart({
       pathData
     };
   });
+  const bestPathNodeByExperimentId = new Map(bestPathNodes.map((node) => [node.experimentId, node]));
+  const labelAnchorSeries = chartSeries.find((item) => item.metricName === "top1_acc") ?? chartSeries[0] ?? null;
+  const bestPathLabelEntries =
+    chartMode === "best" && labelAnchorSeries
+      ? labelAnchorSeries.plottedPoints.flatMap((point, index) => {
+          const node = bestPathNodeByExperimentId.get(point.experiment_id);
+          if (!node || node.isBaseline || !node.changeSummary) {
+            return [];
+          }
+          const lines = wrapBestPathAnnotation(node.isCurrentBest ? `best | ${node.changeSummary}` : node.changeSummary);
+          const labelWidth = Math.min(220, Math.max(...lines.map((line) => line.length), 0) * 5.5 + 18);
+          const labelHeight = lines.length * 14 + 12;
+          const preferredY = point.y + (index % 2 === 0 ? -labelHeight - 14 : 14);
+          const clampedX = Math.min(
+            Math.max(point.x - labelWidth / 2, padding.left + 6),
+            width - padding.right - labelWidth - 6
+          );
+          const clampedY = Math.min(
+            Math.max(preferredY, padding.top + 6),
+            height - padding.bottom - labelHeight - 6
+          );
+          return [
+            {
+              experimentId: point.experiment_id,
+              x: clampedX,
+              y: clampedY,
+              width: labelWidth,
+              height: labelHeight,
+              lines,
+              isCurrentBest: node.isCurrentBest
+            }
+          ];
+        })
+      : [];
   const activeRoundEntries =
     activeTooltipPoint === null
       ? []
@@ -1608,9 +1654,12 @@ function MetricTrendChart({
           ];
         });
   const activeAnchorPoint = activeTooltipPoint;
+  const activeBestPathNode =
+    activeAnchorPoint && chartMode === "best" ? bestPathNodeByExperimentId.get(activeAnchorPoint.experimentId) ?? null : null;
+  const tooltipChangeLines = activeBestPathNode?.changeSummary ? wrapBestPathAnnotation(activeBestPathNode.changeSummary) : [];
   const tooltipWidth = 188;
   const tooltipHeaderHeight = activeRoundEntries[0]?.experimentId ? 50 : 36;
-  const tooltipHeight = tooltipHeaderHeight + activeRoundEntries.length * 15 + 10;
+  const tooltipHeight = tooltipHeaderHeight + activeRoundEntries.length * 15 + tooltipChangeLines.length * 13 + 10;
   const tooltipOffset = 14;
   const tooltipX = activeAnchorPoint
     ? Math.min(
@@ -1729,17 +1778,29 @@ function MetricTrendChart({
                 onClick={() => toggleMetricVisibility(item.metricName)}
                 type="button"
               >
-              <span aria-hidden="true" className="chart-legend-swatch" style={{ backgroundColor: item.color }} />
-              {item.label}
+                <span aria-hidden="true" className="chart-legend-swatch" style={{ backgroundColor: item.color }} />
+                {item.label}
               </button>
             );
           })}
         </div>
-        {zoomRange ? (
-          <button className="text-button chart-reset-button" onClick={() => setZoomRange(null)} type="button">
-            Reset Zoom
-          </button>
-        ) : null}
+        <div className="chart-actions">
+          {showBestPathToggle ? (
+            <button
+              className="text-button chart-reset-button"
+              disabled={bestPathNodes.length === 0}
+              onClick={() => setChartMode((previous) => (previous === "all" ? "best" : "all"))}
+              type="button"
+            >
+              {chartMode === "all" ? "Path" : "All"}
+            </button>
+          ) : null}
+          {zoomRange ? (
+            <button className="text-button chart-reset-button" onClick={() => setZoomRange(null)} type="button">
+              Reset Zoom
+            </button>
+          ) : null}
+        </div>
       </div>
       <svg
         aria-label="Metric trend chart"
@@ -1837,6 +1898,29 @@ function MetricTrendChart({
             ))}
           </g>
         ))}
+        {bestPathLabelEntries.map((entry) => (
+          <g key={`annotation-${entry.experimentId}`} transform={`translate(${entry.x} ${entry.y})`}>
+            <rect
+              className={`chart-annotation-box${entry.isCurrentBest ? " chart-annotation-box-current" : ""}`}
+              height={entry.height}
+              rx={10}
+              ry={10}
+              width={entry.width}
+              x={0}
+              y={0}
+            />
+            {entry.lines.map((line, index) => (
+              <text
+                className={`chart-annotation-text${entry.isCurrentBest && index === 0 ? " chart-annotation-text-current" : ""}`}
+                key={`${entry.experimentId}-${line}-${index}`}
+                x={10}
+                y={20 + index * 14}
+              >
+                {line}
+              </text>
+            ))}
+          </g>
+        ))}
         {activeAnchorPoint ? (
           <g transform={`translate(${tooltipX} ${tooltipY})`}>
             <rect className="chart-tooltip-box" height={tooltipHeight} rx={14} ry={14} width={tooltipWidth} x={0} y={0} />
@@ -1859,6 +1943,16 @@ function MetricTrendChart({
                   )}`}
                 </text>
               </g>
+            ))}
+            {tooltipChangeLines.map((line, index) => (
+              <text
+                className="chart-tooltip-line chart-tooltip-line-annotation"
+                key={`tooltip-change-${line}-${index}`}
+                x={14}
+                y={tooltipHeaderHeight + activeRoundEntries.length * 15 + 12 + index * 13}
+              >
+                {line}
+              </text>
             ))}
           </g>
         ) : null}
@@ -1914,8 +2008,6 @@ type AutoTrainSummarySnapshot = {
   baseline?: SummarySnapshot;
   rounds?: RoundSnapshot[];
   current_proposal?: ProposalSnapshot | null;
-  final_proposal?: ProposalSnapshot | null;
-  final_suggestion_error?: string | null;
   ai_summary?: string | null;
   stop_reason?: string | null;
 };
@@ -1971,6 +2063,100 @@ function buildPersistedSearchTrendSeries(summary: AutoTrainSummarySnapshot | nul
       ];
     })
   })).filter((series) => series.points.length > 0);
+}
+
+function buildBestPathNodes(
+  series: TrendMetricSeries[],
+  summary: AutoTrainSummarySnapshot | null
+): BestPathNode[] {
+  if (!summary) {
+    return [];
+  }
+
+  const experimentIndexById = new Map<string, number>();
+  series.forEach((item) => {
+    item.points.forEach((point) => {
+      if (!experimentIndexById.has(point.experiment_id)) {
+        experimentIndexById.set(point.experiment_id, point.experiment_index);
+      }
+    });
+  });
+
+  const nodes: BestPathNode[] = [];
+  const baselineExperimentId = summary.baseline?.experiment_id;
+  if (baselineExperimentId) {
+    nodes.push({
+      experimentId: baselineExperimentId,
+      experimentIndex: experimentIndexById.get(baselineExperimentId) ?? 1,
+      proposal: null,
+      isBaseline: true,
+      isCurrentBest: false,
+      changeSummary: null
+    });
+  }
+
+  (summary.rounds ?? []).forEach((round, index) => {
+    const result = round.result;
+    if (!result?.experiment_id || result.decision !== "keep") {
+      return;
+    }
+    nodes.push({
+      experimentId: result.experiment_id,
+      experimentIndex:
+        experimentIndexById.get(result.experiment_id) ??
+        (baselineExperimentId ? index + 2 : index + 1),
+      proposal: round.proposal ?? null,
+      isBaseline: false,
+      isCurrentBest: false,
+      changeSummary: describeCompactProposalChanges(round.proposal ?? null)
+    });
+  });
+
+  const deduplicatedNodes = Array.from(
+    new Map(nodes.map((node) => [node.experimentId, node])).values()
+  ).sort((left, right) => left.experimentIndex - right.experimentIndex);
+  if (deduplicatedNodes.length > 0) {
+    deduplicatedNodes[deduplicatedNodes.length - 1] = {
+      ...deduplicatedNodes[deduplicatedNodes.length - 1],
+      isCurrentBest: true
+    };
+  }
+  return deduplicatedNodes;
+}
+
+function buildBestPathSeries(series: TrendMetricSeries[], bestPathNodes: BestPathNode[]) {
+  const bestPathExperimentIds = new Set(bestPathNodes.map((node) => node.experimentId));
+  return series
+    .map((item) => ({
+      ...item,
+      points: item.points.filter((point) => bestPathExperimentIds.has(point.experiment_id))
+    }))
+    .filter((item) => item.points.length > 0);
+}
+
+function wrapBestPathAnnotation(text: string, maxLineLength = 34) {
+  const segments = text
+    .split(" | ")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  if (segments.length === 0) {
+    return [];
+  }
+  const lines: string[] = [];
+  let currentLine = "";
+  segments.forEach((segment) => {
+    const nextLine = currentLine ? `${currentLine} | ${segment}` : segment;
+    if (nextLine.length <= maxLineLength || !currentLine) {
+      currentLine = nextLine;
+      return;
+    }
+    lines.push(currentLine);
+    currentLine = segment;
+  });
+  if (currentLine) {
+    lines.push(currentLine);
+  }
+  return lines;
 }
 
 function resolveCurrentAutoTask(
@@ -2124,7 +2310,6 @@ function getSearchSuggestionText(
   }
   if (task && isAutoTrainTerminalStatus(task.status)) {
     return (
-      summary?.final_proposal?.hypothesis?.trim() ??
       summary?.current_proposal?.hypothesis?.trim() ??
       [...(summary?.rounds ?? [])].reverse().find((round) => round.proposal?.hypothesis?.trim())?.proposal?.hypothesis?.trim() ??
       null
@@ -2133,21 +2318,7 @@ function getSearchSuggestionText(
   return null;
 }
 
-function buildSearchSuggestionLoadingText(task: AutoTrainTask | null, suggestionText: string | null) {
-  if (!task || suggestionText || isAutoTrainTerminalStatus(task.status)) {
-    return null;
-  }
-  const activityMessage = task.activity_message?.trim() ?? "";
-  if (/generating proposal|proposal retry/i.test(activityMessage)) {
-    return "Generating AI suggestion...";
-  }
-  return null;
-}
-
-function buildSearchResultSummary(
-  task: AutoTrainTask | null,
-  summary: AutoTrainSummarySnapshot | null
-) {
+function buildSearchResultSummary(summary: AutoTrainSummarySnapshot | null) {
   const aiSummary = summary?.ai_summary?.trim();
   return aiSummary || null;
 }
@@ -2224,9 +2395,6 @@ function buildTaskDatasetSummary(task: AutoTrainTask | ModelCompareTask | null) 
   const trainingImageSize = Number(task.training_image_size ?? 0);
   if (!summary) {
     return trainingImageSize > 0 ? `train size ${trainingImageSize}x${trainingImageSize}` : null;
-  }
-  if (trainingImageSize > 0 && !/train size\s+\d+x\d+/i.test(summary)) {
-    return `${summary} · train size ${trainingImageSize}x${trainingImageSize}`;
   }
   return summary;
 }
@@ -2318,6 +2486,50 @@ const PROPOSAL_CHANGE_LABELS: Record<string, string> = {
   head_name: "Head"
 };
 
+const PROPOSAL_CHANGE_SHORT_LABELS: Record<string, string> = {
+  optimizer: "opt",
+  learning_rate: "lr",
+  batch_size: "bs",
+  image_size: "img",
+  epochs: "ep",
+  weight_decay: "wd",
+  scheduler: "sch",
+  augmentation_policy: "aug",
+  mixup_alpha: "mix",
+  cutmix_alpha: "cut",
+  random_erasing_prob: "re",
+  loss_name: "loss",
+  focal_gamma: "fg",
+  label_smoothing: "ls",
+  aux_logits: "aux",
+  width_multiple: "width",
+  pooling_type: "pool",
+  classifier_dropout: "drop",
+  backbone_name: "backbone",
+  neck_name: "neck",
+  head_name: "head"
+};
+
+const PROPOSAL_CHANGE_SHORT_VALUE_LABELS: Record<string, string> = {
+  cross_entropy: "ce",
+  cross_entropy_with_label_smoothing: "ce+ls",
+  focal_loss: "focal",
+  native_classifier: "native",
+  dropout_linear: "drop+lin",
+  linear: "linear",
+  avg_pool: "avg",
+  gem_pool: "gem",
+  cosine: "cos",
+  step: "step",
+  none: "none",
+  basic: "basic",
+  adamw: "adamw",
+  adam: "adam",
+  sgd: "sgd",
+  true: "on",
+  false: "off"
+};
+
 function describeProposalChangeSummary(proposal: ProposalSnapshot | null) {
   if (!proposal) {
     return null;
@@ -2329,6 +2541,41 @@ function describeProposalChangeSummary(proposal: ProposalSnapshot | null) {
     return null;
   }
   return changedFields.join(" / ");
+}
+
+function describeCompactProposalChanges(proposal: ProposalSnapshot | null) {
+  if (!proposal) {
+    return null;
+  }
+  const changedFields = Object.entries(proposal.changes ?? {})
+    .filter(([, value]) => value !== null && value !== undefined)
+    .map(([fieldName, value]) => {
+      const fieldLabel = PROPOSAL_CHANGE_SHORT_LABELS[fieldName] ?? fieldName;
+      return `${fieldLabel} ${formatCompactProposalValue(value)}`;
+    });
+  if (!changedFields.length) {
+    return null;
+  }
+  return changedFields.join(" | ");
+}
+
+function formatCompactProposalValue(value: unknown) {
+  if (typeof value === "number") {
+    if (Number.isInteger(value)) {
+      return `${value}`;
+    }
+    if (Math.abs(value) >= 1 || value === 0) {
+      return Number(value.toFixed(3)).toString();
+    }
+    return value.toExponential(1).replace("e-0", "e-").replace("e+0", "e+");
+  }
+  if (typeof value === "boolean") {
+    return value ? "on" : "off";
+  }
+  if (typeof value === "string") {
+    return PROPOSAL_CHANGE_SHORT_VALUE_LABELS[value] ?? value.replace(/_/g, " ");
+  }
+  return String(value);
 }
 
 function normalizeCandidateModels(candidateModels: string[] | undefined): SupportedModelName[] {

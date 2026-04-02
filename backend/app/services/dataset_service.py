@@ -59,7 +59,7 @@ def build_dataset_summary_text(
     parts.append(f"test {int(dataset_summary.test_sample_count)}")
     if dataset_summary.image_width and dataset_summary.image_height:
         parts.append(f"original {dataset_summary.image_width}x{dataset_summary.image_height}")
-    if training_image_size and training_image_size > 0:
+    elif training_image_size and training_image_size > 0:
         parts.append(f"train size {training_image_size}x{training_image_size}")
     return " · ".join(parts) if parts else None
 

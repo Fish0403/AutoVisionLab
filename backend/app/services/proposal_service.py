@@ -88,11 +88,11 @@ def _build_retry_note(
     """Build targeted retry guidance after one invalid proposal."""
     retry_lines = [
         "",
-        "上一版 proposal 无效，必须先修正以下问题后再返回新的完整 JSON。",
+        "The previous proposal was invalid. Fix the issues below before returning a new complete JSON object.",
     ]
     if last_error:
-        retry_lines.append(f"上一版拒绝原因：{last_error}。")
-    retry_lines.append("请基于完整历史换一个更可执行的方向，不要重复上一版无效方案。")
+        retry_lines.append(f"Previous rejection reason: {last_error}.")
+    retry_lines.append("Choose a more executable direction based on the full history and do not repeat the invalid plan.")
     return "\n".join(retry_lines)
 
 
@@ -173,6 +173,47 @@ def _load_latest_parameter_space(db: Session, run_id: str) -> EditableParameterS
     return EditableParameterSpace.model_validate(latest_experiment.editable_parameter_space or {})
 
 
+def _load_followup_source_constraints(db: Session, run: RunModel) -> dict[str, Any]:
+    """Return the current source experiment metadata used to branch the next proposal."""
+    source_experiment: ExperimentModel | None = None
+    if run.best_experiment_id:
+        source_experiment = db.get(ExperimentModel, run.best_experiment_id)
+    if source_experiment is None:
+        source_experiment = db.scalars(
+            select(ExperimentModel).where(ExperimentModel.run_id == run.id).order_by(ExperimentModel.created_at.desc())
+        ).first()
+    if source_experiment is None:
+        return {
+            "experiment_id": None,
+            "image_size": None,
+        }
+    config_payload = source_experiment.experiment_config or {}
+    train_hyp_payload = config_payload.get("train_hyp") or {}
+    params_payload = config_payload.get("params") or {}
+    source_image_size = train_hyp_payload.get("image_size") or params_payload.get("image_size")
+    return {
+        "experiment_id": source_experiment.id,
+        "image_size": source_image_size,
+    }
+
+
+def _explain_dynamic_proposal_rejection(
+    proposal: ProposalSchema,
+    *,
+    source_constraints: dict[str, Any],
+) -> str | None:
+    """Return one dynamic rejection reason that depends on current run state."""
+    proposed_image_size = proposal.changes.image_size
+    source_image_size = source_constraints.get("image_size")
+    if proposed_image_size is not None and isinstance(source_image_size, int):
+        if proposed_image_size >= source_image_size:
+            return (
+                "image_size must be smaller than the current source experiment "
+                f"{source_constraints.get('experiment_id') or 'unknown'} value {source_image_size}: {proposed_image_size}"
+            )
+    return None
+
+
 def sanitize_disallowed_proposal_fields(
     proposal: ProposalSchema,
     search_policy: SearchPolicy,
@@ -195,6 +236,7 @@ def generate_aihubmix_proposal(
     *,
     require_non_basic_change: bool = False,
     max_changed_fields: int | None = None,
+    retry_feedback: str | None = None,
     on_prompt_metadata: Callable[[dict[str, Any]], None] | None = None,
     on_provider_metadata: Callable[[dict[str, Any]], None] | None = None,
 ) -> ProposalSchema:
@@ -215,16 +257,18 @@ def generate_aihubmix_proposal(
         "best_experiment_id": run.best_experiment_id,
         "experiment_count": len(experiment_history),
     }
+    source_constraints = _load_followup_source_constraints(db, run)
     parameter_space = _load_latest_parameter_space(db, run_id)
     search_policy = build_full_search_policy(parameter_space)
     allowed_fields = sorted(get_allowed_ai_search_fields(search_policy, parameter_space=parameter_space))
     if not allowed_fields:
         raise ValueError("No AI-editable fields are available for this run.")
-    image_size_choices: list[int] | None = None
+    image_size_definition: dict[str, Any] | None = None
     allowed_field_definitions: dict[str, Any] = {}
     if parameter_space is not None:
-        image_size_definition = parameter_space.editable_params.get("image_size")
-        image_size_choices = getattr(image_size_definition, "choices", None)
+        image_size_param_definition = parameter_space.editable_params.get("image_size")
+        if image_size_param_definition is not None:
+            image_size_definition = image_size_param_definition.model_dump()
         allowed_field_definitions = {
             field_name: definition.model_dump()
             for field_name, definition in parameter_space.editable_params.items()
@@ -232,9 +276,9 @@ def generate_aihubmix_proposal(
         }
 
     system_prompt = (
-        "你要为图像分类训练生成下一轮结构化 proposal。"
-        "只返回 JSON，不要输出任何额外说明。"
-        "必须严格遵循这个 schema："
+        "Generate the next structured proposal for an image classification training run. "
+        "Return JSON only with no extra text. "
+        "You must strictly follow this schema:"
         '{"task_type":"classification","model_name":"string","based_on_experiment_ids":["string"],'
         '"hypothesis":"string","changes":{"optimizer":"string|null","learning_rate":"number|null",'
         '"batch_size":"number|null","image_size":"number|null","epochs":"number|null","weight_decay":"number|null",'
@@ -244,32 +288,40 @@ def generate_aihubmix_proposal(
         '"backbone_name":"string|null","neck_name":"string|null","head_name":"string|null"},'
         '"train_hyp_changes":"object|null","recipe_changes":"object|null",'
         '"reason":"string","risk":"low|medium|high"}'
-        "其中 hypothesis 和 reason 必须使用简洁中文。"
-        "changes 是当前兼容层必填字段；如果你能明确映射到 recipe 视角，也应同时返回 train_hyp_changes 或 recipe_changes。"
-        "你会收到同一个 run 的完整实验历史，而不是只收到最新一轮。"
-        "你必须综合所有历史轮次，重点参考当前 best 以及每轮指标变化趋势。"
-        "如果某些历史实验已经被标记为 discard、crash、timeout 或 failed，要把它们视为负样本，避免重复无效尝试。"
-        "based_on_experiment_ids 必须填写你实际参考的实验 id，可包含多个。"
-        "changes 中至少要有一个字段是非 null；不要返回空 proposal。"
-        "你可以自主决定修改一个或多个字段，但所有字段和值都必须严格来自当前参数空间。"
-        "hypothesis 和 reason 只能讨论当前参数空间里真实存在的字段和取值，不要臆造 medium、strong、autoaugment 等未开放选项。"
+        "hypothesis and reason must be concise English. "
+        "changes is the required compatibility-layer change map; if you can map changes clearly into recipe-oriented views, also return train_hyp_changes or recipe_changes. "
+        "You will receive the full experiment history for the same run, not only the latest round. "
+        "You must use the full history, focusing on the current best result and metric trends across rounds. "
+        "If past experiments were marked discard, crash, timeout, or failed, treat them as negative examples and avoid repeating ineffective directions. "
+        "based_on_experiment_ids must list the experiment ids you actually used as evidence and may contain multiple ids. "
+        "At least one field in changes must be non-null; never return an empty proposal. "
+        "You may change one or multiple fields, but every field and value must come strictly from the current parameter space. "
+        "hypothesis and reason may only discuss fields and values that truly exist in the current parameter space; do not invent unsupported options such as medium, strong, or autoaugment."
+    )
+    retry_feedback_prompt = (
+        f"Previous full-proposal rejection:\n{json.dumps(retry_feedback, ensure_ascii=True)}\n"
+        if retry_feedback
+        else ""
     )
     base_user_prompt = (
         f"Run summary:\n{json.dumps(prompt_run_payload, ensure_ascii=True)}\n"
         f"Experiment history:\n{json.dumps(experiment_history, ensure_ascii=True)}\n"
         f"Allowed AI change fields:\n{json.dumps(allowed_fields, ensure_ascii=True)}\n"
         f"Allowed field definitions:\n{json.dumps(allowed_field_definitions, ensure_ascii=True)}\n"
-        f"Allowed image_size choices for this run:\n{json.dumps(image_size_choices, ensure_ascii=True)}\n"
-        "请为同一个 run 生成下一轮 proposal。"
-        "task_type 必须保持 classification。"
-        "不要修改 model_name。"
-        "不要修改 epochs；epochs 已固定，AI 不允许调整。"
-        "只能修改 Allowed AI change fields 中列出的字段。"
-        "每个字段的可选值或范围必须严格遵循 Allowed field definitions。"
-        "只能提出结构化参数改动。"
-        "如果当前 parameter space 已开放 component-level 搜索，优先使用 neck_name 和 head_name，而不是旧的细粒度 recipe 字段。"
-        "不要只根据最后一轮实验下结论；必须结合整个 run 的历史记录判断下一步。默认围绕当前 best 继续优化。"
-        "你可以自由决定下一步搜索方向，但不要机械重复最近几轮几乎相同的建议。"
+        f"image_size parameter definition:\n{json.dumps(image_size_definition, ensure_ascii=True)}\n"
+        f"Current source experiment constraints:\n{json.dumps(source_constraints, ensure_ascii=True)}\n"
+        f"{retry_feedback_prompt}"
+        "Generate the next proposal for the same run. "
+        "task_type must remain classification. "
+        "Do not change model_name. "
+        "Do not change epochs; epochs is fixed and the AI is not allowed to adjust it. "
+        "Only modify fields listed in Allowed AI change fields. "
+        "Every value must strictly follow Allowed field definitions. "
+        "Only propose structured parameter changes. "
+        "If the current parameter space enables component-level search, prefer neck_name and head_name over old fine-grained recipe fields. "
+        "Do not decide only from the last round; use the full run history and keep optimizing around the current best by default. "
+        "If you change image_size, it must stay a positive integer and be strictly smaller than the current source experiment image_size. "
+        "You may choose the next search direction freely, but do not mechanically repeat nearly identical suggestions from the most recent rounds."
     )
     client = AIHubMixClient()
     last_error: str | None = None
@@ -369,6 +421,13 @@ def generate_aihubmix_proposal(
         rejection_reason = explain_proposal_rejection(proposal, search_policy, parameter_space=parameter_space)
         if rejection_reason is not None:
             last_error = f"Proposal contains blocked parameter changes: {rejection_reason}"
+            continue
+        dynamic_rejection_reason = _explain_dynamic_proposal_rejection(
+            proposal,
+            source_constraints=source_constraints,
+        )
+        if dynamic_rejection_reason is not None:
+            last_error = f"Proposal violates run-time search rules: {dynamic_rejection_reason}"
             continue
         append_run_log(
             run_id,

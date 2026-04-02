@@ -581,11 +581,15 @@ button:disabled {
   color: var(--accent);
 }
 
+.mode-options-panel .option-stack {
+  gap: 6px;
+}
+
 .option-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 0;
+  padding: 5px 0;
 }
 
 .model-select-grid {
@@ -756,11 +760,21 @@ button:disabled {
   letter-spacing: -0.01em;
 }
 
+.result-summary-copy-loading,
+.progress-suggestion-copy-loading {
+  color: #667085;
+}
+
 .result-summary-row {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 6px;
+}
+
+.result-summary-row-loading,
+.progress-suggestion-row-loading {
+  opacity: 0.86;
 }
 
 .result-summary-source {
@@ -813,6 +827,10 @@ button:disabled {
   color: var(--text-muted);
 }
 
+.progress-inline-icon-loading {
+  animation: progress-loading-pulse 1s ease-in-out infinite;
+}
+
 .progress-suggestion-row {
   display: grid;
   grid-template-columns: 15px minmax(0, 1fr);
@@ -836,6 +854,16 @@ button:disabled {
   line-height: 1.4;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+
+@keyframes progress-loading-pulse {
+  0%,
+  100% {
+    opacity: 0.42;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .progress-suggestion-copy strong {
@@ -1065,6 +1093,20 @@ button:disabled {
   gap: 12px;
 }
 
+.chart-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.chart-actions .chart-reset-button {
+  padding: 0;
+  font-size: 0.76rem;
+  line-height: 1.2;
+}
+
 .chart-legend {
   display: flex;
   flex-wrap: wrap;
@@ -1200,6 +1242,31 @@ button:disabled {
   fill: #5b6475;
   font-size: 9px;
   font-weight: 600;
+}
+
+.chart-tooltip-line-annotation {
+  fill: #2d3648;
+}
+
+.chart-annotation-box {
+  fill: rgba(255, 255, 255, 0.96);
+  stroke: #d9dfeb;
+  stroke-width: 1;
+  filter: drop-shadow(0 8px 16px rgba(28, 35, 52, 0.1));
+}
+
+.chart-annotation-box-current {
+  stroke: #8fb2ff;
+}
+
+.chart-annotation-text {
+  fill: #2d3648;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.chart-annotation-text-current {
+  fill: #1d4ed8;
 }
 
 .chart-meta {

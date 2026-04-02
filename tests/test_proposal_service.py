@@ -37,6 +37,11 @@ def _build_parameter_space() -> EditableParameterSpace:
                     "min": 0.0,
                     "max": 0.01,
                 },
+                "image_size": {
+                    "type": "number_range",
+                    "min": 1,
+                    "max": 10000,
+                },
             },
         }
     )
@@ -226,6 +231,10 @@ class ProposalServiceTest(unittest.TestCase):
                 "app.services.proposal_service._load_latest_parameter_space",
                 return_value=_build_parameter_space(),
             ),
+            patch(
+                "app.services.proposal_service._load_followup_source_constraints",
+                return_value={"experiment_id": "exp_keep", "image_size": 96},
+            ),
             patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
             patch("app.services.proposal_service.append_run_log"),
         ):
@@ -238,7 +247,123 @@ class ProposalServiceTest(unittest.TestCase):
         self.assertEqual(mock_client.create_json_completion_with_metadata.call_count, 2)
         second_prompt = mock_client.create_json_completion_with_metadata.call_args_list[1].kwargs["user_prompt"]
         self.assertIn("Proposal does not contain any effective parameter changes", second_prompt)
-        self.assertIn("请基于完整历史换一个更可执行的方向", second_prompt)
+        self.assertIn("Choose a more executable direction based on the full history", second_prompt)
+
+    def test_generate_aihubmix_proposal_includes_outer_retry_feedback_in_prompt(self) -> None:
+        db = Mock()
+        db.get.return_value = SimpleNamespace(
+            id="run_1",
+            name="retry-feedback",
+            dataset="cifar10",
+            model_name="mobilenet_v3_small",
+            baseline_experiment_id="exp_keep",
+            best_experiment_id="exp_keep",
+            frontier_experiment_id="exp_keep",
+        )
+        experiment_history = [
+            {"id": "exp_keep", "status": "success", "decision": "keep"},
+        ]
+        mock_client = Mock()
+        mock_client.create_json_completion_with_metadata.return_value = (
+            {
+                "task_type": "classification",
+                "model_name": "mobilenet_v3_small",
+                "based_on_experiment_ids": ["exp_keep"],
+                "hypothesis": "Adjust weight decay.",
+                "changes": {"weight_decay": 0.0005},
+                "reason": "Keep the next trial executable after a config-build rejection.",
+                "risk": "low",
+            },
+            {},
+        )
+
+        with (
+            patch("app.services.proposal_service.get_run_history_payload", return_value=experiment_history),
+            patch("app.services.proposal_service._load_latest_search_policy", return_value=SearchPolicy()),
+            patch(
+                "app.services.proposal_service._load_latest_parameter_space",
+                return_value=_build_parameter_space(),
+            ),
+            patch(
+                "app.services.proposal_service._load_followup_source_constraints",
+                return_value={"experiment_id": "exp_keep", "image_size": 96},
+            ),
+            patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
+            patch("app.services.proposal_service.append_run_log"),
+        ):
+            generate_aihubmix_proposal(
+                db,
+                "run_1",
+                retry_feedback="Proposal cannot build a valid follow-up config: image_size must stay within dataset bounds",
+            )
+
+        first_prompt = mock_client.create_json_completion_with_metadata.call_args.kwargs["user_prompt"]
+        self.assertIn("Previous full-proposal rejection", first_prompt)
+        self.assertIn("image_size must stay within dataset bounds", first_prompt)
+        self.assertIn("strictly smaller than the current source experiment image_size", first_prompt)
+
+    def test_generate_aihubmix_proposal_retries_when_image_size_does_not_shrink(self) -> None:
+        db = Mock()
+        db.get.return_value = SimpleNamespace(
+            id="run_1",
+            name="image-size-retry",
+            dataset="cifar10",
+            model_name="mobilenet_v3_small",
+            baseline_experiment_id="exp_keep",
+            best_experiment_id="exp_keep",
+            frontier_experiment_id="exp_keep",
+        )
+        experiment_history = [
+            {"id": "exp_keep", "status": "success", "decision": "keep"},
+        ]
+        mock_client = Mock()
+        mock_client.create_json_completion_with_metadata.side_effect = [
+            (
+                {
+                    "task_type": "classification",
+                    "model_name": "mobilenet_v3_small",
+                    "based_on_experiment_ids": ["exp_keep"],
+                    "hypothesis": "Try a larger image size.",
+                    "changes": {"image_size": 128},
+                    "reason": "Probe a bigger crop.",
+                    "risk": "medium",
+                },
+                {},
+            ),
+            (
+                {
+                    "task_type": "classification",
+                    "model_name": "mobilenet_v3_small",
+                    "based_on_experiment_ids": ["exp_keep"],
+                    "hypothesis": "Try a smaller image size.",
+                    "changes": {"image_size": 64},
+                    "reason": "Reduce compute while staying within the current source bound.",
+                    "risk": "low",
+                },
+                {},
+            ),
+        ]
+
+        with (
+            patch("app.services.proposal_service.get_run_history_payload", return_value=experiment_history),
+            patch("app.services.proposal_service._load_latest_search_policy", return_value=SearchPolicy()),
+            patch(
+                "app.services.proposal_service._load_latest_parameter_space",
+                return_value=_build_parameter_space(),
+            ),
+            patch(
+                "app.services.proposal_service._load_followup_source_constraints",
+                return_value={"experiment_id": "exp_keep", "image_size": 96},
+            ),
+            patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
+            patch("app.services.proposal_service.append_run_log"),
+        ):
+            proposal = generate_aihubmix_proposal(db, "run_1")
+
+        self.assertEqual(proposal.changes.image_size, 64)
+        self.assertEqual(mock_client.create_json_completion_with_metadata.call_count, 2)
+        second_prompt = mock_client.create_json_completion_with_metadata.call_args_list[1].kwargs["user_prompt"]
+        self.assertIn("image_size must be smaller than the current source experiment exp_keep value 96: 128", second_prompt)
 
     def test_generate_aihubmix_proposal_ignores_disabled_run_search_policy(self) -> None:
         db = Mock()
@@ -284,6 +409,10 @@ class ProposalServiceTest(unittest.TestCase):
             patch(
                 "app.services.proposal_service._load_latest_parameter_space",
                 return_value=_build_parameter_space(),
+            ),
+            patch(
+                "app.services.proposal_service._load_followup_source_constraints",
+                return_value={"experiment_id": "exp_keep", "image_size": 96},
             ),
             patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
         ):

@@ -109,7 +109,7 @@ def build_class_index(train_manifest: Path, val_manifest: Path) -> dict[str, int
 
 
 def resolve_classification_dataset_files(data_root: Path, dataset_name: str) -> tuple[Path, Path, Path]:
-    """Resolve manifest files and source root for one classification dataset."""
+    """Resolve manifest files and a manifest-driven source root for one classification dataset."""
     manifest_root = resolve_dataset_dir(
         parent_dir=data_root / "classification",
         dataset_name=dataset_name,
@@ -123,11 +123,17 @@ def resolve_classification_dataset_files(data_root: Path, dataset_name: str) -> 
             f"{train_manifest} and {val_manifest}"
         )
 
+    raw_parent = data_root / "raw"
     raw_root = resolve_dataset_dir(
         parent_dir=data_root / "raw",
         dataset_name=dataset_name,
-        strict=True,
+        strict=False,
     )
-    prepared_source_root = raw_root / PREPARED_SOURCE_DIRNAME
-    source_root = prepared_source_root if prepared_source_root.exists() else raw_root
+    if raw_root.exists():
+        prepared_source_root = raw_root / PREPARED_SOURCE_DIRNAME
+        source_root = prepared_source_root if prepared_source_root.exists() else raw_root
+    else:
+        # Fall back to the shared raw root so manifest-relative paths can still
+        # resolve datasets whose source directory name differs from dataset_name.
+        source_root = raw_parent
     return train_manifest, val_manifest, source_root

@@ -6,7 +6,8 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from uuid import uuid4
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -18,20 +19,66 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 import requests
 
 from app.schemas.parameter_space import ExperimentConfig
+from app.schemas.run import AutoTrainStartRequest
 from app.llm.aihubmix_client import AIHubMixRequestError
 from app.services.auto_train_service import (
     AUTO_TRAIN_TASKS,
     _build_auto_train_summary_prompt,
     _ensure_no_active_task,
     _build_followup_config,
+    _generate_auto_train_proposal,
     _is_retryable_proposal_error,
     _load_auto_train_seed_experiment,
-    _load_latest_search_policy_for_run,
     _normalize_auto_train_history_summary,
+    _run_auto_train_task,
     _try_attach_auto_train_ai_summary,
     delete_auto_train_task,
     stop_auto_train_task,
 )
+from app.services.parameter_space import get_parameter_space
+
+
+def _build_auto_train_config(dataset_name: str | None = None) -> ExperimentConfig:
+    """Build one minimal auto-train config payload for service tests."""
+    dataset_name = dataset_name or f"dataset_{uuid4().hex}"
+    return ExperimentConfig.model_validate(
+        {
+            "task_type": "classification",
+            "dataset": dataset_name,
+            "model_family": "mobilenet",
+            "model_name": "mobilenet_v3_small",
+            "parameter_space_version": "mobilenet_v3_small@v1",
+            "use_demo_mode": True,
+            "search_policy": {
+                "allow_basic_hparam_search": True,
+                "allowed_basic_hparam_fields": ["learning_rate", "image_size"],
+                "allow_strategy_search": False,
+                "allow_loss_search": True,
+                "allow_augmentation_search": True,
+                "allow_model_module_search": True,
+                "require_manual_approval_for_high_impact_changes": True,
+            },
+            "params": {
+                "optimizer": "adamw",
+                "learning_rate": 0.003,
+                "batch_size": 64,
+                "image_size": 96,
+                "epochs": 10,
+                "weight_decay": 0.0001,
+                "scheduler": "cosine",
+                "augmentation_policy": "basic",
+                "augmentation_params": {
+                    "mixup_alpha": 0.1,
+                    "cutmix_alpha": 0.0,
+                    "random_erasing_prob": 0.1,
+                },
+                "loss_name": "cross_entropy_with_label_smoothing",
+                "loss_params": {"focal_gamma": 2.0},
+                "label_smoothing": 0.1,
+                "aux_logits": True,
+            },
+        }
+    )
 
 
 class AutoTrainServiceTest(unittest.TestCase):
@@ -42,63 +89,6 @@ class AutoTrainServiceTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         AUTO_TRAIN_TASKS.clear()
-
-    def test_load_latest_search_policy_reads_experiment_config_object(self) -> None:
-        experiment_config = ExperimentConfig.model_validate(
-            {
-                "task_type": "classification",
-                "dataset": "cifar10",
-                "model_family": "mobilenet",
-                "model_name": "mobilenet_v3_small",
-                "parameter_space_version": "test-v1",
-                "search_policy": {
-                    "allow_basic_hparam_search": True,
-                    "allowed_basic_hparam_fields": ["learning_rate"],
-                    "allow_strategy_search": False,
-                    "allow_loss_search": True,
-                    "allow_augmentation_search": False,
-                    "allow_model_module_search": True,
-                    "require_manual_approval_for_high_impact_changes": True,
-                },
-                "params": {
-                    "optimizer": "adamw",
-                    "learning_rate": 0.003,
-                    "batch_size": 32,
-                    "image_size": 32,
-                    "epochs": 1,
-                    "weight_decay": 0.0001,
-                    "scheduler": "cosine",
-                    "augmentation_policy": "basic",
-                    "augmentation_params": {
-                        "mixup_alpha": 0.0,
-                        "cutmix_alpha": 0.0,
-                        "random_erasing_prob": 0.0,
-                    },
-                    "loss_name": "cross_entropy_with_label_smoothing",
-                    "loss_params": {"focal_gamma": 2.0},
-                    "label_smoothing": 0.1,
-                    "aux_logits": False,
-                },
-            }
-        )
-
-        with (
-            patch(
-                "app.services.auto_train_service.get_run_detail",
-                return_value=SimpleNamespace(experiments=[SimpleNamespace(id="exp_1")]),
-            ),
-            patch(
-                "app.services.auto_train_service.get_experiment_detail",
-                return_value=SimpleNamespace(config=experiment_config),
-            ),
-        ):
-            search_policy = _load_latest_search_policy_for_run(db=SimpleNamespace(), run_id="run_1")
-
-        self.assertTrue(search_policy.allow_basic_hparam_search)
-        self.assertEqual(search_policy.allowed_basic_hparam_fields, ["learning_rate"])
-        self.assertTrue(search_policy.allow_loss_search)
-        self.assertFalse(search_policy.allow_augmentation_search)
-        self.assertTrue(search_policy.allow_model_module_search)
 
     def test_build_followup_config_preserves_search_and_ranking_policies(self) -> None:
         followup_config = _build_followup_config(
@@ -272,6 +262,53 @@ class AutoTrainServiceTest(unittest.TestCase):
         self.assertEqual(experiment_detail["id"], "exp_failed")
         self.assertEqual(experiment_detail["status"], "failed")
 
+    def test_run_auto_train_task_stops_after_failed_baseline(self) -> None:
+        dataset_name = f"dataset_{uuid4().hex}"
+        request = AutoTrainStartRequest(
+            run_name="Auto Train Test",
+            dataset=dataset_name,
+            model_name="mobilenet_v3_small",
+            config=_build_auto_train_config(dataset_name),
+            parameter_space=get_parameter_space("mobilenet_v3_small"),
+        )
+        task_id = "auto_failed_baseline"
+        AUTO_TRAIN_TASKS[task_id] = {
+            "task_id": task_id,
+            "status": "queued",
+            "current_round": 0,
+            "logs": [],
+        }
+
+        with (
+            patch("app.services.auto_train_service.upsert_task_payload"),
+            patch("app.services.auto_train_service.SessionLocal", return_value=SimpleNamespace(close=lambda: None)),
+            patch("app.services.auto_train_service.create_run", return_value=SimpleNamespace(id="run_1")),
+            patch(
+                "app.services.auto_train_service._run_experiment_with_retries",
+                return_value={
+                    "id": "exp_baseline",
+                    "status": "failed",
+                    "decision_reason": "train.image_size must be declared in data.metadata.image_size_options",
+                    "result": {},
+                },
+            ),
+            patch("app.services.auto_train_service._try_attach_auto_train_ai_summary") as mock_attach_summary,
+            patch("app.services.auto_train_service._generate_auto_train_proposal") as mock_generate_proposal,
+        ):
+            _run_auto_train_task(task_id, request)
+
+        task_payload = AUTO_TRAIN_TASKS[task_id]
+        self.assertEqual(task_payload["status"], "failed")
+        self.assertIn("Baseline exp_baseline failed:", task_payload["error"])
+        self.assertIn("train.image_size must be declared", task_payload["error"])
+        self.assertIn("stopped before generating any AI proposals", task_payload["error"])
+        self.assertEqual(task_payload["current_round"], 0)
+        self.assertEqual(task_payload["summary"]["baseline"]["experiment_id"], "exp_baseline")
+        self.assertIsNone(task_payload["summary"].get("ai_summary"))
+        self.assertNotIn("Round 1: generating AI proposal", task_payload["logs"])
+        mock_attach_summary.assert_not_called()
+        mock_generate_proposal.assert_not_called()
+
     def test_is_retryable_proposal_error_accepts_read_timeout_request_exception(self) -> None:
         self.assertTrue(_is_retryable_proposal_error(requests.ReadTimeout("read timed out")))
 
@@ -282,6 +319,46 @@ class AutoTrainServiceTest(unittest.TestCase):
         )
 
         self.assertTrue(_is_retryable_proposal_error(wrapped_timeout_error))
+
+    def test_generate_auto_train_proposal_retries_with_validator_feedback(self) -> None:
+        task_id = "auto_proposal_retry"
+        AUTO_TRAIN_TASKS[task_id] = {
+            "task_id": task_id,
+            "status": "running",
+            "logs": [],
+        }
+        first_proposal = SimpleNamespace(model_dump=lambda: {"changes": {"image_size": 512}})
+        second_proposal = SimpleNamespace(model_dump=lambda: {"changes": {"image_size": 128}})
+        mock_generate_proposal = Mock(side_effect=[first_proposal, second_proposal])
+        validator = Mock(
+            side_effect=[
+                "Proposal cannot build a valid follow-up config: image_size must stay within dataset bounds",
+                None,
+            ]
+        )
+
+        with (
+            patch("app.services.auto_train_service.SessionLocal", return_value=SimpleNamespace(close=lambda: None)),
+            patch("app.services.auto_train_service.generate_aihubmix_proposal", mock_generate_proposal),
+            patch("app.services.auto_train_service._build_proposal_retry_delay_seconds", return_value=0),
+            patch("app.services.auto_train_service._sleep_with_stop_check"),
+            patch("app.services.auto_train_service.upsert_task_payload"),
+        ):
+            proposal = _generate_auto_train_proposal(
+                task_id,
+                "run_1",
+                proposal_validator=validator,
+            )
+
+        self.assertIs(proposal, second_proposal)
+        self.assertEqual(mock_generate_proposal.call_count, 2)
+        self.assertIsNone(mock_generate_proposal.call_args_list[0].kwargs["retry_feedback"])
+        self.assertEqual(
+            mock_generate_proposal.call_args_list[1].kwargs["retry_feedback"],
+            "Proposal cannot build a valid follow-up config: image_size must stay within dataset bounds",
+        )
+        self.assertIn("Proposal attempt failed (attempt 1)", AUTO_TRAIN_TASKS[task_id]["logs"][0])
+        self.assertIn("image_size must stay within dataset bounds", AUTO_TRAIN_TASKS[task_id]["logs"][0])
 
     def test_normalize_auto_train_history_summary_prefers_task_error(self) -> None:
         summary = _normalize_auto_train_history_summary(
@@ -315,10 +392,11 @@ class AutoTrainServiceTest(unittest.TestCase):
         self.assertEqual(summary, "Stopped by user request.")
 
     def test_build_auto_train_summary_prompt_contains_stop_reason(self) -> None:
+        dataset_name = f"dataset_{uuid4().hex}"
         system_prompt, user_prompt = _build_auto_train_summary_prompt(
             run_payload={
                 "id": "run_1",
-                "dataset": "DT",
+                "dataset": dataset_name,
                 "model_name": "mobilenet_v2",
                 "best_experiment_id": "exp_best",
                 "experiment_count": 2,
@@ -337,6 +415,10 @@ class AutoTrainServiceTest(unittest.TestCase):
         )
 
         self.assertIn("summary_text", system_prompt)
+        self.assertIn("exactly four sentences", system_prompt)
+        self.assertIn("Sentence 2 must identify the leading experiment", system_prompt)
+        self.assertIn("Sentence 3 must summarize the main strategy", system_prompt)
+        self.assertIn("Sentence 4 must summarize the strategy", system_prompt)
         self.assertIn("\"best_experiment_id\": \"exp_best\"", user_prompt)
         self.assertIn("\"top1_acc\": 0.81", user_prompt)
         self.assertIn("\"Stopped by user request.\"", user_prompt)
@@ -352,7 +434,12 @@ class AutoTrainServiceTest(unittest.TestCase):
 
         with patch(
             "app.services.auto_train_service._generate_auto_train_ai_summary",
-            return_value="Search stopped after exp_1 remained the best successful run at 81.0% Top1.",
+            return_value=(
+                "Search stopped by user request after two completed experiments. "
+                "exp_1 remained the leading successful run with 81.0% top1 accuracy. "
+                "The baseline configuration was the only clearly successful strategy in this short run. "
+                "No separate follow-up strategy showed a clear improvement."
+            ),
         ):
             updated_summary = _try_attach_auto_train_ai_summary(
                 "auto_test",
@@ -363,7 +450,12 @@ class AutoTrainServiceTest(unittest.TestCase):
 
         self.assertEqual(
             updated_summary["ai_summary"],
-            "Search stopped after exp_1 remained the best successful run at 81.0% Top1.",
+            (
+                "Search stopped by user request after two completed experiments. "
+                "exp_1 remained the leading successful run with 81.0% top1 accuracy. "
+                "The baseline configuration was the only clearly successful strategy in this short run. "
+                "No separate follow-up strategy showed a clear improvement."
+            ),
         )
 
     def test_stop_auto_train_task_finishes_queued_task_immediately(self) -> None:
