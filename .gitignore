@@ -51,3 +51,8 @@ data/raw/**
 !data/raw/**/*.py
 data/classification/**
 data/raw/**/__pycache__/
+.codex
+
+# Legacy local NEU helper scripts
+/data/raw/neu/prepare_classification_source.py
+/data/prepare_classification_split.py

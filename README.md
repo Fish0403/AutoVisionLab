@@ -1,17 +1,17 @@
 # AutoVisionLab
 
-Industrial vision model optimization still involves a lot of manual work: tuning parameters, running experiments, checking results, and iterating again. The real cost is often not the problem itself, but the repetition, scattered comparisons, and constant tool switching.
-
-AutoVisionLab focuses on that repetitive part of the workflow. It brings AI into the training and experimentation loop so results are collected, structured, and fed into a shared analysis flow. The system compares past runs, summarizes trends, and suggests the next direction to explore.
-
-Engineers still define the goals, constraints, and acceptance criteria, while AI handles the repetitive but necessary analysis and iteration work. The result is a workflow that is easier to trace, compare, and build on over time.
-
 English | [中文](README.zh.md)
 
 ![React](https://img.shields.io/badge/Frontend-React-61DAFB?logo=react&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688?logo=fastapi&logoColor=white)
 ![PyTorch](https://img.shields.io/badge/Training-PyTorch-EE4C2C?logo=pytorch&logoColor=white)
 ![SQLite](https://img.shields.io/badge/Database-SQLite-003B57?logo=sqlite&logoColor=white)
+
+Industrial vision model optimization still involves a lot of manual work: tuning parameters, running experiments, checking results, and iterating again. The real cost is often not the problem itself, but the repetition, scattered comparisons, and constant tool switching.
+
+AutoVisionLab focuses on that repetitive part of the workflow. It brings AI into the training and experimentation loop so results are collected, structured, and fed into a shared analysis flow. The system compares past runs, summarizes trends, and suggests the next direction to explore.
+
+Engineers still define the goals, constraints, and acceptance criteria, while AI handles the repetitive but necessary analysis and iteration work. The result is a workflow that is easier to trace, compare, and build on over time.
 
 ![Task page](docs/screenshots/task.png)
 

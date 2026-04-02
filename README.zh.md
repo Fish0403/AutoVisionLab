@@ -1,17 +1,17 @@
 # AutoVisionLab
 
-工业视觉里的模型优化，很多时候仍然是偏手工的工作：调参数、跑实验、看结果、再改一轮。真正耗时的往往不是问题本身，而是重复试验、零散对比和来回切换工具。
-
-AutoVisionLab 关注的就是这一段重复流程。它把 AI 接入训练和实验闭环，让实验结果在完成后被自动收集、结构化，并进入统一的分析流程。系统会基于已有实验做比较、总结趋势，并给出下一步探索方向。
-
-工程师仍然负责定义目标、约束和判断标准，AI 负责执行重复但必要的分析与迭代工作。这样实验过程会更容易追踪、比较和持续积累。
-
 [English](README.md) | 中文
 
 ![React](https://img.shields.io/badge/前端-React-61DAFB?logo=react&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/后端-FastAPI-009688?logo=fastapi&logoColor=white)
 ![PyTorch](https://img.shields.io/badge/训练-PyTorch-EE4C2C?logo=pytorch&logoColor=white)
 ![SQLite](https://img.shields.io/badge/数据库-SQLite-003B57?logo=sqlite&logoColor=white)
+
+工业视觉里的模型优化，很多时候仍然是偏手工的工作：调参数、跑实验、看结果、再改一轮。真正耗时的往往不是问题本身，而是重复试验、零散对比和来回切换工具。
+
+AutoVisionLab 关注的就是这一段重复流程。它把 AI 接入训练和实验闭环，让实验结果在完成后被自动收集、结构化，并进入统一的分析流程。系统会基于已有实验做比较、总结趋势，并给出下一步探索方向。
+
+工程师仍然负责定义目标、约束和判断标准，AI 负责执行重复但必要的分析与迭代工作。这样实验过程会更容易追踪、比较和持续积累。
 
 ![Task 页](docs/screenshots/task.png)
 
