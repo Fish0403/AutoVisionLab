@@ -5,6 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timezone
+import json
 from threading import Lock
 import time
 from uuid import uuid4
@@ -13,7 +14,7 @@ import requests
 
 from app.core.settings import get_settings
 from app.db.session import SessionLocal
-from app.llm.aihubmix_client import AIHubMixRequestError
+from app.llm.aihubmix_client import AIHubMixClient, AIHubMixRequestError
 from app.schemas.experiment import ExperimentCreateRequest
 from app.schemas.parameter_space import (
     ExperimentConfig,
@@ -44,12 +45,11 @@ from app.services.training_runner import start_experiment_training, stop_experim
 AUTO_TRAIN_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="autovisionlab-auto-train")
 AUTO_TRAIN_TASKS: dict[str, dict] = {}
 AUTO_TRAIN_LOCK = Lock()
-AUTO_TRAIN_PROPOSAL_RETRY_BASE_SECONDS = 3
-AUTO_TRAIN_PROPOSAL_RETRY_CAP_SECONDS = 60
 AUTO_TRAIN_EXPERIMENT_RETRY_BASE_SECONDS = 5
 AUTO_TRAIN_EXPERIMENT_RETRY_CAP_SECONDS = 60
 AUTO_TRAIN_MAX_BASELINE_ATTEMPTS = 3
 AUTO_TRAIN_MAX_EXPERIMENT_ATTEMPTS_PER_ROUND = 3
+AUTO_TRAIN_PROPOSAL_RETRY_SCHEDULE_SECONDS = (30, 60, 180)
 
 
 class AutoTrainStoppedError(RuntimeError):
@@ -307,6 +307,13 @@ def _build_capped_retry_delay_seconds(attempt_number: int, *, base_seconds: int,
     return min(cap_seconds, base_seconds * (2 ** (effective_attempt_number - 1)))
 
 
+def _build_proposal_retry_delay_seconds(attempt_number: int) -> int:
+    """Return the proposal retry delay from the fixed provider-backoff schedule."""
+    effective_attempt_number = max(1, attempt_number)
+    schedule_index = min(effective_attempt_number - 1, len(AUTO_TRAIN_PROPOSAL_RETRY_SCHEDULE_SECONDS) - 1)
+    return AUTO_TRAIN_PROPOSAL_RETRY_SCHEDULE_SECONDS[schedule_index]
+
+
 def _sleep_with_stop_check(task_id: str, seconds: int) -> None:
     """Sleep in short intervals so user stop requests can interrupt retry waits."""
     for _ in range(max(0, seconds)):
@@ -331,6 +338,100 @@ def _build_error_summary_snapshot(
         "metrics": {},
         "summary": summary_text,
     }
+
+
+def _build_auto_train_summary_prompt(
+    *,
+    run_payload: dict[str, object],
+    experiment_history: list[dict[str, object]],
+    search_summary: dict[str, object],
+    stop_reason: str | None,
+) -> tuple[str, str]:
+    """Build the prompt pair for one stopped-search summary."""
+    system_prompt = (
+        "You summarize the outcome of an image classification search task for a machine learning workspace. "
+        "Return strict JSON with one key: summary_text. "
+        "The summary_text must be concise, factual, and written in English. "
+        "Do not mention being an AI. Do not recommend next steps. "
+        "If there is a leading successful experiment, mention it clearly. "
+        "If the search stopped by user request, state that neutrally. "
+        "If no experiment succeeded, state that clearly."
+    )
+    user_prompt = (
+        "Summarize the following search task for one workspace results panel.\n"
+        f"Run summary:\n{json.dumps(run_payload, ensure_ascii=True)}\n"
+        f"Task summary:\n{json.dumps(search_summary, ensure_ascii=True)}\n"
+        f"Experiment history:\n{json.dumps(experiment_history, ensure_ascii=True)}\n"
+        f"Stop reason:\n{json.dumps(stop_reason, ensure_ascii=True)}\n"
+    )
+    return system_prompt, user_prompt
+
+
+def _generate_auto_train_ai_summary(
+    run_id: str,
+    search_summary: dict[str, object],
+    *,
+    stop_reason: str | None,
+) -> str | None:
+    """Generate one concise summary for a stopped auto-train task."""
+    db = SessionLocal()
+    try:
+        run_detail = get_run_detail(db, run_id)
+        if run_detail is None:
+            return None
+        experiment_history = get_run_history_payload(db, run_id)
+    finally:
+        db.close()
+
+    if not experiment_history:
+        return None
+
+    run_payload = {
+        "id": run_detail.id,
+        "name": run_detail.name,
+        "dataset": run_detail.dataset,
+        "model_name": run_detail.model_name,
+        "best_experiment_id": run_detail.best_experiment_id,
+        "experiment_count": len(experiment_history),
+    }
+    system_prompt, user_prompt = _build_auto_train_summary_prompt(
+        run_payload=run_payload,
+        experiment_history=experiment_history,
+        search_summary=search_summary,
+        stop_reason=stop_reason,
+    )
+    client = AIHubMixClient()
+    response_payload = client.create_json_completion(system_prompt, user_prompt)
+    summary_text = response_payload.get("summary_text")
+    if not isinstance(summary_text, str):
+        raise ValueError("Auto-train summary provider returned an invalid summary_text")
+    normalized_summary = " ".join(summary_text.split())
+    return normalized_summary or None
+
+
+def _try_attach_auto_train_ai_summary(
+    task_id: str,
+    run_id: str,
+    search_summary: dict[str, object],
+    *,
+    stop_reason: str | None,
+) -> dict[str, object]:
+    """Attach one AI-generated summary to the auto-train payload when possible."""
+    updated_summary = deepcopy(search_summary)
+    try:
+        ai_summary = _generate_auto_train_ai_summary(
+            run_id,
+            updated_summary,
+            stop_reason=stop_reason,
+        )
+    except Exception as error:
+        _append_task_log(task_id, f"Search summary generation failed: {error}")
+        updated_summary["ai_summary"] = None
+        return updated_summary
+    if ai_summary:
+        updated_summary["ai_summary"] = ai_summary
+        _append_task_log(task_id, "Search summary generated")
+    return updated_summary
 
 
 def _generate_auto_train_proposal(
@@ -360,11 +461,7 @@ def _generate_auto_train_proposal(
         except Exception as error:
             if not _is_retryable_proposal_error(error):
                 raise
-            retry_delay_seconds = _build_capped_retry_delay_seconds(
-                attempt_index,
-                base_seconds=AUTO_TRAIN_PROPOSAL_RETRY_BASE_SECONDS,
-                cap_seconds=AUTO_TRAIN_PROPOSAL_RETRY_CAP_SECONDS,
-            )
+            retry_delay_seconds = _build_proposal_retry_delay_seconds(attempt_index)
             _append_task_log(
                 task_id,
                 (
@@ -652,6 +749,8 @@ def _run_experiment_with_retries(
 
 
 def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
+    run_id: str | None = None
+    summary: dict[str, object] | None = None
     try:
         task_snapshot = _snapshot_task(task_id)
         if task_snapshot is None or task_snapshot.stop_requested:
@@ -817,7 +916,40 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                     f"{current_experiment_detail.get('decision_reason')}",
                 )
     except AutoTrainStoppedError:
-        _update_task(task_id, status="stopped", current_experiment_id=None, stop_reason="Stopped by user request.")
+        stop_reason = "Stopped by user request."
+        task_snapshot = _snapshot_task(task_id)
+        if isinstance(summary, dict):
+            summary_payload = deepcopy(summary)
+        elif task_snapshot is not None and isinstance(task_snapshot.summary, dict):
+            summary_payload = deepcopy(task_snapshot.summary)
+        else:
+            summary_payload = {
+                "mode": "auto",
+                "run_id": run_id or (task_snapshot.run_id if task_snapshot is not None else None),
+                "baseline": None,
+                "rounds": [],
+                "current_proposal": None,
+            }
+        effective_run_id = run_id or (task_snapshot.run_id if task_snapshot is not None else None)
+        if effective_run_id and not summary_payload.get("run_id"):
+            summary_payload["run_id"] = effective_run_id
+        summary_payload["stop_reason"] = stop_reason
+        if effective_run_id:
+            _set_activity_message(task_id, "Generating search summary")
+            summary_payload = _try_attach_auto_train_ai_summary(
+                task_id,
+                effective_run_id,
+                summary_payload,
+                stop_reason=stop_reason,
+            )
+        _update_task(
+            task_id,
+            status="stopped",
+            current_experiment_id=None,
+            stop_reason=stop_reason,
+            summary=summary_payload,
+            activity_message=stop_reason,
+        )
         _append_task_log(task_id, "Auto train stopped by user request")
     except Exception as error:
         _update_task(task_id, status="failed", error=str(error), current_experiment_id=None, activity_message=str(error))

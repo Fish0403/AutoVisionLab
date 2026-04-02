@@ -21,12 +21,14 @@ from app.schemas.parameter_space import ExperimentConfig
 from app.llm.aihubmix_client import AIHubMixRequestError
 from app.services.auto_train_service import (
     AUTO_TRAIN_TASKS,
+    _build_auto_train_summary_prompt,
     _ensure_no_active_task,
     _build_followup_config,
     _is_retryable_proposal_error,
     _load_auto_train_seed_experiment,
     _load_latest_search_policy_for_run,
     _normalize_auto_train_history_summary,
+    _try_attach_auto_train_ai_summary,
     delete_auto_train_task,
     stop_auto_train_task,
 )
@@ -311,6 +313,58 @@ class AutoTrainServiceTest(unittest.TestCase):
         )
 
         self.assertEqual(summary, "Stopped by user request.")
+
+    def test_build_auto_train_summary_prompt_contains_stop_reason(self) -> None:
+        system_prompt, user_prompt = _build_auto_train_summary_prompt(
+            run_payload={
+                "id": "run_1",
+                "dataset": "DT",
+                "model_name": "mobilenet_v2",
+                "best_experiment_id": "exp_best",
+                "experiment_count": 2,
+            },
+            experiment_history=[
+                {"id": "exp_1", "status": "success", "metrics": {"top1_acc": 0.81}},
+                {"id": "exp_2", "status": "failed", "metrics": {}},
+            ],
+            search_summary={
+                "mode": "auto",
+                "run_id": "run_1",
+                "baseline": {"experiment_id": "exp_1", "summary": "top1_acc=0.81"},
+                "rounds": [],
+            },
+            stop_reason="Stopped by user request.",
+        )
+
+        self.assertIn("summary_text", system_prompt)
+        self.assertIn("\"best_experiment_id\": \"exp_best\"", user_prompt)
+        self.assertIn("\"top1_acc\": 0.81", user_prompt)
+        self.assertIn("\"Stopped by user request.\"", user_prompt)
+
+    def test_try_attach_auto_train_ai_summary_updates_summary(self) -> None:
+        search_summary = {
+            "mode": "auto",
+            "run_id": "run_1",
+            "baseline": {"experiment_id": "exp_1", "summary": "top1_acc=0.81"},
+            "rounds": [],
+            "current_proposal": None,
+        }
+
+        with patch(
+            "app.services.auto_train_service._generate_auto_train_ai_summary",
+            return_value="Search stopped after exp_1 remained the best successful run at 81.0% Top1.",
+        ):
+            updated_summary = _try_attach_auto_train_ai_summary(
+                "auto_test",
+                "run_1",
+                search_summary,
+                stop_reason="Stopped by user request.",
+            )
+
+        self.assertEqual(
+            updated_summary["ai_summary"],
+            "Search stopped after exp_1 remained the best successful run at 81.0% Top1.",
+        )
 
     def test_stop_auto_train_task_finishes_queued_task_immediately(self) -> None:
         AUTO_TRAIN_TASKS["task_1"] = {

@@ -252,12 +252,7 @@ export function WorkspacePage() {
   const autoTrainSummary = readAutoTrainSummary(displayAutoTask);
   const searchResultSummary = buildSearchResultSummary(displayAutoTask, autoTrainSummary);
   const searchResultSummarySource = buildSearchResultSummarySource(displayAutoTask, autoTrainSummary);
-  const showSearchResultSummary = Boolean(
-    searchResultSummary &&
-      displayAutoTask &&
-      isAutoTrainTerminalStatus(displayAutoTask.status) &&
-      !isProviderOverloadedTaskFailure(displayAutoTask)
-  );
+  const searchSummaryLoadingText = buildSearchSummaryLoadingText(displayAutoTask, searchResultSummary);
 
   const currentTaskTitle =
     (mode === "compare" ? currentCompareTask?.title : displayAutoTask?.title) ??
@@ -330,7 +325,12 @@ export function WorkspacePage() {
     }
 
     if (controlMode === "compare") {
-      const generatedTitle = selectedTaskId ? currentTaskTitle : buildTaskTitle("compare", formValues.dataset);
+      const fallbackCompareTitle = buildTaskTitle("compare", formValues.dataset);
+      const normalizedCurrentTitle = currentTaskTitle?.trim();
+      const generatedTitle =
+        selectedTaskId && normalizedCurrentTitle && normalizedCurrentTitle !== "Untitled task"
+          ? normalizedCurrentTitle
+          : fallbackCompareTitle;
       setDraftTaskTitle(generatedTitle);
       const response = await startModelCompareMutation.mutateAsync({
         title: generatedTitle,
@@ -854,6 +854,11 @@ export function WorkspacePage() {
                   {compareResultSummarySource ? <span className="result-summary-source">{compareResultSummarySource}</span> : null}
                   <p className="result-summary-copy">{compareResultSummary}</p>
                 </div>
+              ) : buildCompareSummaryLoadingText(compareTask) ? (
+                <div className="result-summary-row result-summary-row-loading">
+                  <span className="result-summary-source">{compareResultSummarySource ?? "Summary"}</span>
+                  <p className="result-summary-copy result-summary-copy-loading">{buildCompareSummaryLoadingText(compareTask)}</p>
+                </div>
               ) : null}
               <CompareScatterChart
                 candidates={successfulCandidates}
@@ -864,12 +869,17 @@ export function WorkspacePage() {
             </div>
           ) : (
             <div className="display-stack">
-              {showSearchResultSummary && searchResultSummary ? (
+              {searchResultSummary ? (
                 <div className="result-summary-row">
                   {searchResultSummarySource ? <span className="result-summary-source">{searchResultSummarySource}</span> : null}
                   <p className="result-summary-copy">{searchResultSummary}</p>
                 </div>
-                ) : null}
+              ) : searchSummaryLoadingText ? (
+                <div className="result-summary-row result-summary-row-loading">
+                  <span className="result-summary-source">{searchResultSummarySource ?? "Summary"}</span>
+                  <p className="result-summary-copy result-summary-copy-loading">{searchSummaryLoadingText}</p>
+                </div>
+              ) : null}
               <MetricTrendChart series={displayedSearchTrendSeries} />
             </div>
           )}
@@ -942,6 +952,7 @@ function SearchProgressCard({ task, externalErrorMessage }: { task: AutoTrainTas
   const activeProposal = task && !isAutoTrainTerminalStatus(task.status) ? summary?.current_proposal ?? null : getActiveSearchProposal(summary);
   const searchFocus = describeProposalChangeSummary(activeProposal);
   const suggestionText = getSearchSuggestionText(task, summary, activeProposal);
+  const suggestionLoadingText = buildSearchSuggestionLoadingText(task, suggestionText);
   const datasetSummaryText = buildTaskDatasetSummary(task);
   const startupMessage = buildTaskStartupMessage(task);
   const primaryStatusText = datasetSummaryText ?? startupMessage;
@@ -994,6 +1005,11 @@ function SearchProgressCard({ task, externalErrorMessage }: { task: AutoTrainTas
             <div className="progress-suggestion-row">
               <SuggestionIcon />
               <p className="progress-suggestion-copy">{suggestionText}</p>
+            </div>
+          ) : suggestionLoadingText ? (
+            <div className="progress-suggestion-row progress-suggestion-row-loading">
+              <LoadingDotsIcon />
+              <p className="progress-suggestion-copy progress-suggestion-copy-loading">{suggestionLoadingText}</p>
             </div>
           ) : null}
         </div>
@@ -1080,6 +1096,16 @@ function WarningNoticeIcon() {
         strokeWidth="1.5"
       />
       <path d="M8 6v3.7M8 11.9h.01" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function LoadingDotsIcon() {
+  return (
+    <svg aria-hidden="true" className="progress-inline-icon progress-inline-icon-loading" viewBox="0 0 16 16">
+      <circle cx="3.5" cy="8" r="1.25" fill="currentColor" />
+      <circle cx="8" cy="8" r="1.25" fill="currentColor" />
+      <circle cx="12.5" cy="8" r="1.25" fill="currentColor" />
     </svg>
   );
 }
@@ -1890,6 +1916,7 @@ type AutoTrainSummarySnapshot = {
   current_proposal?: ProposalSnapshot | null;
   final_proposal?: ProposalSnapshot | null;
   final_suggestion_error?: string | null;
+  ai_summary?: string | null;
   stop_reason?: string | null;
 };
 
@@ -2106,18 +2133,22 @@ function getSearchSuggestionText(
   return null;
 }
 
+function buildSearchSuggestionLoadingText(task: AutoTrainTask | null, suggestionText: string | null) {
+  if (!task || suggestionText || isAutoTrainTerminalStatus(task.status)) {
+    return null;
+  }
+  const activityMessage = task.activity_message?.trim() ?? "";
+  if (/generating proposal|proposal retry/i.test(activityMessage)) {
+    return "Generating AI suggestion...";
+  }
+  return null;
+}
+
 function buildSearchResultSummary(
   task: AutoTrainTask | null,
   summary: AutoTrainSummarySnapshot | null
 ) {
-  if (!task || !isAutoTrainTerminalStatus(task.status)) {
-    return null;
-  }
-  const aiSummary =
-    summary?.final_proposal?.hypothesis?.trim() ??
-    summary?.current_proposal?.hypothesis?.trim() ??
-    [...(summary?.rounds ?? [])].reverse().find((round) => round.proposal?.hypothesis?.trim())?.proposal?.hypothesis?.trim() ??
-    null;
+  const aiSummary = summary?.ai_summary?.trim();
   return aiSummary || null;
 }
 
@@ -2125,19 +2156,34 @@ function buildSearchResultSummarySource(
   task: AutoTrainTask | null,
   summary: AutoTrainSummarySnapshot | null
 ) {
-  if (!task || !isAutoTrainTerminalStatus(task.status)) {
-    return null;
-  }
-  const aiSummary =
-    summary?.final_proposal?.hypothesis?.trim() ??
-    summary?.current_proposal?.hypothesis?.trim() ??
-    [...(summary?.rounds ?? [])].reverse().find((round) => round.proposal?.hypothesis?.trim())?.proposal?.hypothesis?.trim() ??
-    null;
-  const aiModelLabel = formatAiModelLabel(task.ai_model_name);
+  const aiSummary = summary?.ai_summary?.trim();
+  const aiModelLabel = formatAiModelLabel(task?.ai_model_name);
   if (!aiSummary) {
     return null;
   }
   return aiModelLabel ? `Summary from ${aiModelLabel}` : "Summary";
+}
+
+function buildSearchSummaryLoadingText(task: AutoTrainTask | null, summaryText: string | null) {
+  if (!task || summaryText) {
+    return null;
+  }
+  const activityMessage = task.activity_message?.trim() ?? "";
+  if (/generating search summary/i.test(activityMessage)) {
+    return "Generating AI summary...";
+  }
+  return null;
+}
+
+function buildCompareSummaryLoadingText(task: ModelCompareTask | null) {
+  if (!task || buildCompareResultSummary(task)) {
+    return null;
+  }
+  const activityMessage = task.activity_message?.trim() ?? "";
+  if (/generating compare summary/i.test(activityMessage)) {
+    return "Generating AI summary...";
+  }
+  return null;
 }
 
 function formatAiModelLabel(modelName: string | null | undefined) {
@@ -2220,6 +2266,10 @@ function buildTaskFailureNotice(task: AutoTrainTask | ModelCompareTask | null, e
 
 function buildTaskWarningNotice(task: AutoTrainTask | null) {
   if (!task || task.status === "failed") {
+    return null;
+  }
+  const activityMessage = task.activity_message?.trim() ?? "";
+  if (!/retry/i.test(activityMessage)) {
     return null;
   }
   const latestRetryLog = [...task.logs].reverse().find((entry) => /retrying in \d+s/i.test(entry));

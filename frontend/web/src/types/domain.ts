@@ -161,6 +161,7 @@ export interface AutoTrainTask {
       changes?: Record<string, unknown>;
     } | null;
     final_suggestion_error?: string | null;
+    ai_summary?: string | null;
     stop_reason?: string | null;
   } | null;
   error?: string | null;
