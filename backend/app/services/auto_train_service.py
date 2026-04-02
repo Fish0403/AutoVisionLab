@@ -40,6 +40,7 @@ from app.services.persistence import (
 from app.services.proposal_service import generate_aihubmix_proposal, get_run_history_payload
 from app.services.task_store import delete_task_payload, get_active_task_payload, get_task_payload, list_task_payloads, upsert_task_payload
 from app.services.training_runner import start_experiment_training, stop_experiment_training
+from app.trainers.builder import build_model_from_config
 
 
 AUTO_TRAIN_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="autovisionlab-auto-train")
@@ -532,9 +533,38 @@ def _resolve_structured_train_hyp_changes(proposal_payload: dict) -> dict:
 
 def _resolve_structured_recipe_changes(proposal_payload: dict) -> dict:
     """Return the structured model_recipe change payload for one proposal."""
-    if isinstance(proposal_payload.get("recipe_changes"), dict):
-        return proposal_payload["recipe_changes"]
-    return build_model_recipe_change_payload(proposal_payload.get("changes") or {})
+    raw_recipe_changes = proposal_payload.get("recipe_changes")
+    if not isinstance(raw_recipe_changes, dict):
+        return build_model_recipe_change_payload(proposal_payload.get("changes") or {})
+
+    normalized_recipe_changes = deepcopy(raw_recipe_changes)
+    change_payload = proposal_payload.get("changes") or {}
+    compatibility_change_payload = {
+        field_name: value
+        for field_name, value in change_payload.items()
+        if field_name in {"backbone_name", "neck_name", "head_name", "pooling_type", "classifier_dropout"}
+    }
+    derived_recipe_changes = build_model_recipe_change_payload(compatibility_change_payload)
+    for field_name, value in derived_recipe_changes.items():
+        if isinstance(value, dict) and isinstance(normalized_recipe_changes.get(field_name), dict):
+            normalized_recipe_changes[field_name] = _merge_nested_change_payloads(
+                normalized_recipe_changes.get(field_name) or {},
+                value,
+            )
+        else:
+            normalized_recipe_changes[field_name] = value
+    return normalized_recipe_changes
+
+
+def _merge_nested_change_payloads(base_payload: dict, override_payload: dict) -> dict:
+    """Recursively merge one structured change payload, preferring override values."""
+    merged_payload = deepcopy(base_payload)
+    for field_name, value in override_payload.items():
+        if isinstance(value, dict) and isinstance(merged_payload.get(field_name), dict):
+            merged_payload[field_name] = _merge_nested_change_payloads(merged_payload.get(field_name) or {}, value)
+        else:
+            merged_payload[field_name] = value
+    return merged_payload
 
 
 def _build_followup_config(latest_experiment: dict, proposal_payload: dict) -> dict:
@@ -595,7 +625,8 @@ def _validate_followup_proposal(run_id: str, proposal_payload: dict) -> str | No
     finally:
         db.close()
     try:
-        _build_followup_config(source_experiment_detail, proposal_payload)
+        followup_config = _build_followup_config(source_experiment_detail, proposal_payload)
+        build_model_from_config(ExperimentConfig.model_validate(followup_config))
     except Exception as error:
         return f"Proposal cannot build a valid follow-up config: {error}"
     return None

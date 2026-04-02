@@ -32,6 +32,7 @@ from app.services.auto_train_service import (
     _normalize_auto_train_history_summary,
     _run_auto_train_task,
     _try_attach_auto_train_ai_summary,
+    _validate_followup_proposal,
     delete_auto_train_task,
     stop_auto_train_task,
 )
@@ -242,6 +243,109 @@ class AutoTrainServiceTest(unittest.TestCase):
         self.assertEqual(followup_config["params"]["learning_rate"], 0.001)
         self.assertEqual(followup_config["params"]["augmentation_params"]["mixup_alpha"], 0.4)
         self.assertTrue(followup_config["params"]["aux_logits"])
+
+    def test_build_followup_config_normalizes_head_name_recipe_compatibility(self) -> None:
+        dataset_name = f"dataset_{uuid4().hex}"
+        latest_config = ExperimentConfig.model_validate(
+            {
+                "task_type": "classification",
+                "dataset": dataset_name,
+                "model_family": "resnet",
+                "model_name": "resnet18",
+                "parameter_space_version": "resnet18@v1",
+                "use_demo_mode": True,
+                "params": {
+                    "optimizer": "adamw",
+                    "learning_rate": 0.003,
+                    "batch_size": 64,
+                    "image_size": 96,
+                    "epochs": 10,
+                    "weight_decay": 0.0001,
+                    "scheduler": "cosine",
+                    "augmentation_policy": "basic",
+                    "augmentation_params": {
+                        "mixup_alpha": 0.0,
+                        "cutmix_alpha": 0.0,
+                        "random_erasing_prob": 0.0,
+                    },
+                    "loss_name": "cross_entropy_with_label_smoothing",
+                    "loss_params": {"focal_gamma": 2.0},
+                    "label_smoothing": 0.1,
+                    "aux_logits": False,
+                },
+            }
+        )
+
+        followup_config = _build_followup_config(
+            latest_experiment={"config": latest_config.model_dump(mode="python")},
+            proposal_payload={
+                "changes": {"head_name": "dropout_linear", "mixup_alpha": 0.2},
+                "train_hyp_changes": {"augmentation": {"mixup": 0.2}},
+                "recipe_changes": {
+                    "head_config": {"classifier_type": "dropout_linear"},
+                },
+            },
+        )
+
+        self.assertEqual(followup_config["model_recipe"]["components"]["head"]["name"], "dropout_linear")
+        self.assertEqual(followup_config["model_recipe"]["head_config"]["classifier_type"], "linear")
+        self.assertEqual(followup_config["model_recipe"]["head_config"]["classifier_dropout"], 0.2)
+        self.assertEqual(followup_config["train_hyp"]["augmentation"]["mixup"], 0.2)
+
+    def test_validate_followup_proposal_rejects_builder_incompatible_recipe_changes(self) -> None:
+        dataset_name = f"dataset_{uuid4().hex}"
+        latest_config = ExperimentConfig.model_validate(
+            {
+                "task_type": "classification",
+                "dataset": dataset_name,
+                "model_family": "resnet",
+                "model_name": "resnet18",
+                "parameter_space_version": "resnet18@v1",
+                "use_demo_mode": True,
+                "params": {
+                    "optimizer": "adamw",
+                    "learning_rate": 0.003,
+                    "batch_size": 64,
+                    "image_size": 96,
+                    "epochs": 10,
+                    "weight_decay": 0.0001,
+                    "scheduler": "cosine",
+                    "augmentation_policy": "basic",
+                    "augmentation_params": {
+                        "mixup_alpha": 0.0,
+                        "cutmix_alpha": 0.0,
+                        "random_erasing_prob": 0.0,
+                    },
+                    "loss_name": "cross_entropy_with_label_smoothing",
+                    "loss_params": {"focal_gamma": 2.0},
+                    "label_smoothing": 0.1,
+                    "aux_logits": False,
+                },
+            }
+        )
+
+        with (
+            patch(
+                "app.services.auto_train_service.SessionLocal",
+                return_value=SimpleNamespace(close=lambda: None),
+            ),
+            patch(
+                "app.services.auto_train_service._resolve_followup_source_experiment",
+                return_value={"config": latest_config.model_dump(mode="python")},
+            ),
+        ):
+            rejection_reason = _validate_followup_proposal(
+                "run_1",
+                {
+                    "changes": {},
+                    "recipe_changes": {
+                        "head_config": {"classifier_type": "dropout_linear"},
+                    },
+                },
+            )
+
+        self.assertIsNotNone(rejection_reason)
+        self.assertIn("Unsupported classifier_type for resnet18: dropout_linear", rejection_reason)
 
     def test_load_auto_train_seed_experiment_reuses_successful_experiment(self) -> None:
         with patch(
