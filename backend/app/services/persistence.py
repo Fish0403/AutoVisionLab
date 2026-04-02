@@ -18,7 +18,7 @@ from app.services.run_logging import append_run_log
 from app.services.run_policy import evaluate_promotion, get_experiment_ranking_policy
 from app.schemas.ai import ProposalSchema, ReflectionSchema, ResultSchema
 from app.schemas.common import PointMetric
-from app.schemas.experiment import ExperimentCreateRequest, ExperimentDecisionRequest, ExperimentDetailResponse, ExperimentSummary
+from app.schemas.experiment import ExperimentCreateRequest, ExperimentDetailResponse, ExperimentSummary
 from app.schemas.parameter_space import EditableParameterSpace, ExperimentConfig
 from app.schemas.ranking_policy import RankingMetricMode, RankingPolicy
 from app.schemas.run import RunCreateRequest, RunDetailResponse, RunListItem, RunMetricsResponse, RunSummaryResponse
@@ -505,24 +505,6 @@ def save_experiment_result(db: Session, experiment_id: str, result: ResultSchema
             f"best_epoch={metrics.get('best_epoch')}"
         ),
     )
-    return _to_experiment_detail(experiment)
-
-
-def update_experiment_decision(
-    db: Session,
-    experiment_id: str,
-    request: ExperimentDecisionRequest,
-) -> ExperimentDetailResponse | None:
-    """Persist one experiment research decision."""
-    experiment = db.get(ExperimentModel, experiment_id)
-    if experiment is None:
-        return None
-    experiment.decision = request.decision
-    experiment.decision_reason = request.decision_reason
-    experiment.updated_at = datetime.utcnow()
-    db.commit()
-    _refresh_run_summary(db, experiment.run_id)
-    db.refresh(experiment)
     return _to_experiment_detail(experiment)
 
 

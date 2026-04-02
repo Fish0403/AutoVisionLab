@@ -9,7 +9,6 @@ from app.schemas.ai import ResultSchema
 from app.schemas.api import ApiResponse
 from app.schemas.experiment import (
     ExperimentCreateRequest,
-    ExperimentDecisionRequest,
     ExperimentDetailResponse,
     ExperimentSuggestionTaskResponse,
 )
@@ -19,7 +18,6 @@ from app.services.persistence import (
     get_experiment_config,
     get_experiment_detail,
     save_experiment_result,
-    update_experiment_decision,
 )
 from app.services.suggestion_service import get_experiment_suggestion_task, start_experiment_suggestion_task
 from app.services.training_runner import start_experiment_training, stop_experiment_training
@@ -63,19 +61,6 @@ def save_result_endpoint(
     if experiment is None:
         raise HTTPException(status_code=404, detail="Experiment not found")
     return build_success_response(experiment, message="Experiment result saved.", code="updated")
-
-
-@router.post("/{experiment_id}/decision", response_model=ApiResponse[ExperimentDetailResponse])
-def save_decision_endpoint(
-    experiment_id: str,
-    request: ExperimentDecisionRequest,
-    db: Session = Depends(get_db_session),
-) -> ApiResponse[ExperimentDetailResponse]:
-    """Create or replace the research decision for one experiment."""
-    experiment = update_experiment_decision(db, experiment_id=experiment_id, request=request)
-    if experiment is None:
-        raise HTTPException(status_code=404, detail="Experiment not found")
-    return build_success_response(experiment, message="Experiment decision saved.", code="updated")
 
 
 @router.post("/{experiment_id}/train", response_model=ApiResponse[ExperimentDetailResponse])

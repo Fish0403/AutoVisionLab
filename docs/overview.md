@@ -30,7 +30,6 @@ AutoVisionLab 是一个面向工业视觉实验的结构化平台。当前实现
 
 - [docs/policies/rank.md](policies/rank.md)
 - [docs/policies/search.md](policies/search.md)
-- [docs/policies/stop.md](policies/stop.md)
 
 ## 目录
 

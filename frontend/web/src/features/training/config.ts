@@ -33,10 +33,6 @@ export interface TrainingFormValues {
   dataset: string;
   modelName: SupportedModelName;
   compareCandidateModels: SupportedModelName[];
-  allowBasicHparamSearch: boolean;
-  allowLossSearch: boolean;
-  allowAugmentationSearch: boolean;
-  allowModelModuleSearch: boolean;
   useDemoMode: boolean;
   optimizer: "adamw" | "adam" | "sgd";
   learningRate: number;
@@ -54,10 +50,6 @@ export function defaultFormValues(dataset: string, imageSize: number): TrainingF
     dataset,
     modelName: "mobilenet_v3_small",
     compareCandidateModels: [...COMPARE_CANDIDATE_MODELS],
-    allowBasicHparamSearch: true,
-    allowLossSearch: true,
-    allowAugmentationSearch: true,
-    allowModelModuleSearch: false,
     useDemoMode: true,
     optimizer: "adamw",
     learningRate: 0.003,
@@ -107,23 +99,22 @@ export function getDatasetImageOptions(datasets: DatasetSummary[], datasetName: 
   return [64];
 }
 
-export function buildSearchPolicy(values: TrainingFormValues) {
+export function buildSearchPolicy() {
   return {
-    allow_basic_hparam_search: values.allowBasicHparamSearch,
-    allowed_basic_hparam_fields: values.allowBasicHparamSearch
-      ? [
-          "optimizer",
-          "learning_rate",
-          "batch_size",
-          "weight_decay",
-          "scheduler",
-          "label_smoothing"
-        ]
-      : [],
+    allow_basic_hparam_search: true,
+    allowed_basic_hparam_fields: [
+      "optimizer",
+      "learning_rate",
+      "batch_size",
+      "weight_decay",
+      "scheduler",
+      "label_smoothing",
+      "image_size"
+    ],
     allow_strategy_search: false,
-    allow_loss_search: values.allowLossSearch,
-    allow_augmentation_search: values.allowAugmentationSearch,
-    allow_model_module_search: values.allowModelModuleSearch,
+    allow_loss_search: true,
+    allow_augmentation_search: true,
+    allow_model_module_search: true,
     require_manual_approval_for_high_impact_changes: true
   };
 }
@@ -155,7 +146,7 @@ export function buildExperimentConfig(
     parameter_space_version: parameterSpaceVersion,
     use_demo_mode: values.useDemoMode,
     participates_in_ranking: true,
-    search_policy: buildSearchPolicy(values),
+    search_policy: buildSearchPolicy(),
     ranking_policy: buildRankingPolicy(),
     params: {
       optimizer: values.optimizer,

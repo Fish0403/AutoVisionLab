@@ -18,6 +18,7 @@ class AIHubMixRequestError(RuntimeError):
 
 AIHUBMIX_RETRY_DELAYS_SECONDS = (1, 3)
 AIHUBMIX_RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
+AIHUBMIX_REQUEST_TIMEOUT_SECONDS = 120
 
 
 def _build_error_excerpt(text: str | None, *, limit: int = 240) -> str:
@@ -95,7 +96,7 @@ class AIHubMixClient:
                         "Connection": "close",
                     },
                     json=payload,
-                    timeout=60,
+                    timeout=AIHUBMIX_REQUEST_TIMEOUT_SECONDS,
                 )
             except requests.RequestException as error:
                 last_error = error

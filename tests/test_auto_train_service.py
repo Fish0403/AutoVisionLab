@@ -15,15 +15,18 @@ VENV_SITE_PACKAGES = next((REPO_ROOT / ".venv" / "lib").glob("python*/site-packa
 sys.path.insert(0, str(VENV_SITE_PACKAGES))
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
+import requests
+
 from app.schemas.parameter_space import ExperimentConfig
+from app.llm.aihubmix_client import AIHubMixRequestError
 from app.services.auto_train_service import (
     AUTO_TRAIN_TASKS,
     _ensure_no_active_task,
     _build_followup_config,
+    _is_retryable_proposal_error,
     _load_auto_train_seed_experiment,
     _load_latest_search_policy_for_run,
     _normalize_auto_train_history_summary,
-    _try_attach_final_proposal,
     delete_auto_train_task,
     stop_auto_train_task,
 )
@@ -257,60 +260,26 @@ class AutoTrainServiceTest(unittest.TestCase):
 
         self.assertEqual(experiment_detail["id"], "exp_seed")
 
-    def test_load_auto_train_seed_experiment_rejects_non_success_status(self) -> None:
+    def test_load_auto_train_seed_experiment_keeps_non_success_seed(self) -> None:
         with patch(
             "app.services.auto_train_service._resolve_followup_source_experiment",
             return_value={"id": "exp_failed", "status": "failed"},
         ):
-            with self.assertRaisesRegex(ValueError, "requires one successful experiment"):
-                _load_auto_train_seed_experiment(SimpleNamespace(), "run_1")
+            experiment_detail = _load_auto_train_seed_experiment(SimpleNamespace(), "run_1")
 
-    def test_try_attach_final_proposal_updates_summary(self) -> None:
-        summary = {"mode": "auto", "run_id": "run_1", "baseline": {"experiment_id": "exp_1"}, "rounds": []}
-        with (
-            patch("app.services.auto_train_service.SessionLocal") as session_local,
-            patch(
-                "app.services.auto_train_service.generate_aihubmix_proposal",
-                return_value=SimpleNamespace(model_dump=lambda: {"hypothesis": "next", "changes": {"learning_rate": 0.001}}),
-            ),
-            patch("app.services.auto_train_service._update_task") as update_task,
-            patch("app.services.auto_train_service._append_task_log"),
-        ):
-            session_local.return_value = SimpleNamespace(close=lambda: None)
-            _try_attach_final_proposal(
-                "task_1",
-                run_id="run_1",
-                round_index=4,
-                summary=summary,
-            )
+        self.assertEqual(experiment_detail["id"], "exp_failed")
+        self.assertEqual(experiment_detail["status"], "failed")
 
-        update_task.assert_called_once()
-        updated_summary = update_task.call_args.kwargs["summary"]
-        self.assertEqual(updated_summary["final_proposal"]["hypothesis"], "next")
+    def test_is_retryable_proposal_error_accepts_read_timeout_request_exception(self) -> None:
+        self.assertTrue(_is_retryable_proposal_error(requests.ReadTimeout("read timed out")))
 
-    def test_try_attach_final_proposal_records_error_when_generation_fails(self) -> None:
-        summary = {"mode": "auto", "run_id": "run_1", "baseline": {"experiment_id": "exp_1"}, "rounds": []}
-        with (
-            patch("app.services.auto_train_service.SessionLocal") as session_local,
-            patch(
-                "app.services.auto_train_service.generate_aihubmix_proposal",
-                side_effect=ValueError("proposal failed"),
-            ),
-            patch("app.services.auto_train_service._update_task") as update_task,
-            patch("app.services.auto_train_service._append_task_log"),
-        ):
-            session_local.return_value = SimpleNamespace(close=lambda: None)
-            _try_attach_final_proposal(
-                "task_1",
-                run_id="run_1",
-                round_index=1,
-                summary=summary,
-            )
+    def test_is_retryable_proposal_error_accepts_wrapped_timeout_message(self) -> None:
+        wrapped_timeout_error = AIHubMixRequestError(
+            "chat completions request failed after retries: "
+            "HTTPSConnectionPool(host='aihubmix.com', port=443): Read timed out. (read timeout=60)"
+        )
 
-        update_task.assert_called_once()
-        updated_summary = update_task.call_args.kwargs["summary"]
-        self.assertIsNone(updated_summary["final_proposal"])
-        self.assertEqual(updated_summary["final_suggestion_error"], "proposal failed")
+        self.assertTrue(_is_retryable_proposal_error(wrapped_timeout_error))
 
     def test_normalize_auto_train_history_summary_prefers_task_error(self) -> None:
         summary = _normalize_auto_train_history_summary(
@@ -396,11 +365,15 @@ class AutoTrainServiceTest(unittest.TestCase):
         AUTO_TRAIN_TASKS["task_1"] = {
             "task_id": "task_1",
             "status": "stopped",
+            "logs": [],
             "owned_run_ids": ["run_a"],
         }
 
         with (
-            patch("app.services.auto_train_service.get_task_payload", return_value={"task_id": "task_1", "status": "stopped", "owned_run_ids": ["run_a"]}),
+            patch(
+                "app.services.auto_train_service.get_task_payload",
+                return_value={"task_id": "task_1", "status": "stopped", "logs": [], "owned_run_ids": ["run_a"]},
+            ),
             patch("app.services.auto_train_service.clear_run_records", return_value={"deleted_runs": 1, "deleted_experiments": 2, "deleted_results": 3, "deleted_artifact_files": 4}),
             patch("app.services.auto_train_service.delete_task_payload", return_value=True),
         ):

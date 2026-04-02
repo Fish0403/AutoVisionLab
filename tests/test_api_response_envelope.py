@@ -26,7 +26,6 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 from app.api.routes.experiments import (
     create_experiment_endpoint,
     get_experiment,
-    save_decision_endpoint,
     save_result_endpoint,
 )
 from app.api.routes.models import read_parameter_space
@@ -35,7 +34,7 @@ from app.db.session import SessionLocal
 from app.main import healthcheck, initialize_database
 from app.schemas.ai import ResultSchema
 from app.schemas.api import ApiResponse
-from app.schemas.experiment import ExperimentCreateRequest, ExperimentDecisionRequest
+from app.schemas.experiment import ExperimentCreateRequest
 from app.schemas.parameter_space import EditableParameterSpace, ExperimentConfig
 from app.schemas.run import (
     ModelCompareStartRequest,
@@ -218,20 +217,6 @@ class ApiResponseEnvelopeTest(unittest.TestCase):
             self.assertEqual(result_response.code, "updated")
             self.assertEqual(result_response.message, "Experiment result saved.")
             self.assertEqual(result_response.data.result.status, "success")
-
-            decision_response = save_decision_endpoint(
-                experiment_id=experiment_id,
-                request=ExperimentDecisionRequest(
-                    decision="keep",
-                    decision_reason="Smoke test decision.",
-                ),
-                db=db,
-            )
-            self.assertIsInstance(decision_response, ApiResponse)
-            self.assertTrue(decision_response.ok)
-            self.assertEqual(decision_response.code, "updated")
-            self.assertEqual(decision_response.message, "Experiment decision saved.")
-            self.assertEqual(decision_response.data.decision, "keep")
 
     def test_create_experiment_uses_server_parameter_space_snapshot(self) -> None:
         stale_parameter_space = {

@@ -27,13 +27,16 @@ from app.schemas.parameter_space import (
 )
 from app.schemas.run import AutoTrainStartRequest, AutoTrainTaskResponse, RunCreateRequest, TaskHistoryItemResponse
 from app.services.dataset_service import build_dataset_summary_text, get_local_dataset_summary
-from app.services.persistence import clear_run_records, create_experiment, create_run, get_experiment_detail, get_run_detail
-from app.services.proposal_service import generate_aihubmix_proposal, get_run_history_payload
-from app.services.run_policy import (
-    get_default_run_policy,
-    require_non_basic_change_after_warmup_rounds,
-    should_stop_after_dimension_coverage,
+from app.services.parameter_space import build_full_search_policy
+from app.services.persistence import (
+    clear_run_records,
+    create_experiment,
+    create_run,
+    discard_experiment,
+    get_experiment_detail,
+    get_run_detail,
 )
+from app.services.proposal_service import generate_aihubmix_proposal, get_run_history_payload
 from app.services.task_store import delete_task_payload, get_active_task_payload, get_task_payload, list_task_payloads, upsert_task_payload
 from app.services.training_runner import start_experiment_training, stop_experiment_training
 
@@ -41,9 +44,12 @@ from app.services.training_runner import start_experiment_training, stop_experim
 AUTO_TRAIN_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="autovisionlab-auto-train")
 AUTO_TRAIN_TASKS: dict[str, dict] = {}
 AUTO_TRAIN_LOCK = Lock()
-AUTO_TRAIN_PROPOSAL_RETRY_DELAYS_SECONDS = (3, 6, 10)
-AUTO_TRAIN_INVALID_PROPOSAL_RETRY_DELAY_SECONDS = 2
-AUTO_TRAIN_MAX_CONSECUTIVE_INVALID_PROPOSALS = 3
+AUTO_TRAIN_PROPOSAL_RETRY_BASE_SECONDS = 3
+AUTO_TRAIN_PROPOSAL_RETRY_CAP_SECONDS = 60
+AUTO_TRAIN_EXPERIMENT_RETRY_BASE_SECONDS = 5
+AUTO_TRAIN_EXPERIMENT_RETRY_CAP_SECONDS = 60
+AUTO_TRAIN_MAX_BASELINE_ATTEMPTS = 3
+AUTO_TRAIN_MAX_EXPERIMENT_ATTEMPTS_PER_ROUND = 3
 
 
 class AutoTrainStoppedError(RuntimeError):
@@ -192,13 +198,21 @@ def _build_summary_snapshot(experiment_detail: dict) -> dict:
         value = metrics.get(key)
         if value is not None:
             summary_parts.append(f"{key}={value}")
+    if summary_parts:
+        summary_text = ", ".join(summary_parts)
+    else:
+        summary_text = (
+            experiment_detail.get("decision_reason")
+            or experiment_detail.get("status")
+            or "no metrics returned"
+        )
     return {
         "experiment_id": experiment_detail["id"],
         "status": experiment_detail["status"],
         "decision": experiment_detail.get("decision"),
         "decision_reason": experiment_detail.get("decision_reason"),
         "metrics": metrics,
-        "summary": ", ".join(summary_parts) if summary_parts else "no metrics returned",
+        "summary": summary_text,
     }
 
 
@@ -212,11 +226,20 @@ def _normalize_auto_train_history_summary(task: dict) -> str | None:
     if isinstance(error_message, str) and error_message.strip():
         return error_message
 
-    final_proposal = summary_payload.get("final_proposal") if isinstance(summary_payload, dict) else None
-    if isinstance(final_proposal, dict):
-        final_hypothesis = final_proposal.get("hypothesis")
-        if isinstance(final_hypothesis, str) and final_hypothesis.strip():
-            return final_hypothesis.strip()
+    current_proposal = summary_payload.get("current_proposal") if isinstance(summary_payload, dict) else None
+    if isinstance(current_proposal, dict):
+        current_hypothesis = current_proposal.get("hypothesis")
+        if isinstance(current_hypothesis, str) and current_hypothesis.strip():
+            return current_hypothesis.strip()
+
+    rounds = summary_payload.get("rounds") if isinstance(summary_payload, dict) else None
+    if isinstance(rounds, list):
+        for round_payload in reversed(rounds):
+            proposal_payload = round_payload.get("proposal") if isinstance(round_payload, dict) else None
+            if isinstance(proposal_payload, dict):
+                round_hypothesis = proposal_payload.get("hypothesis")
+                if isinstance(round_hypothesis, str) and round_hypothesis.strip():
+                    return round_hypothesis.strip()
 
     source_task_type = task.get("source_task_type")
     source_model_name = task.get("source_model_name")
@@ -229,31 +252,59 @@ def _normalize_auto_train_history_summary(task: dict) -> str | None:
     return None
 
 
-def _build_search_scope_summary(config: ExperimentConfig) -> str:
-    """Build one compact search-scope label from the current search policy."""
-    policy = config.search_policy
+def _build_search_scope_summary(parameter_space: object) -> str:
+    """Build one compact search-scope label from the model parameter space."""
+    effective_policy = build_full_search_policy(parameter_space)
     categories: list[str] = []
-    if policy.allow_basic_hparam_search:
+    if effective_policy.allow_basic_hparam_search:
         categories.append("Basic")
-    if policy.allow_loss_search:
+    if effective_policy.allow_loss_search:
         categories.append("Loss")
-    if policy.allow_augmentation_search:
+    if effective_policy.allow_augmentation_search:
         categories.append("Data Augmentation")
-    if policy.allow_model_module_search:
+    if effective_policy.allow_model_module_search:
         categories.append("Architecture")
-    return " / ".join(categories) if categories else "No search scope selected"
+    return " / ".join(categories) if categories else "All supported settings"
 
 
 def _is_retryable_proposal_error(error: Exception) -> bool:
     """Return whether one proposal error is worth retrying after a short delay."""
+    if isinstance(error, ValueError):
+        normalized_error_text = str(error).lower()
+        return any(
+            marker in normalized_error_text
+            for marker in (
+                "proposal",
+                "json",
+                "field",
+                "changes",
+                "parameter",
+                "range",
+                "schema",
+                "unsupported",
+                "model_name",
+            )
+        )
     if isinstance(error, requests.RequestException):
         return True
     if isinstance(error, AIHubMixRequestError):
         error_text = str(error)
         if any(f"status={status_code}" in error_text for status_code in ("429", "500", "502", "503", "504", "529")):
             return True
-        return "overloaded_error" in error_text or "high load" in error_text.lower()
+        normalized_error_text = error_text.lower()
+        return (
+            "overloaded_error" in error_text
+            or "high load" in normalized_error_text
+            or "read timed out" in normalized_error_text
+            or "connect timeout" in normalized_error_text
+        )
     return False
+
+
+def _build_capped_retry_delay_seconds(attempt_number: int, *, base_seconds: int, cap_seconds: int) -> int:
+    """Return one exponential backoff delay capped to the configured maximum."""
+    effective_attempt_number = max(1, attempt_number)
+    return min(cap_seconds, base_seconds * (2 ** (effective_attempt_number - 1)))
 
 
 def _sleep_with_stop_check(task_id: str, seconds: int) -> None:
@@ -265,21 +316,36 @@ def _sleep_with_stop_check(task_id: str, seconds: int) -> None:
         time.sleep(1)
 
 
+def _build_error_summary_snapshot(
+    *,
+    experiment_id: str | None,
+    status: str,
+    summary_text: str,
+) -> dict:
+    """Build one synthetic summary snapshot when no experiment result payload exists."""
+    return {
+        "experiment_id": experiment_id,
+        "status": status,
+        "decision": "crash" if status == "failed" else "discard",
+        "decision_reason": summary_text,
+        "metrics": {},
+        "summary": summary_text,
+    }
+
+
 def _generate_auto_train_proposal(
     task_id: str,
     run_id: str,
-    *,
-    require_non_basic_change: bool,
 ) -> object:
-    """Generate one proposal with retry-on-network behavior for transient provider failures."""
-    total_attempts = len(AUTO_TRAIN_PROPOSAL_RETRY_DELAYS_SECONDS) + 1
-    for attempt_index in range(total_attempts):
+    """Generate one proposal and keep retrying transient or invalid responses."""
+    attempt_index = 0
+    while True:
+        attempt_index += 1
         db = SessionLocal()
         try:
             return generate_aihubmix_proposal(
                 db,
                 run_id,
-                require_non_basic_change=require_non_basic_change,
                 on_prompt_metadata=lambda prompt_metadata: _record_prompt_token_estimate(
                     task_id,
                     prompt_metadata,
@@ -289,23 +355,27 @@ def _generate_auto_train_proposal(
                     provider_metadata,
                 ),
             )
-        except ValueError:
+        except AutoTrainStoppedError:
             raise
         except Exception as error:
-            if not _is_retryable_proposal_error(error) or attempt_index >= total_attempts - 1:
+            if not _is_retryable_proposal_error(error):
                 raise
-            retry_delay_seconds = AUTO_TRAIN_PROPOSAL_RETRY_DELAYS_SECONDS[attempt_index]
+            retry_delay_seconds = _build_capped_retry_delay_seconds(
+                attempt_index,
+                base_seconds=AUTO_TRAIN_PROPOSAL_RETRY_BASE_SECONDS,
+                cap_seconds=AUTO_TRAIN_PROPOSAL_RETRY_CAP_SECONDS,
+            )
             _append_task_log(
                 task_id,
                 (
-                    f"Proposal request failed ({attempt_index + 1}/{total_attempts}) | "
+                    f"Proposal request failed (attempt {attempt_index}) | "
                     f"{error} | retrying in {retry_delay_seconds}s"
                 ),
             )
+            _set_activity_message(task_id, f"Proposal retry in {retry_delay_seconds}s")
             _sleep_with_stop_check(task_id, retry_delay_seconds)
         finally:
             db.close()
-    raise RuntimeError("Proposal retry loop exited unexpectedly")
 
 
 def _wait_for_experiment_terminal(task_id: str, experiment_id: str, *, started_at_monotonic: float) -> dict:
@@ -439,7 +509,7 @@ def _load_latest_search_policy_for_run(db: SessionLocal, run_id: str) -> SearchP
 
 
 def _load_auto_train_seed_experiment(db: SessionLocal, run_id: str) -> dict | None:
-    """Return the persisted successful experiment that model search should continue from."""
+    """Return the latest persisted seed experiment that model search should continue from."""
     try:
         source_experiment_detail = _resolve_followup_source_experiment(
             db,
@@ -448,47 +518,145 @@ def _load_auto_train_seed_experiment(db: SessionLocal, run_id: str) -> dict | No
         )
     except ValueError:
         return None
-    if source_experiment_detail["status"] != "success":
-        return None
     return source_experiment_detail
 
 
-def _try_attach_final_proposal(
-    task_id: str,
-    *,
-    run_id: str,
-    round_index: int,
-    summary: dict | None,
-    policy_stop_reason: str | None = None,
-) -> None:
-    """Attach one next-step proposal to the task summary when auto-train stops."""
-    if summary is None:
-        return
-
+def _maybe_discard_non_terminal_experiment(experiment_id: str) -> dict | None:
+    """Best-effort discard for queued or running experiments after one failed attempt."""
     db = SessionLocal()
     try:
-        proposal = generate_aihubmix_proposal(
-            db,
-            run_id,
-            require_non_basic_change=require_non_basic_change_after_warmup_rounds(round_index),
-        )
-    except Exception as error:
-        fallback_summary = deepcopy(summary)
-        fallback_summary["final_proposal"] = None
-        fallback_summary["final_suggestion_error"] = str(error)
-        if policy_stop_reason:
-            fallback_summary["stop_reason"] = policy_stop_reason
-        _update_task(task_id, summary=fallback_summary)
-        _append_task_log(task_id, f"Final suggestion generation failed: {error}")
-    else:
-        updated_summary = deepcopy(summary)
-        updated_summary["final_proposal"] = proposal.model_dump()
-        if policy_stop_reason:
-            updated_summary["stop_reason"] = policy_stop_reason
-        _update_task(task_id, summary=updated_summary)
-        _append_task_log(task_id, "Final next-step suggestion generated")
+        experiment_detail = get_experiment_detail(db, experiment_id)
+        if experiment_detail is None:
+            return None
+        detail_payload = experiment_detail.model_dump()
+        if detail_payload["status"] not in {"success", "failed", "discarded"}:
+            discarded_detail = discard_experiment(db, experiment_id)
+            if discarded_detail is not None:
+                return discarded_detail.model_dump()
+        return detail_payload
     finally:
         db.close()
+
+
+def _run_experiment_with_retries(
+    task_id: str,
+    *,
+    label: str,
+    experiment_request: ExperimentCreateRequest,
+    started_at_monotonic: float,
+    max_attempts: int,
+) -> dict:
+    """Create, train, and retry one experiment attempt budget before giving up on the round."""
+    last_failure_payload: dict | None = None
+    for attempt_index in range(1, max_attempts + 1):
+        task_snapshot = _snapshot_task(task_id)
+        if task_snapshot is None or task_snapshot.stop_requested:
+            raise AutoTrainStoppedError("Auto train stopped by user request")
+
+        current_experiment_id: str | None = None
+        try:
+            _set_activity_message(task_id, f"Creating {label.lower()} attempt {attempt_index}")
+            db = SessionLocal()
+            try:
+                next_experiment = create_experiment(db, experiment_request)
+            finally:
+                db.close()
+            if next_experiment is None:
+                raise ValueError(f"Failed to create {label.lower()} experiment")
+
+            current_experiment_id = next_experiment.id
+            _update_task(task_id, current_experiment_id=current_experiment_id)
+            _append_task_log(
+                task_id,
+                f"{label} attempt {attempt_index}/{max_attempts}: created experiment {current_experiment_id}",
+            )
+
+            _set_activity_message(task_id, f"Starting {label.lower()} attempt {attempt_index}")
+            start_experiment_training(current_experiment_id)
+            _append_task_log(
+                task_id,
+                f"{label} attempt {attempt_index}/{max_attempts}: training started for {current_experiment_id}",
+            )
+            _set_activity_message(task_id, f"Training {label.lower()} attempt {attempt_index}")
+            experiment_detail = _wait_for_experiment_terminal(
+                task_id,
+                current_experiment_id,
+                started_at_monotonic=started_at_monotonic,
+            )
+            if experiment_detail["status"] == "discarded":
+                task_snapshot = _snapshot_task(task_id)
+                if task_snapshot is None or task_snapshot.stop_requested:
+                    raise AutoTrainStoppedError("Auto train stopped by user request")
+            if experiment_detail["status"] == "success":
+                _update_task(task_id, current_experiment_id=None)
+                return experiment_detail
+            last_failure_payload = experiment_detail
+            failed_attempt_summary = _build_summary_snapshot(experiment_detail)
+            _append_task_log(
+                task_id,
+                (
+                    f"{label} attempt {attempt_index}/{max_attempts} failed | "
+                    f"{failed_attempt_summary['summary']}"
+                ),
+            )
+        except AutoTrainStoppedError:
+            raise
+        except Exception as error:
+            if current_experiment_id:
+                last_failure_detail = _maybe_discard_non_terminal_experiment(current_experiment_id)
+                if last_failure_detail is not None:
+                    last_failure_payload = last_failure_detail
+                    failed_attempt_summary = _build_summary_snapshot(last_failure_detail)
+                else:
+                    last_failure_payload = _build_error_summary_snapshot(
+                        experiment_id=current_experiment_id,
+                        status="failed",
+                        summary_text=str(error),
+                    )
+            else:
+                last_failure_payload = _build_error_summary_snapshot(
+                    experiment_id=None,
+                    status="failed",
+                    summary_text=str(error),
+                )
+            failed_attempt_summary = (
+                last_failure_payload
+                if "summary" in last_failure_payload
+                else _build_summary_snapshot(last_failure_payload)
+            )
+            _append_task_log(
+                task_id,
+                (
+                    f"{label} attempt {attempt_index}/{max_attempts} failed | "
+                    f"{failed_attempt_summary['summary']}"
+                ),
+            )
+        finally:
+            _update_task(task_id, current_experiment_id=None)
+
+        if attempt_index >= max_attempts:
+            break
+
+        retry_delay_seconds = _build_capped_retry_delay_seconds(
+            attempt_index,
+            base_seconds=AUTO_TRAIN_EXPERIMENT_RETRY_BASE_SECONDS,
+            cap_seconds=AUTO_TRAIN_EXPERIMENT_RETRY_CAP_SECONDS,
+        )
+        _append_task_log(
+            task_id,
+            (
+                f"{label} attempt {attempt_index}/{max_attempts} failed | "
+                f"retrying in {retry_delay_seconds}s"
+            ),
+        )
+        _set_activity_message(task_id, f"{label} retry in {retry_delay_seconds}s")
+        _sleep_with_stop_check(task_id, retry_delay_seconds)
+
+    return last_failure_payload or _build_error_summary_snapshot(
+        experiment_id=None,
+        status="failed",
+        summary_text=f"{label} exhausted its retry budget without a valid result.",
+    )
 
 
 def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
@@ -498,7 +666,6 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
             raise AutoTrainStoppedError("Auto train stopped before execution started")
         _update_task(task_id, status="running", activity_message="Validating dataset manifests and training config")
         started_at_monotonic = time.monotonic()
-        run_policy = get_default_run_policy()
         db = SessionLocal()
         try:
             if request.run_id:
@@ -526,163 +693,72 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
         finally:
             db.close()
 
+        baseline_request = ExperimentCreateRequest(
+            run_id=run_id,
+            config=request.config,
+            parameter_space=request.parameter_space,
+            proposal=None,
+        )
         if request.run_id:
             db = SessionLocal()
             try:
-                _set_activity_message(task_id, "Checking for an existing successful baseline")
+                _set_activity_message(task_id, "Checking for an existing seed experiment")
                 baseline_detail = _load_auto_train_seed_experiment(db, run_id)
             finally:
                 db.close()
             if baseline_detail is not None:
                 _update_task(task_id, current_experiment_id=baseline_detail["id"], current_round=0)
-                _append_task_log(task_id, f"Reusing existing baseline: {baseline_detail['id']}")
-            else:
-                _append_task_log(task_id, f"No successful baseline found in run {run_id}; creating a new baseline")
-                _set_activity_message(task_id, "Creating baseline experiment")
-                baseline_request = ExperimentCreateRequest(
-                    run_id=run_id,
-                    config=request.config,
-                    parameter_space=request.parameter_space,
-                    proposal=None,
-                )
-                db = SessionLocal()
-                try:
-                    baseline_experiment = create_experiment(db, baseline_request)
-                    if baseline_experiment is None:
-                        raise ValueError("Failed to create baseline experiment")
-                finally:
-                    db.close()
-                _update_task(task_id, current_experiment_id=baseline_experiment.id, current_round=0)
-                _append_task_log(task_id, f"Baseline created: {baseline_experiment.id}")
-                _set_activity_message(task_id, "Starting baseline training")
-                start_experiment_training(baseline_experiment.id)
-                _append_task_log(task_id, f"Baseline training started: {baseline_experiment.id}")
-                _set_activity_message(task_id, "Baseline training is running")
-                baseline_detail = _wait_for_experiment_terminal(
+                _append_task_log(
                     task_id,
-                    baseline_experiment.id,
-                    started_at_monotonic=started_at_monotonic,
+                    f"Reusing existing seed experiment: {baseline_detail['id']} ({baseline_detail['status']})",
                 )
-                if baseline_detail["status"] == "discarded":
-                    raise AutoTrainStoppedError("Baseline experiment was discarded")
-                if baseline_detail["status"] != "success":
-                    raise ValueError(f"Baseline experiment failed with status {baseline_detail['status']}")
+            else:
+                _append_task_log(task_id, f"No existing seed experiment found in run {run_id}; creating a baseline")
+                baseline_detail = _run_experiment_with_retries(
+                    task_id,
+                    label="Baseline",
+                    experiment_request=baseline_request,
+                    started_at_monotonic=started_at_monotonic,
+                    max_attempts=AUTO_TRAIN_MAX_BASELINE_ATTEMPTS,
+                )
         else:
-            _set_activity_message(task_id, "Creating baseline experiment")
-            baseline_request = ExperimentCreateRequest(
-                run_id=run_id,
-                config=request.config,
-                parameter_space=request.parameter_space,
-                proposal=None,
-            )
-            db = SessionLocal()
-            try:
-                baseline_experiment = create_experiment(db, baseline_request)
-                if baseline_experiment is None:
-                    raise ValueError("Failed to create baseline experiment")
-            finally:
-                db.close()
-            _update_task(task_id, current_experiment_id=baseline_experiment.id, current_round=0)
-            _append_task_log(task_id, f"Baseline created: {baseline_experiment.id}")
-            _set_activity_message(task_id, "Starting baseline training")
-            start_experiment_training(baseline_experiment.id)
-            _append_task_log(task_id, f"Baseline training started: {baseline_experiment.id}")
-            _set_activity_message(task_id, "Baseline training is running")
-            baseline_detail = _wait_for_experiment_terminal(
+            baseline_detail = _run_experiment_with_retries(
                 task_id,
-                baseline_experiment.id,
+                label="Baseline",
+                experiment_request=baseline_request,
                 started_at_monotonic=started_at_monotonic,
+                max_attempts=AUTO_TRAIN_MAX_BASELINE_ATTEMPTS,
             )
-            if baseline_detail["status"] == "discarded":
-                raise AutoTrainStoppedError("Baseline experiment was discarded")
-            if baseline_detail["status"] != "success":
-                raise ValueError(f"Baseline experiment failed with status {baseline_detail['status']}")
+
+        if not (baseline_detail.get("id") or baseline_detail.get("experiment_id")):
+            raise ValueError("Auto train could not create any baseline experiment after retries.")
 
         summary = {
             "mode": "auto",
             "run_id": run_id,
-            "baseline": _build_summary_snapshot(baseline_detail),
+            "baseline": baseline_detail if "summary" in baseline_detail else _build_summary_snapshot(baseline_detail),
             "rounds": [],
             "current_proposal": None,
         }
         _update_task(task_id, summary=summary)
         _append_task_log(task_id, f"Baseline finished: {summary['baseline']['summary']}")
+        if baseline_detail["status"] != "success":
+            _append_task_log(
+                task_id,
+                "Baseline did not succeed, but search will continue from the latest available experiment.",
+            )
 
         round_index = 0
-        consecutive_invalid_proposals = 0
         while True:
             _update_elapsed_seconds(task_id, started_at_monotonic)
-
-            db = SessionLocal()
-            try:
-                search_policy = _load_latest_search_policy_for_run(db, run_id)
-                history_payload = get_run_history_payload(db, run_id)
-                should_stop, stop_reason = should_stop_after_dimension_coverage(
-                    history_payload,
-                    search_policy,
-                    policy=run_policy,
-                )
-            finally:
-                db.close()
-
-            if should_stop:
-                _try_attach_final_proposal(
-                    task_id,
-                    run_id=run_id,
-                    round_index=round_index + 1,
-                    summary=summary,
-                    policy_stop_reason=stop_reason,
-                )
-                _update_task(
-                    task_id,
-                    status="stopped_by_policy",
-                    current_experiment_id=None,
-                    stop_reason=stop_reason,
-                )
-                _append_task_log(task_id, stop_reason)
-                return
-
             task = _snapshot_task(task_id)
             if task is None or task.stop_requested:
                 raise AutoTrainStoppedError("Auto train stopped by user request")
             round_index += 1
             _update_task(task_id, current_round=round_index)
-            require_non_basic_change = require_non_basic_change_after_warmup_rounds(round_index, policy=run_policy)
-            if require_non_basic_change:
-                _append_task_log(
-                    task_id,
-                    f"Round {round_index}: warmup is complete, prioritize augmentation/loss/strategy changes",
-                )
             _append_task_log(task_id, f"Round {round_index}: generating AI proposal")
             _set_activity_message(task_id, f"Generating proposal for round {round_index}")
-
-            try:
-                proposal = _generate_auto_train_proposal(
-                    task_id,
-                    run_id,
-                    require_non_basic_change=require_non_basic_change,
-                )
-            except ValueError as error:
-                consecutive_invalid_proposals += 1
-                _append_task_log(
-                    task_id,
-                    f"Round {round_index}: invalid proposal ({consecutive_invalid_proposals} consecutive) | {error}",
-                )
-                if consecutive_invalid_proposals >= AUTO_TRAIN_MAX_CONSECUTIVE_INVALID_PROPOSALS:
-                    raise ValueError(
-                        "Auto train stopped after repeated invalid proposals. "
-                        f"Last error: {error}"
-                    ) from error
-                _append_task_log(
-                    task_id,
-                    (
-                        f"Round {round_index}: waiting "
-                        f"{AUTO_TRAIN_INVALID_PROPOSAL_RETRY_DELAY_SECONDS}s before retrying proposal generation"
-                    ),
-                )
-                _sleep_with_stop_check(task_id, AUTO_TRAIN_INVALID_PROPOSAL_RETRY_DELAY_SECONDS)
-                continue
-            consecutive_invalid_proposals = 0
+            proposal = _generate_auto_train_proposal(task_id, run_id)
 
             proposal_payload = proposal.model_dump()
             summary["current_proposal"] = proposal_payload
@@ -698,51 +774,44 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                 task_id,
                 f"Round {round_index}: branching from {source_experiment_detail['id']} for the next experiment",
             )
-            _set_activity_message(task_id, f"Creating experiment for round {round_index}")
 
             followup_config = _build_followup_config(source_experiment_detail, proposal_payload)
-            db = SessionLocal()
-            try:
-                next_experiment = create_experiment(
-                    db,
-                    ExperimentCreateRequest(
-                        run_id=run_id,
-                        config=followup_config,
-                        parameter_space=request.parameter_space,
-                        proposal=proposal,
-                    ),
-                )
-                if next_experiment is None:
-                    raise ValueError("Failed to create follow-up experiment")
-            finally:
-                db.close()
-
-            _update_task(task_id, current_experiment_id=next_experiment.id)
-            _append_task_log(task_id, f"Round {round_index}: created experiment {next_experiment.id}")
-            _set_activity_message(task_id, f"Starting training for round {round_index}")
-            start_experiment_training(next_experiment.id)
-            _append_task_log(task_id, f"Round {round_index}: training started for {next_experiment.id}")
-            _set_activity_message(task_id, f"Training round {round_index}")
-            current_experiment_detail = _wait_for_experiment_terminal(
+            current_experiment_detail = _run_experiment_with_retries(
                 task_id,
-                next_experiment.id,
+                label=f"Round {round_index}",
+                experiment_request=ExperimentCreateRequest(
+                    run_id=run_id,
+                    config=followup_config,
+                    parameter_space=request.parameter_space,
+                    proposal=proposal,
+                ),
                 started_at_monotonic=started_at_monotonic,
+                max_attempts=AUTO_TRAIN_MAX_EXPERIMENT_ATTEMPTS_PER_ROUND,
             )
-            if current_experiment_detail["status"] == "discarded":
-                raise AutoTrainStoppedError("Current experiment was discarded")
-            if current_experiment_detail["status"] != "success":
-                raise ValueError(f"Round {round_index} experiment failed with status {current_experiment_detail['status']}")
 
             summary["rounds"].append(
                 {
                     "round_index": round_index,
                     "proposal": proposal_payload,
-                    "result": _build_summary_snapshot(current_experiment_detail),
+                    "result": (
+                        current_experiment_detail
+                        if "summary" in current_experiment_detail
+                        else _build_summary_snapshot(current_experiment_detail)
+                    ),
                 }
             )
             summary["current_proposal"] = proposal_payload
             _update_task(task_id, summary=summary)
             _append_task_log(task_id, f"Round {round_index}: {summary['rounds'][-1]['result']['summary']}")
+            if current_experiment_detail.get("status") != "success":
+                _append_task_log(
+                    task_id,
+                    (
+                        f"Round {round_index}: retry budget exhausted; "
+                        "discarding this round and continuing search"
+                    ),
+                )
+                continue
             if current_experiment_detail.get("decision") == "keep":
                 _append_task_log(
                     task_id,
@@ -756,18 +825,8 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
                     f"{current_experiment_detail.get('decision_reason')}",
                 )
     except AutoTrainStoppedError:
-        task_snapshot = _snapshot_task(task_id)
-        current_summary = task_snapshot.summary if task_snapshot is not None else None
-        current_run_id = task_snapshot.run_id if task_snapshot is not None else None
-        if current_run_id:
-            _try_attach_final_proposal(
-                task_id,
-                run_id=current_run_id,
-                round_index=round_index + 1,
-                summary=current_summary.model_dump() if hasattr(current_summary, "model_dump") else current_summary,
-            )
         _update_task(task_id, status="stopped", current_experiment_id=None, stop_reason="Stopped by user request.")
-        _append_task_log(task_id, "Auto train stopped and current experiment discarded")
+        _append_task_log(task_id, "Auto train stopped by user request")
     except Exception as error:
         _update_task(task_id, status="failed", error=str(error), current_experiment_id=None, activity_message=str(error))
         _append_task_log(task_id, f"Auto train failed: {error}")
@@ -794,7 +853,7 @@ def start_auto_train_task(request: AutoTrainStartRequest) -> AutoTrainTaskRespon
         "dataset": request.dataset,
         "model_name": request.model_name,
         "policy_preset": request.policy_preset,
-        "search_scope_summary": _build_search_scope_summary(request.config),
+        "search_scope_summary": _build_search_scope_summary(request.parameter_space),
         "run_id": request.run_id,
         "source_task_type": request.source_task_type,
         "source_task_id": request.source_task_id,

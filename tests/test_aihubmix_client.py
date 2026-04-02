@@ -16,7 +16,11 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 import requests
 
-from app.llm.aihubmix_client import AIHubMixClient, AIHubMixRequestError
+from app.llm.aihubmix_client import (
+    AIHUBMIX_REQUEST_TIMEOUT_SECONDS,
+    AIHubMixClient,
+    AIHubMixRequestError,
+)
 
 
 class AIHubMixClientTest(unittest.TestCase):
@@ -62,6 +66,7 @@ class AIHubMixClientTest(unittest.TestCase):
         self.assertEqual(metadata["usage"], {"total_tokens": 12})
         self.assertEqual(post_mock.call_count, 2)
         self.assertEqual(post_mock.call_args.kwargs["headers"]["Connection"], "close")
+        self.assertEqual(post_mock.call_args.kwargs["timeout"], AIHUBMIX_REQUEST_TIMEOUT_SECONDS)
         sleep_mock.assert_called_once()
 
     def test_create_json_completion_with_metadata_retries_retryable_http_status(self) -> None:

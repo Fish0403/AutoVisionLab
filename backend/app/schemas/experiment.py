@@ -44,13 +44,6 @@ class ExperimentDetailResponse(BaseModel):
     reflection: ReflectionSchema | None = None
 
 
-class ExperimentDecisionRequest(BaseModel):
-    """Request payload for writing one research decision."""
-
-    decision: ExperimentDecision
-    decision_reason: str | None = None
-
-
 class ExperimentSuggestionTaskResponse(BaseModel):
     """Background suggestion task snapshot for one completed experiment."""
 

@@ -189,8 +189,9 @@ class ModelCompareServiceTest(unittest.TestCase):
         MODEL_COMPARE_TASKS["cmp_1"] = {
             "task_id": "cmp_1",
             "status": "stopped",
+            "logs": [],
             "owned_run_ids": ["run_cmp_1", "run_cmp_2"],
-            "summary": {"candidate_results": []},
+            "summary": {"shared_baseline_config": {}, "candidate_results": []},
         }
 
         with (
@@ -199,8 +200,9 @@ class ModelCompareServiceTest(unittest.TestCase):
                 return_value={
                     "task_id": "cmp_1",
                     "status": "stopped",
+                    "logs": [],
                     "owned_run_ids": ["run_cmp_1", "run_cmp_2"],
-                    "summary": {"candidate_results": []},
+                    "summary": {"shared_baseline_config": {}, "candidate_results": []},
                 },
             ),
             patch(

@@ -1,5 +1,6 @@
 """Application settings."""
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,9 +17,18 @@ class Settings(BaseSettings):
     demo_train_samples: int = 2000
     demo_val_samples: int = 1000
     classification_num_workers: int = 4
-    aihubmix_api_key: str | None = None
-    aihubmix_model: str = "minimax/minimax-m2.5"
-    aihubmix_base_url: str = "https://aihubmix.com/v1"
+    aihubmix_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("OPENAI_API_KEY", "AVL_LLM_API_KEY", "AVL_AIHUBMIX_API_KEY"),
+    )
+    aihubmix_model: str = Field(
+        default="minimax/minimax-m2.5",
+        validation_alias=AliasChoices("OPENAI_MODEL", "AVL_LLM_MODEL", "AVL_AIHUBMIX_MODEL"),
+    )
+    aihubmix_base_url: str = Field(
+        default="https://aihubmix.com/v1",
+        validation_alias=AliasChoices("OPENAI_BASE_URL", "AVL_LLM_BASE_URL", "AVL_AIHUBMIX_BASE_URL"),
+    )
     cors_allowed_origins: list[str] = [
         "http://127.0.0.1:5173",
         "http://localhost:5173",

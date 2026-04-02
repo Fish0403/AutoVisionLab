@@ -238,10 +238,9 @@ class ProposalServiceTest(unittest.TestCase):
         self.assertEqual(mock_client.create_json_completion_with_metadata.call_count, 2)
         second_prompt = mock_client.create_json_completion_with_metadata.call_args_list[1].kwargs["user_prompt"]
         self.assertIn("Proposal does not contain any effective parameter changes", second_prompt)
-        self.assertIn("本轮优先考虑这些字段", second_prompt)
-        self.assertIn("优先不要再次包含", second_prompt)
+        self.assertIn("请基于完整历史换一个更可执行的方向", second_prompt)
 
-    def test_generate_aihubmix_proposal_rejects_runs_with_no_enabled_search_fields(self) -> None:
+    def test_generate_aihubmix_proposal_ignores_disabled_run_search_policy(self) -> None:
         db = Mock()
         db.get.return_value = SimpleNamespace(
             id="run_1",
@@ -256,6 +255,18 @@ class ProposalServiceTest(unittest.TestCase):
             {"id": "exp_keep", "status": "success", "decision": "keep"},
         ]
         mock_client = Mock()
+        mock_client.create_json_completion_with_metadata.return_value = (
+            {
+                "task_type": "classification",
+                "model_name": "mobilenet_v3_small",
+                "based_on_experiment_ids": ["exp_keep"],
+                "hypothesis": "改测权重衰减。",
+                "changes": {"weight_decay": 0.0005},
+                "reason": "当前 run 允许 AI 在模型 parameter space 内自主搜索。",
+                "risk": "low",
+            },
+            {},
+        )
 
         with (
             patch("app.services.proposal_service.get_run_history_payload", return_value=experiment_history),
@@ -276,10 +287,10 @@ class ProposalServiceTest(unittest.TestCase):
             ),
             patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
         ):
-            with self.assertRaisesRegex(ValueError, "No AI search fields are enabled for this run"):
-                generate_aihubmix_proposal(db, "run_1")
+            proposal = generate_aihubmix_proposal(db, "run_1")
 
-        mock_client.create_json_completion_with_metadata.assert_not_called()
+        self.assertEqual(proposal.changes.weight_decay, 0.0005)
+        mock_client.create_json_completion_with_metadata.assert_called_once()
 
 
 if __name__ == "__main__":

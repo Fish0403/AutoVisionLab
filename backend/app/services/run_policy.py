@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from app.models.experiment import ExperimentModel
-from app.schemas.parameter_space import SearchPolicy
 from app.schemas.ranking_policy import RankingMetricMode, RankingPolicy
 from app.schemas.run_policy import RunPolicy
 from app.services.parameter_space import (
@@ -14,11 +13,9 @@ from app.services.parameter_space import (
     LOSS_SEARCH_FIELDS,
     MODEL_MODULE_SEARCH_FIELDS,
     STRATEGY_SEARCH_FIELDS,
-    get_allowed_ai_search_fields,
 )
 
 
-ALL_SEARCH_DIMENSIONS = {"basic", "augmentation", "loss", "strategy", "model_module"}
 NON_BASIC_SEARCH_DIMENSIONS = {"augmentation", "loss", "strategy", "model_module"}
 
 
@@ -322,15 +319,6 @@ def _get_effective_history_change_fields_with_index(
     return _get_effective_history_change_fields(experiment)
 
 
-def get_available_dimensions(search_policy: SearchPolicy | dict[str, Any] | None) -> set[str]:
-    """Return the search dimensions currently open to the AI."""
-    policy = search_policy
-    if isinstance(search_policy, dict):
-        policy = SearchPolicy.model_validate(search_policy)
-    allowed_fields = get_allowed_ai_search_fields(policy)
-    return get_change_dimensions(allowed_fields)
-
-
 def get_preferred_fields(
     allowed_fields: set[str],
     *,
@@ -371,72 +359,6 @@ def get_preferred_fields(
             preference_notes.append("prefer_dimension_switch")
 
     return preferred_fields or set(allowed_fields), preference_notes
-
-
-def get_dimension_attempt_count(
-    experiment_history: list[dict[str, Any]],
-) -> dict[str, int]:
-    """Return how many successful experiments have explored each dimension."""
-    history_index = _build_history_index(experiment_history)
-    attempt_count = {
-        dimension: 0
-        for dimension in ALL_SEARCH_DIMENSIONS
-    }
-    for experiment in experiment_history:
-        if experiment.get("status") != "success":
-            continue
-        changed_fields = _get_effective_history_change_fields_with_index(experiment, history_index)
-        for dimension in get_change_dimensions(changed_fields):
-            attempt_count[dimension] += 1
-    return attempt_count
-
-
-def should_stop_after_dimension_coverage(
-    experiment_history: list[dict[str, Any]],
-    search_policy: SearchPolicy | dict[str, Any] | None,
-    *,
-    policy: RunPolicy | None = None,
-) -> tuple[bool, str]:
-    """Return whether auto-train should stop after exhausting the allowed dimensions."""
-    effective_policy = policy or get_default_run_policy()
-    available_dimensions = get_available_dimensions(search_policy)
-    if not available_dimensions:
-        return False, "No AI-search dimensions are enabled for the current run."
-
-    dimension_attempt_count = get_dimension_attempt_count(experiment_history)
-    explored_dimensions = {
-        dimension
-        for dimension, attempt_count in dimension_attempt_count.items()
-        if attempt_count > 0
-    }
-    if not available_dimensions.issubset(explored_dimensions):
-        missing_dimensions = sorted(available_dimensions - explored_dimensions)
-        return False, f"Still missing explored dimensions: {', '.join(missing_dimensions)}."
-
-    underexplored_dimensions = sorted(
-        dimension
-        for dimension in available_dimensions
-        if dimension_attempt_count.get(dimension, 0) < effective_policy.auto_train_min_successful_attempts_per_dimension
-    )
-    if underexplored_dimensions:
-        return (
-            False,
-            "Some dimensions have not reached the minimum successful attempt budget: "
-            f"{', '.join(underexplored_dimensions)}.",
-        )
-
-    stagnation_rounds = count_consecutive_stagnation_rounds(experiment_history)
-    if stagnation_rounds < effective_policy.auto_train_early_stop_stagnation_rounds:
-        return (
-            False,
-            "Dimension coverage is complete, but the recent stagnation window is still below the stop threshold.",
-        )
-
-    return (
-        True,
-        "Stopped by run policy: all enabled search dimensions reached the minimum attempt budget "
-        f"and the run has stalled for {stagnation_rounds} rounds.",
-    )
 
 
 def require_non_basic_change_after_warmup_rounds(
