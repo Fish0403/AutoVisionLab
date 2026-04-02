@@ -7,7 +7,17 @@ from pydantic import BaseModel, Field
 
 TaskType = Literal["classification"]
 ModelFamily = Literal["mobilenet", "googlenet", "resnet"]
-ModelName = Literal["mobilenet_v2", "mobilenet_v3_small", "googlenet", "resnet18"]
+ModelName = Literal[
+    "mobilenet_v2",
+    "mobilenet_v3_small",
+    "mobilenet_v3_large",
+    "efficientnet_b0",
+    "efficientnet_b1",
+    "googlenet",
+    "resnet18",
+    "resnet34",
+    "resnet50",
+]
 RiskLevel = Literal["low", "medium", "high"]
 ExperimentStatus = Literal["draft", "queued", "running", "success", "failed", "discarded"]
 RunStatus = Literal["draft", "active", "paused", "completed", "failed"]
@@ -21,6 +31,7 @@ class ArtifactPaths(BaseModel):
 
     log_path: str
     checkpoint_path: str
+    recipe_path: str | None = None
 
 
 class ResourceUsage(BaseModel):

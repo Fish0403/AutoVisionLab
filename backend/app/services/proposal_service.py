@@ -112,10 +112,7 @@ def _summarize_experiment_for_prompt(experiment: ExperimentModel, run: RunModel)
         "status": experiment.status,
         "decision": experiment.decision,
         "decision_reason": experiment.decision_reason,
-        "is_baseline": experiment.id == run.baseline_experiment_id,
         "is_best": experiment.id == run.best_experiment_id,
-        "is_frontier": experiment.id == run.frontier_experiment_id,
-        "baseline_experiment_id": experiment.baseline_experiment_id,
         "created_at": experiment.created_at.isoformat() if experiment.created_at else None,
         "metrics": {
             "top1_acc": metrics_payload.get("top1_acc"),
@@ -215,9 +212,7 @@ def generate_aihubmix_proposal(
         "name": run.name,
         "dataset": run.dataset,
         "model_name": run.model_name,
-        "baseline_experiment_id": run.baseline_experiment_id,
         "best_experiment_id": run.best_experiment_id,
-        "frontier_experiment_id": run.frontier_experiment_id,
         "experiment_count": len(experiment_history),
     }
     parameter_space = _load_latest_parameter_space(db, run_id)
@@ -252,7 +247,7 @@ def generate_aihubmix_proposal(
         "其中 hypothesis 和 reason 必须使用简洁中文。"
         "changes 是当前兼容层必填字段；如果你能明确映射到 recipe 视角，也应同时返回 train_hyp_changes 或 recipe_changes。"
         "你会收到同一个 run 的完整实验历史，而不是只收到最新一轮。"
-        "你必须综合所有历史轮次，重点参考 baseline、best、frontier 以及每轮指标变化趋势。"
+        "你必须综合所有历史轮次，重点参考当前 best 以及每轮指标变化趋势。"
         "如果某些历史实验已经被标记为 discard、crash、timeout 或 failed，要把它们视为负样本，避免重复无效尝试。"
         "based_on_experiment_ids 必须填写你实际参考的实验 id，可包含多个。"
         "changes 中至少要有一个字段是非 null；不要返回空 proposal。"
@@ -273,7 +268,7 @@ def generate_aihubmix_proposal(
         "每个字段的可选值或范围必须严格遵循 Allowed field definitions。"
         "只能提出结构化参数改动。"
         "如果当前 parameter space 已开放 component-level 搜索，优先使用 neck_name 和 head_name，而不是旧的细粒度 recipe 字段。"
-        "不要只根据最后一轮实验下结论；必须结合整个 run 的历史记录判断下一步。"
+        "不要只根据最后一轮实验下结论；必须结合整个 run 的历史记录判断下一步。默认围绕当前 best 继续优化。"
         "你可以自由决定下一步搜索方向，但不要机械重复最近几轮几乎相同的建议。"
     )
     client = AIHubMixClient()

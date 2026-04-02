@@ -1,10 +1,15 @@
 """Parameter space access and validation helpers."""
 
 from app.config_spaces.classification import (
+    EFFICIENTNET_B0_PARAMETER_SPACE,
+    EFFICIENTNET_B1_PARAMETER_SPACE,
     GOOGLENET_PARAMETER_SPACE,
     MOBILENET_V2_PARAMETER_SPACE,
+    MOBILENET_V3_LARGE_PARAMETER_SPACE,
     MOBILENET_V3_SMALL_PARAMETER_SPACE,
     RESNET18_PARAMETER_SPACE,
+    RESNET34_PARAMETER_SPACE,
+    RESNET50_PARAMETER_SPACE,
 )
 from app.schemas.ai import ProposalSchema
 from app.schemas.parameter_space import (
@@ -19,8 +24,13 @@ from app.schemas.parameter_space import (
 PARAMETER_SPACES = {
     "mobilenet_v2": MOBILENET_V2_PARAMETER_SPACE,
     "mobilenet_v3_small": MOBILENET_V3_SMALL_PARAMETER_SPACE,
+    "mobilenet_v3_large": MOBILENET_V3_LARGE_PARAMETER_SPACE,
+    "efficientnet_b0": EFFICIENTNET_B0_PARAMETER_SPACE,
+    "efficientnet_b1": EFFICIENTNET_B1_PARAMETER_SPACE,
     "googlenet": GOOGLENET_PARAMETER_SPACE,
     "resnet18": RESNET18_PARAMETER_SPACE,
+    "resnet34": RESNET34_PARAMETER_SPACE,
+    "resnet50": RESNET50_PARAMETER_SPACE,
 }
 
 AI_BLOCKED_PROPOSAL_FIELDS = {"epochs"}

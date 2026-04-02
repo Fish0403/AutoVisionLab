@@ -35,6 +35,7 @@ node_modules/
 # Build outputs
 dist/
 build/
+tmp/
 *.tsbuildinfo
 
 # Local data
@@ -43,10 +44,10 @@ build/
 *.sqlite3
 artifacts/
 data/*
-!data/cifar10/
-!data/cifar10/prepare_classification_split.py
-!data/neu-cls/
-!data/neu-cls/prepare_classification_split.py
-data/*/raw/
-data/*/classification/
-data/*/__pycache__/
+!data/*.py
+!data/raw/
+data/raw/**
+!data/raw/**/
+!data/raw/**/*.py
+data/classification/**
+data/raw/**/__pycache__/

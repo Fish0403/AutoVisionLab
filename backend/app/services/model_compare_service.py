@@ -34,7 +34,13 @@ from app.services.training_runner import start_experiment_training, stop_experim
 MODEL_COMPARE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="autovisionlab-model-compare")
 MODEL_COMPARE_TASKS: dict[str, dict] = {}
 MODEL_COMPARE_LOCK = Lock()
-DEFAULT_COMPARE_CANDIDATE_MODELS = ("mobilenet_v2", "mobilenet_v3_small", "googlenet")
+DEFAULT_COMPARE_CANDIDATE_MODELS = (
+    "mobilenet_v2",
+    "mobilenet_v3_small",
+    "mobilenet_v3_large",
+    "efficientnet_b0",
+    "googlenet",
+)
 
 
 class ModelCompareStoppedError(RuntimeError):
@@ -143,6 +149,8 @@ def _infer_model_family(model_name: str) -> str:
     """Infer one model family from its base model name."""
     if model_name.startswith("mobilenet"):
         return "mobilenet"
+    if model_name.startswith("efficientnet"):
+        return "efficientnet"
     if model_name == "googlenet":
         return "googlenet"
     if model_name.startswith("resnet"):
@@ -262,7 +270,7 @@ def _build_compare_config(
         params_payload["aux_logits"] = False
     else:
         params_payload["aux_logits"] = None
-    if model_name == "mobilenet_v3_small":
+    if model_name in {"mobilenet_v3_small", "mobilenet_v3_large"}:
         notes.append("Disabled component search and used the default native recipe.")
 
     compare_payload = {

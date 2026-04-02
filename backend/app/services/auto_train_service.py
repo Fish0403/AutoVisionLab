@@ -468,28 +468,20 @@ def _build_followup_config(latest_experiment: dict, proposal_payload: dict) -> d
 
 
 def _resolve_followup_source_experiment(db: SessionLocal, run_id: str, proposal_payload: dict) -> dict:
-    """Pick the experiment that the next round should branch from."""
+    """Pick the current best experiment that the next round should branch from."""
     run_detail = get_run_detail(db, run_id)
     if run_detail is None:
         raise ValueError("Run not found during auto train")
 
-    experiment_ids_in_run = {experiment.id for experiment in run_detail.experiments}
-    candidate_ids: list[str] = []
-    candidate_ids.extend(proposal_payload.get("based_on_experiment_ids") or [])
-    if run_detail.frontier_experiment_id:
-        candidate_ids.append(run_detail.frontier_experiment_id)
-    if run_detail.best_experiment_id:
-        candidate_ids.append(run_detail.best_experiment_id)
-    if run_detail.experiments:
-        candidate_ids.append(run_detail.experiments[-1].id)
+    if run_detail.best_experiment_id is not None:
+        best_experiment_detail = get_experiment_detail(db, run_detail.best_experiment_id)
+        if best_experiment_detail is not None:
+            return best_experiment_detail.model_dump()
 
-    for experiment_id in candidate_ids:
-        if experiment_id not in experiment_ids_in_run:
-            continue
-        experiment_detail = get_experiment_detail(db, experiment_id)
-        if experiment_detail is None:
-            continue
-        return experiment_detail.model_dump()
+    if run_detail.experiments:
+        latest_experiment_detail = get_experiment_detail(db, run_detail.experiments[-1].id)
+        if latest_experiment_detail is not None:
+            return latest_experiment_detail.model_dump()
 
     raise ValueError("No valid source experiment found for the next auto-train round")
 

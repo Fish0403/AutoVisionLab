@@ -20,7 +20,6 @@ def _ensure_column(table_name: str, column_name: str, ddl: str) -> None:
 def _migrate_demo_schema() -> None:
     _ensure_column("runs", "baseline_experiment_id", "baseline_experiment_id VARCHAR(64)")
     _ensure_column("runs", "best_experiment_id", "best_experiment_id VARCHAR(64)")
-    _ensure_column("runs", "frontier_experiment_id", "frontier_experiment_id VARCHAR(64)")
     _ensure_column("experiments", "decision", "decision VARCHAR(32)")
     _ensure_column("experiments", "decision_reason", "decision_reason TEXT")
     _ensure_column("experiments", "baseline_experiment_id", "baseline_experiment_id VARCHAR(64)")

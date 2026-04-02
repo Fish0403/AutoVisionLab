@@ -383,8 +383,18 @@ class ExperimentConfig(BaseModel):
 
     task_type: Literal["classification"]
     dataset: str
-    model_family: Literal["mobilenet", "googlenet", "resnet"]
-    model_name: Literal["mobilenet_v2", "mobilenet_v3_small", "googlenet", "resnet18"]
+    model_family: Literal["mobilenet", "efficientnet", "googlenet", "resnet"]
+    model_name: Literal[
+        "mobilenet_v2",
+        "mobilenet_v3_small",
+        "mobilenet_v3_large",
+        "efficientnet_b0",
+        "efficientnet_b1",
+        "googlenet",
+        "resnet18",
+        "resnet34",
+        "resnet50",
+    ]
     parameter_space_version: str
     use_demo_mode: bool = False
     participates_in_ranking: bool = True
@@ -600,10 +610,17 @@ def build_default_model_recipe_components(base_model: str, *, pooling_type: str 
             "neck": {"name": "avg_pool", "params": {}},
             "head": {"name": "native_classifier", "params": {}},
         }
-    if base_model == "mobilenet_v3_small":
+    if base_model in {"mobilenet_v3_small", "mobilenet_v3_large"}:
         neck_name = "gem_pool" if pooling_type == "gem" else "avg_pool"
         return {
-            "backbone": {"name": "mobilenet_v3_small_native", "params": {}},
+            "backbone": {"name": f"{base_model}_native", "params": {}},
+            "neck": {"name": neck_name, "params": {}},
+            "head": {"name": "native_classifier", "params": {}},
+        }
+    if base_model in {"efficientnet_b0", "efficientnet_b1"}:
+        neck_name = "gem_pool" if pooling_type == "gem" else "avg_pool"
+        return {
+            "backbone": {"name": f"{base_model}_native", "params": {}},
             "neck": {"name": neck_name, "params": {}},
             "head": {"name": "native_classifier", "params": {}},
         }
@@ -613,9 +630,9 @@ def build_default_model_recipe_components(base_model: str, *, pooling_type: str 
             "neck": {"name": "avg_pool", "params": {}},
             "head": {"name": "native_classifier", "params": {}},
         }
-    if base_model == "resnet18":
+    if base_model in {"resnet18", "resnet34", "resnet50"}:
         return {
-            "backbone": {"name": "resnet18_native", "params": {}},
+            "backbone": {"name": f"{base_model}_native", "params": {}},
             "neck": {"name": "avg_pool", "params": {}},
             "head": {"name": "native_classifier", "params": {}},
         }

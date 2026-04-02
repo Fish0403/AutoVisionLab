@@ -3,6 +3,39 @@
 from app.schemas.parameter_space import EditableParameterSpace
 
 
+EFFICIENTNET_B0_PARAMETER_SPACE = EditableParameterSpace.model_validate(
+    {
+        "model_name": "efficientnet_b0",
+        "version": "efficientnet_b0@v1",
+        "editable_params": {
+            "optimizer": {"type": "enum", "choices": ["sgd", "adam", "adamw"]},
+            "learning_rate": {"type": "number_range", "min": 0.0001, "max": 0.01},
+            "batch_size": {"type": "discrete_values", "choices": [32, 64, 128, 256]},
+            "image_size": {"type": "discrete_values", "choices": [32, 64, 96]},
+            "epochs": {"type": "discrete_values", "choices": [10, 20, 30, 50]},
+            "weight_decay": {"type": "number_range", "min": 0.0, "max": 0.01},
+            "scheduler": {"type": "enum", "choices": ["none", "step", "cosine"]},
+            "augmentation_policy": {"type": "enum", "choices": ["none", "basic"]},
+            "mixup_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
+            "cutmix_alpha": {"type": "number_range", "min": 0.0, "max": 1.0},
+            "random_erasing_prob": {"type": "number_range", "min": 0.0, "max": 0.5},
+            "loss_name": {"type": "enum", "choices": ["cross_entropy", "cross_entropy_with_label_smoothing", "focal_loss"]},
+            "focal_gamma": {"type": "number_range", "min": 0.5, "max": 5.0},
+            "label_smoothing": {"type": "number_range", "min": 0.0, "max": 0.2},
+            "neck_name": {"type": "enum", "choices": ["avg_pool", "gem_pool"]},
+            "head_name": {"type": "enum", "choices": ["native_classifier", "linear", "dropout_linear"]},
+        },
+    }
+)
+
+EFFICIENTNET_B1_PARAMETER_SPACE = EditableParameterSpace.model_validate(
+    {
+        **EFFICIENTNET_B0_PARAMETER_SPACE.model_dump(mode="python"),
+        "model_name": "efficientnet_b1",
+        "version": "efficientnet_b1@v1",
+    }
+)
+
 MOBILENET_V2_PARAMETER_SPACE = EditableParameterSpace.model_validate(
     {
         "model_name": "mobilenet_v2",
@@ -22,6 +55,8 @@ MOBILENET_V2_PARAMETER_SPACE = EditableParameterSpace.model_validate(
             "loss_name": {"type": "enum", "choices": ["cross_entropy", "cross_entropy_with_label_smoothing", "focal_loss"]},
             "focal_gamma": {"type": "number_range", "min": 0.5, "max": 5.0},
             "label_smoothing": {"type": "number_range", "min": 0.0, "max": 0.2},
+            "neck_name": {"type": "enum", "choices": ["avg_pool", "gem_pool"]},
+            "head_name": {"type": "enum", "choices": ["native_classifier", "linear", "dropout_linear"]},
         },
     }
 )
@@ -48,6 +83,14 @@ MOBILENET_V3_SMALL_PARAMETER_SPACE = EditableParameterSpace.model_validate(
             "neck_name": {"type": "enum", "choices": ["avg_pool", "gem_pool"]},
             "head_name": {"type": "enum", "choices": ["native_classifier", "linear", "dropout_linear"]},
         },
+    }
+)
+
+MOBILENET_V3_LARGE_PARAMETER_SPACE = EditableParameterSpace.model_validate(
+    {
+        **MOBILENET_V3_SMALL_PARAMETER_SPACE.model_dump(mode="python"),
+        "model_name": "mobilenet_v3_large",
+        "version": "mobilenet_v3_large@v1",
     }
 )
 
@@ -94,6 +137,24 @@ RESNET18_PARAMETER_SPACE = EditableParameterSpace.model_validate(
             "loss_name": {"type": "enum", "choices": ["cross_entropy", "cross_entropy_with_label_smoothing", "focal_loss"]},
             "focal_gamma": {"type": "number_range", "min": 0.5, "max": 5.0},
             "label_smoothing": {"type": "number_range", "min": 0.0, "max": 0.2},
+            "neck_name": {"type": "enum", "choices": ["avg_pool", "gem_pool"]},
+            "head_name": {"type": "enum", "choices": ["native_classifier", "linear", "dropout_linear"]},
         },
+    }
+)
+
+RESNET34_PARAMETER_SPACE = EditableParameterSpace.model_validate(
+    {
+        **RESNET18_PARAMETER_SPACE.model_dump(mode="python"),
+        "model_name": "resnet34",
+        "version": "resnet34@v1",
+    }
+)
+
+RESNET50_PARAMETER_SPACE = EditableParameterSpace.model_validate(
+    {
+        **RESNET18_PARAMETER_SPACE.model_dump(mode="python"),
+        "model_name": "resnet50",
+        "version": "resnet50@v1",
     }
 )

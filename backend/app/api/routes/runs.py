@@ -159,7 +159,7 @@ def get_metrics(run_id: str, metric_name: str = "top1_acc", db: Session = Depend
 
 @router.get("/{run_id}/summary", response_model=ApiResponse[RunSummaryResponse])
 def get_run_summary_endpoint(run_id: str, db: Session = Depends(get_db_session)) -> ApiResponse[RunSummaryResponse]:
-    """Return run-level anchors and decision counts."""
+    """Return run-level best experiment and decision counts."""
     summary = get_run_summary(db, run_id)
     if summary is None:
         raise HTTPException(status_code=404, detail="Run not found")

@@ -8,13 +8,15 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.settings import get_settings
 from app.models.experiment import ExperimentModel
 from app.models.result import ResultModel
 from app.models.run import RunModel
 from app.models.task import BackgroundTaskModel
 from app.services.parameter_space import get_parameter_space
-from app.services.run_logging import append_run_log
+from app.services.run_logging import (
+    append_run_log,
+    get_artifact_root,
+)
 from app.services.run_policy import evaluate_promotion, get_experiment_ranking_policy
 from app.schemas.ai import ProposalSchema, ReflectionSchema, ResultSchema
 from app.schemas.common import PointMetric
@@ -26,10 +28,7 @@ from app.schemas.run import RunCreateRequest, RunDetailResponse, RunListItem, Ru
 
 def _get_artifact_root() -> Path:
     """Return the configured artifact root."""
-    settings = get_settings()
-    artifact_root = Path(settings.artifact_root)
-    artifact_root.mkdir(parents=True, exist_ok=True)
-    return artifact_root
+    return get_artifact_root()
 
 
 def _delete_file_if_exists(file_path: Path) -> int:
@@ -41,20 +40,37 @@ def _delete_file_if_exists(file_path: Path) -> int:
 
 
 def _delete_experiment_artifacts(experiment_ids: list[str]) -> int:
-    """Delete checkpoint files for the given experiments."""
+    """Delete experiment artifact directories for the given experiments."""
     artifact_root = _get_artifact_root()
     deleted_files = 0
-    for experiment_id in experiment_ids:
-        deleted_files += _delete_file_if_exists(artifact_root / "checkpoints" / f"{experiment_id}.pt")
+    run_root = artifact_root / "runs"
+    if not run_root.exists():
+        return 0
+    experiment_id_set = set(experiment_ids)
+    for experiment_dir in run_root.glob("*/experiments/*"):
+        if not experiment_dir.is_dir() or experiment_dir.name not in experiment_id_set:
+            continue
+        for path in experiment_dir.rglob("*"):
+            if path.is_file():
+                path.unlink()
+                deleted_files += 1
+        shutil.rmtree(experiment_dir, ignore_errors=True)
     return deleted_files
 
 
 def _delete_run_artifacts(run_ids: list[str]) -> int:
-    """Delete run log files for the given runs."""
+    """Delete run artifact directories for the given runs."""
     artifact_root = _get_artifact_root()
     deleted_files = 0
     for run_id in run_ids:
-        deleted_files += _delete_file_if_exists(artifact_root / "runs" / f"{run_id}.log")
+        run_dir = artifact_root / "runs" / run_id
+        if not run_dir.exists():
+            continue
+        for path in run_dir.rglob("*"):
+            if path.is_file():
+                path.unlink()
+                deleted_files += 1
+        shutil.rmtree(run_dir, ignore_errors=True)
     return deleted_files
 
 
@@ -62,7 +78,7 @@ def _clear_all_artifacts() -> int:
     """Delete all managed artifact files."""
     artifact_root = _get_artifact_root()
     deleted_files = 0
-    for child_name in ("runs", "checkpoints"):
+    for child_name in ("runs",):
         child_dir = artifact_root / child_name
         if not child_dir.exists():
             continue
@@ -79,7 +95,7 @@ def _delete_recorded_artifact_paths(result_models: list[ResultModel]) -> int:
     deleted_files = 0
     for result_model in result_models:
         artifacts = result_model.artifacts or {}
-        for artifact_key in ("log_path", "checkpoint_path"):
+        for artifact_key in ("log_path", "checkpoint_path", "recipe_path"):
             artifact_path_text = artifacts.get(artifact_key)
             if not artifact_path_text:
                 continue
@@ -98,7 +114,6 @@ def _refresh_run_summary(db: Session, run_id: str) -> RunModel | None:
     if not experiments:
         run.baseline_experiment_id = None
         run.best_experiment_id = None
-        run.frontier_experiment_id = None
         run.updated_at = datetime.utcnow()
         db.commit()
         db.refresh(run)
@@ -106,7 +121,6 @@ def _refresh_run_summary(db: Session, run_id: str) -> RunModel | None:
 
     baseline_experiment = experiments[0]
     best_experiment: ExperimentModel | None = None
-    frontier_experiment: ExperimentModel | None = None
     ranking_policy = get_experiment_ranking_policy(baseline_experiment)
 
     for experiment in experiments:
@@ -129,7 +143,6 @@ def _refresh_run_summary(db: Session, run_id: str) -> RunModel | None:
                 )
                 if should_promote:
                     best_experiment = experiment
-                    frontier_experiment = experiment
                     experiment.decision = "keep"
                     experiment.decision_reason = decision_reason
                 else:
@@ -141,7 +154,6 @@ def _refresh_run_summary(db: Session, run_id: str) -> RunModel | None:
         best_experiment.is_best_so_far = True
     elif baseline_experiment.status == "success":
         best_experiment = baseline_experiment
-        frontier_experiment = baseline_experiment
         baseline_experiment.is_best_so_far = True
         baseline_experiment.decision = "keep"
         baseline_experiment.decision_reason = "Promoted as the first successful experiment in the run."
@@ -157,7 +169,6 @@ def _refresh_run_summary(db: Session, run_id: str) -> RunModel | None:
 
     run.baseline_experiment_id = baseline_experiment.id
     run.best_experiment_id = best_experiment.id if best_experiment is not None else None
-    run.frontier_experiment_id = frontier_experiment.id if frontier_experiment is not None else None
     run.status = "active"
     run.updated_at = datetime.utcnow()
     db.commit()
@@ -199,106 +210,10 @@ def _compute_metric_improvement(
         return candidate_value - incumbent_value
     return incumbent_value - candidate_value
 
-
-def _select_best_quality_experiment(
-    experiments: list[ExperimentModel],
-    *,
-    ranking_policy: RankingPolicy,
-) -> ExperimentModel | None:
-    """Return the best successful experiment by primary metric only."""
-    successful_experiments = [experiment for experiment in experiments if experiment.status == "success"]
-    if not successful_experiments:
-        return None
-
-    best_experiment: ExperimentModel | None = None
-    best_metric_value: float | None = None
-    for experiment in successful_experiments:
-        metric_value = _get_experiment_metric_value(experiment, ranking_policy.primary_metric)
-        if metric_value is None:
-            continue
-        if best_experiment is None or best_metric_value is None:
-            best_experiment = experiment
-            best_metric_value = metric_value
-            continue
-        improvement = _compute_metric_improvement(
-            metric_value,
-            best_metric_value,
-            metric_mode=ranking_policy.primary_metric_mode,
-        )
-        if improvement > 0:
-            best_experiment = experiment
-            best_metric_value = metric_value
-    return best_experiment or successful_experiments[0]
-
-
-def _select_best_efficiency_experiment(experiments: list[ExperimentModel]) -> ExperimentModel | None:
-    """Return the most deployment-efficient successful experiment."""
-    successful_experiments = [experiment for experiment in experiments if experiment.status == "success"]
-    if not successful_experiments:
-        return None
-
-    def efficiency_key(experiment: ExperimentModel) -> tuple[float, float, float, float]:
-        result_payload = experiment.result or {}
-        metrics_payload = result_payload.get("metrics") or {}
-        resource_payload = result_payload.get("resource") or {}
-        latency_ms = resource_payload.get("latency_ms")
-        parameter_count_million = resource_payload.get("parameter_count_million")
-        training_seconds = resource_payload.get("training_seconds")
-        top1_acc = metrics_payload.get("top1_acc")
-        return (
-            float(latency_ms) if isinstance(latency_ms, (int, float)) else float("inf"),
-            float(parameter_count_million) if isinstance(parameter_count_million, (int, float)) else float("inf"),
-            float(training_seconds) if isinstance(training_seconds, (int, float)) else float("inf"),
-            -float(top1_acc) if isinstance(top1_acc, (int, float)) else float("inf"),
-        )
-
-    return min(successful_experiments, key=efficiency_key)
-
-
-def _select_best_tradeoff_experiment(
-    experiments: list[ExperimentModel],
-    *,
-    ranking_policy: RankingPolicy,
-    best_experiment: ExperimentModel | None,
-) -> ExperimentModel | None:
-    """Return one efficient experiment within the primary-metric parity band of the best result."""
-    successful_experiments = [experiment for experiment in experiments if experiment.status == "success"]
-    if not successful_experiments:
-        return None
-    if best_experiment is None:
-        return _select_best_efficiency_experiment(experiments)
-
-    best_primary_metric = _get_experiment_metric_value(best_experiment, ranking_policy.primary_metric)
-    if best_primary_metric is None:
-        return _select_best_efficiency_experiment(experiments)
-
-    parity_candidates: list[ExperimentModel] = []
-    for experiment in successful_experiments:
-        candidate_primary_metric = _get_experiment_metric_value(experiment, ranking_policy.primary_metric)
-        if candidate_primary_metric is None:
-            continue
-        if abs(candidate_primary_metric - best_primary_metric) <= ranking_policy.primary_metric_parity_epsilon:
-            parity_candidates.append(experiment)
-
-    if not parity_candidates:
-        return best_experiment
-    return _select_best_efficiency_experiment(parity_candidates) or best_experiment
-
-
 def _to_run_detail(db: Session, run: RunModel) -> RunDetailResponse:
     experiments = db.scalars(
         select(ExperimentModel).where(ExperimentModel.run_id == run.id).order_by(ExperimentModel.created_at.asc())
     ).all()
-    baseline_experiment = experiments[0] if experiments else None
-    ranking_policy = get_experiment_ranking_policy(baseline_experiment)
-    best_quality_experiment = _select_best_quality_experiment(experiments, ranking_policy=ranking_policy)
-    best_experiment = next((experiment for experiment in experiments if experiment.id == run.best_experiment_id), None)
-    best_efficiency_experiment = _select_best_efficiency_experiment(experiments)
-    best_tradeoff_experiment = _select_best_tradeoff_experiment(
-        experiments,
-        ranking_policy=ranking_policy,
-        best_experiment=best_quality_experiment,
-    )
     return RunDetailResponse(
         id=run.id,
         name=run.name,
@@ -306,12 +221,7 @@ def _to_run_detail(db: Session, run: RunModel) -> RunDetailResponse:
         model_name=run.model_name,
         status=run.status,
         notes=run.notes,
-        baseline_experiment_id=run.baseline_experiment_id,
-        best_quality_experiment_id=best_quality_experiment.id if best_quality_experiment is not None else None,
         best_experiment_id=run.best_experiment_id,
-        best_efficiency_experiment_id=best_efficiency_experiment.id if best_efficiency_experiment is not None else None,
-        best_tradeoff_experiment_id=best_tradeoff_experiment.id if best_tradeoff_experiment is not None else None,
-        frontier_experiment_id=run.frontier_experiment_id,
         experiments=[_to_experiment_summary(experiment) for experiment in experiments],
     )
 
@@ -509,35 +419,20 @@ def save_experiment_result(db: Session, experiment_id: str, result: ResultSchema
 
 
 def get_run_summary(db: Session, run_id: str) -> RunSummaryResponse | None:
-    """Return run-level research anchors and decision counts."""
+    """Return run-level best experiment and decision counts."""
     run = _refresh_run_summary(db, run_id)
     if run is None:
         return None
     experiments = db.scalars(
         select(ExperimentModel).where(ExperimentModel.run_id == run_id).order_by(ExperimentModel.created_at.asc())
     ).all()
-    baseline_experiment = experiments[0] if experiments else None
-    ranking_policy = get_experiment_ranking_policy(baseline_experiment)
-    best_quality_experiment = _select_best_quality_experiment(experiments, ranking_policy=ranking_policy)
-    best_experiment = next((experiment for experiment in experiments if experiment.id == run.best_experiment_id), None)
-    best_efficiency_experiment = _select_best_efficiency_experiment(experiments)
-    best_tradeoff_experiment = _select_best_tradeoff_experiment(
-        experiments,
-        ranking_policy=ranking_policy,
-        best_experiment=best_quality_experiment,
-    )
     counts = {"keep": 0, "discard": 0, "crash": 0, "timeout": 0}
     for experiment in experiments:
         if experiment.decision in counts:
             counts[experiment.decision] += 1
     return RunSummaryResponse(
         run_id=run_id,
-        baseline_experiment_id=run.baseline_experiment_id,
-        best_quality_experiment_id=best_quality_experiment.id if best_quality_experiment is not None else None,
         best_experiment_id=run.best_experiment_id,
-        best_efficiency_experiment_id=best_efficiency_experiment.id if best_efficiency_experiment is not None else None,
-        best_tradeoff_experiment_id=best_tradeoff_experiment.id if best_tradeoff_experiment is not None else None,
-        frontier_experiment_id=run.frontier_experiment_id,
         keep_count=counts["keep"],
         discard_count=counts["discard"],
         crash_count=counts["crash"],

@@ -10,20 +10,46 @@ from typing import Any
 from app.core.settings import get_settings
 
 
+def get_artifact_root() -> Path:
+    """Return the configured artifact root path."""
+    settings = get_settings()
+    artifact_root = Path(settings.artifact_root)
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    return artifact_root
+
+
+def get_run_artifact_dir(run_id: str) -> Path:
+    """Return the canonical artifact directory for one run."""
+    run_dir = get_artifact_root() / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+
+def get_experiment_artifact_dir(run_id: str, experiment_id: str) -> Path:
+    """Return the canonical artifact directory for one experiment."""
+    experiment_dir = get_run_artifact_dir(run_id) / "experiments" / experiment_id
+    experiment_dir.mkdir(parents=True, exist_ok=True)
+    return experiment_dir
+
+
 def get_run_log_path(run_id: str) -> Path:
     """Return the canonical log path for one run."""
-    settings = get_settings()
-    log_path = Path(settings.artifact_root) / "runs" / f"{run_id}.log"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    return log_path
+    return get_run_artifact_dir(run_id) / "run.log"
 
 
 def get_run_llm_log_path(run_id: str) -> Path:
     """Return the canonical LLM JSONL log path for one run."""
-    settings = get_settings()
-    log_path = Path(settings.artifact_root) / "runs" / f"{run_id}.llm.jsonl"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    return log_path
+    return get_run_artifact_dir(run_id) / "llm.jsonl"
+
+
+def get_experiment_checkpoint_path(run_id: str, experiment_id: str) -> Path:
+    """Return the canonical checkpoint path for one experiment."""
+    return get_experiment_artifact_dir(run_id, experiment_id) / "checkpoint.pt"
+
+
+def get_experiment_recipe_path(run_id: str, experiment_id: str) -> Path:
+    """Return the canonical recipe snapshot path for one experiment."""
+    return get_experiment_artifact_dir(run_id, experiment_id) / "recipe.json"
 
 
 def append_run_log(run_id: str, message: str) -> Path:

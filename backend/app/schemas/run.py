@@ -39,25 +39,15 @@ class RunDetailResponse(BaseModel):
     model_name: str
     status: RunStatus
     notes: str | None = None
-    baseline_experiment_id: str | None = None
-    best_quality_experiment_id: str | None = None
     best_experiment_id: str | None = None
-    best_efficiency_experiment_id: str | None = None
-    best_tradeoff_experiment_id: str | None = None
-    frontier_experiment_id: str | None = None
     experiments: list[ExperimentSummary]
 
 
 class RunSummaryResponse(BaseModel):
-    """Compact run research summary."""
+    """Compact run research summary with one active best experiment."""
 
     run_id: str
-    baseline_experiment_id: str | None = None
-    best_quality_experiment_id: str | None = None
     best_experiment_id: str | None = None
-    best_efficiency_experiment_id: str | None = None
-    best_tradeoff_experiment_id: str | None = None
-    frontier_experiment_id: str | None = None
     keep_count: int = 0
     discard_count: int = 0
     crash_count: int = 0

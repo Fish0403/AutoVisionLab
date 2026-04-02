@@ -7,59 +7,41 @@ from typing import Callable
 
 import torch
 from torch import nn
-from torchvision.models import googlenet, mobilenet_v2, resnet18
+from torchvision.models import (
+    efficientnet_b0,
+    efficientnet_b1,
+    googlenet,
+    mobilenet_v2,
+    mobilenet_v3_large,
+    mobilenet_v3_small,
+    resnet18,
+    resnet34,
+    resnet50,
+)
 
 from app.schemas.parameter_space import ModelRecipe, hydrate_model_recipe
-from app.trainers.classification.model_components import (
-    build_classification_neck,
-    build_mobilenet_v3_small_classifier,
-    build_mobilenet_v3_small_native_backbone,
-    build_mobilenet_v3_small_tail,
-)
+from app.trainers.classification.model_components import build_classification_neck
 
 
 ValidateRecipeFn = Callable[[ModelRecipe], None]
 BuildModelFn = Callable[[ModelRecipe, int], nn.Module]
 
 
-class RecipeMobileNetV3(nn.Module):
-    """MobileNetV3 classifier assembled from one structured recipe."""
+class GenericTorchvisionClassifier(nn.Module):
+    """Assemble one standard torchvision classifier from backbone, neck, and head."""
 
-    def __init__(
-        self,
-        *,
-        features: list[nn.Module],
-        avgpool: nn.Module,
-        classifier: nn.Module,
-        num_classes: int,
-    ) -> None:
+    def __init__(self, *, backbone: nn.Module, neck: nn.Module, head: nn.Module) -> None:
         super().__init__()
-        self.features = nn.Sequential(*features)
-        self.avgpool = avgpool
-        self.classifier = classifier
-        self.num_classes = num_classes
-        self._initialize_weights()
-
-    def _initialize_weights(self) -> None:
-        """Mirror torchvision MobileNetV3 parameter initialization."""
-        for module in self.modules():
-            if isinstance(module, nn.Conv2d):
-                nn.init.kaiming_normal_(module.weight, mode="fan_out")
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-            elif isinstance(module, (nn.BatchNorm2d, nn.GroupNorm)):
-                nn.init.ones_(module.weight)
-                nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.Linear):
-                nn.init.normal_(module.weight, 0, 0.01)
-                nn.init.zeros_(module.bias)
+        self.backbone = backbone
+        self.neck = neck
+        self.head = head
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        """Run one forward pass."""
-        outputs = self.features(inputs)
-        outputs = self.avgpool(outputs)
+        """Run one forward pass for a standard classification model."""
+        outputs = self.backbone(inputs)
+        outputs = self.neck(outputs)
         outputs = torch.flatten(outputs, 1)
-        return self.classifier(outputs)
+        return self.head(outputs)
 
 
 @dataclass(frozen=True)
@@ -71,12 +53,258 @@ class ClassificationModelBuilderAdapter:
     build_model: BuildModelFn
 
 
-def _find_recipe_layer(head_layers: list[object], module_name: str) -> list[object]:
-    """Return the args for one named architecture layer."""
-    for layer in head_layers:
-        if layer.module == module_name:
-            return layer.args
-    raise ValueError(f"MobileNetV3 Small recipe head is missing {module_name}")
+@dataclass(frozen=True)
+class TorchvisionClassifierAdapter:
+    """Describe one standard torchvision classifier that can use the generic builder."""
+
+    name: str
+    backbone_component_name: str
+    build_native_model: Callable[[int, float], nn.Module]
+    build_backbone: Callable[[nn.Module], nn.Module]
+    build_native_head: Callable[[nn.Module], nn.Module]
+    feature_dim: int
+    default_dropout: float = 0.0
+
+
+def _build_native_linear_head(*, feature_dim: int, num_classes: int) -> nn.Module:
+    """Build one standard native linear classifier head."""
+    return nn.Linear(feature_dim, num_classes)
+
+
+def _build_native_dropout_linear_head(
+    *,
+    feature_dim: int,
+    num_classes: int,
+    dropout_probability: float,
+) -> nn.Module:
+    """Build one standard dropout-linear classifier head."""
+    if dropout_probability <= 0:
+        return _build_native_linear_head(feature_dim=feature_dim, num_classes=num_classes)
+    return nn.Sequential(
+        nn.Dropout(p=dropout_probability, inplace=True),
+        nn.Linear(feature_dim, num_classes),
+    )
+
+
+def _build_standard_head(
+    *,
+    adapter: TorchvisionClassifierAdapter,
+    native_model: nn.Module,
+    head_name: str,
+    feature_dim: int,
+    num_classes: int,
+    dropout_probability: float,
+) -> nn.Module:
+    """Build one supported classifier head for the generic torchvision wrapper."""
+    if head_name == "native_classifier":
+        return adapter.build_native_head(native_model)
+    if head_name == "linear":
+        return _build_native_linear_head(feature_dim=feature_dim, num_classes=num_classes)
+    if head_name == "dropout_linear":
+        return _build_native_dropout_linear_head(
+            feature_dim=feature_dim,
+            num_classes=num_classes,
+            dropout_probability=dropout_probability,
+        )
+    raise ValueError(f"Unsupported head component for {adapter.name}: {head_name}")
+
+
+def _validate_standard_torchvision_recipe(
+    recipe: ModelRecipe,
+    *,
+    adapter: TorchvisionClassifierAdapter,
+) -> None:
+    """Validate the minimal supported recipe subset for one standard torchvision classifier."""
+    if recipe.base_model != adapter.name:
+        raise ValueError(f"Unsupported base_model for {adapter.name} builder: {recipe.base_model}")
+    if recipe.task_type != "classification":
+        raise ValueError(f"Unsupported task_type for {adapter.name} builder: {recipe.task_type}")
+    if recipe.width_multiple != 1.0:
+        raise ValueError(f"{adapter.name} v1 builder does not support width_multiple changes")
+    if recipe.backbone_config.stem_variant != "standard":
+        raise ValueError(f"Unsupported stem_variant for {adapter.name}: {recipe.backbone_config.stem_variant}")
+    if recipe.backbone_config.attention_module != "none":
+        raise ValueError(f"Unsupported attention_module for {adapter.name}: {recipe.backbone_config.attention_module}")
+    if recipe.backbone_config.last_channel_multiplier != 1.0:
+        raise ValueError(f"{adapter.name} v1 builder does not support last_channel_multiplier changes")
+    if recipe.head_config.pooling_type not in {"avg", "gem"}:
+        raise ValueError(f"Unsupported pooling_type for {adapter.name}: {recipe.head_config.pooling_type}")
+    if recipe.head_config.classifier_type != "linear":
+        raise ValueError(f"Unsupported classifier_type for {adapter.name}: {recipe.head_config.classifier_type}")
+    if recipe.components is not None:
+        if recipe.components.backbone.name != adapter.backbone_component_name:
+            raise ValueError(
+                f"Unsupported backbone component for {adapter.name}: {recipe.components.backbone.name}"
+            )
+        if recipe.components.neck.name not in {"avg_pool", "gem_pool"}:
+            raise ValueError(f"Unsupported neck component for {adapter.name}: {recipe.components.neck.name}")
+        if recipe.components.head.name not in {"native_classifier", "linear", "dropout_linear"}:
+            raise ValueError(f"Unsupported head component for {adapter.name}: {recipe.components.head.name}")
+    if recipe.neck:
+        raise ValueError(f"{adapter.name} v1 builder does not support neck configuration")
+    if recipe.modules:
+        raise ValueError(f"Unsupported extra recipe modules for {adapter.name}: {sorted(recipe.modules.keys())}")
+
+
+def _build_standard_torchvision_model(
+    recipe: ModelRecipe,
+    num_classes: int,
+    *,
+    adapter: TorchvisionClassifierAdapter,
+) -> nn.Module:
+    """Build one standard torchvision classification model via the generic classifier wrapper."""
+    _validate_standard_torchvision_recipe(recipe, adapter=adapter)
+    output_classes = recipe.nc or num_classes
+    native_model = adapter.build_native_model(output_classes, adapter.default_dropout)
+    backbone = adapter.build_backbone(native_model)
+    neck_name = _resolve_neck_component_name(recipe)
+    head_name = _resolve_head_component_name(recipe)
+    neck = build_classification_neck(neck_name)
+    head = _build_standard_head(
+        adapter=adapter,
+        native_model=native_model,
+        head_name=head_name,
+        feature_dim=adapter.feature_dim,
+        num_classes=output_classes,
+        dropout_probability=recipe.head_config.classifier_dropout or adapter.default_dropout,
+    )
+    return GenericTorchvisionClassifier(backbone=backbone, neck=neck, head=head)
+
+
+def _build_standard_torchvision_builder(adapter: TorchvisionClassifierAdapter) -> ClassificationModelBuilderAdapter:
+    """Create one registry adapter for a standard torchvision classifier."""
+    return ClassificationModelBuilderAdapter(
+        name=adapter.name,
+        validate_recipe=lambda recipe, adapter=adapter: _validate_standard_torchvision_recipe(
+            recipe,
+            adapter=adapter,
+        ),
+        build_model=lambda recipe, num_classes, adapter=adapter: _build_standard_torchvision_model(
+            recipe,
+            num_classes,
+            adapter=adapter,
+        ),
+    )
+
+
+def _build_resnet_backbone(native_model: nn.Module) -> nn.Module:
+    """Extract the feature backbone from one torchvision ResNet model."""
+    return nn.Sequential(
+        native_model.conv1,
+        native_model.bn1,
+        native_model.relu,
+        native_model.maxpool,
+        native_model.layer1,
+        native_model.layer2,
+        native_model.layer3,
+        native_model.layer4,
+    )
+
+
+def _build_mobilenet_v2_backbone(native_model: nn.Module) -> nn.Module:
+    """Extract the feature backbone from one torchvision MobileNetV2 model."""
+    return native_model.features
+
+
+def _build_mobilenet_v3_backbone(native_model: nn.Module) -> nn.Module:
+    """Extract the feature backbone from one torchvision MobileNetV3 model."""
+    return native_model.features
+
+
+def _build_efficientnet_backbone(native_model: nn.Module) -> nn.Module:
+    """Extract the feature backbone from one torchvision EfficientNet model."""
+    return native_model.features
+
+
+TORCHVISION_CLASSIFIER_ADAPTERS = {
+    "mobilenet_v2": TorchvisionClassifierAdapter(
+        name="mobilenet_v2",
+        backbone_component_name="mobilenet_v2_native",
+        build_native_model=lambda num_classes, dropout: mobilenet_v2(
+            num_classes=num_classes,
+            dropout=dropout,
+        ),
+        build_backbone=_build_mobilenet_v2_backbone,
+        build_native_head=lambda native_model: native_model.classifier,
+        feature_dim=1280,
+        default_dropout=0.2,
+    ),
+    "mobilenet_v3_small": TorchvisionClassifierAdapter(
+        name="mobilenet_v3_small",
+        backbone_component_name="mobilenet_v3_small_native",
+        build_native_model=lambda num_classes, dropout: mobilenet_v3_small(
+            num_classes=num_classes,
+            dropout=dropout,
+        ),
+        build_backbone=_build_mobilenet_v3_backbone,
+        build_native_head=lambda native_model: native_model.classifier,
+        feature_dim=576,
+        default_dropout=0.2,
+    ),
+    "mobilenet_v3_large": TorchvisionClassifierAdapter(
+        name="mobilenet_v3_large",
+        backbone_component_name="mobilenet_v3_large_native",
+        build_native_model=lambda num_classes, dropout: mobilenet_v3_large(
+            num_classes=num_classes,
+            dropout=dropout,
+        ),
+        build_backbone=_build_mobilenet_v3_backbone,
+        build_native_head=lambda native_model: native_model.classifier,
+        feature_dim=960,
+        default_dropout=0.2,
+    ),
+    "efficientnet_b0": TorchvisionClassifierAdapter(
+        name="efficientnet_b0",
+        backbone_component_name="efficientnet_b0_native",
+        build_native_model=lambda num_classes, dropout: efficientnet_b0(
+            num_classes=num_classes,
+            dropout=dropout,
+        ),
+        build_backbone=_build_efficientnet_backbone,
+        build_native_head=lambda native_model: native_model.classifier,
+        feature_dim=1280,
+        default_dropout=0.2,
+    ),
+    "efficientnet_b1": TorchvisionClassifierAdapter(
+        name="efficientnet_b1",
+        backbone_component_name="efficientnet_b1_native",
+        build_native_model=lambda num_classes, dropout: efficientnet_b1(
+            num_classes=num_classes,
+            dropout=dropout,
+        ),
+        build_backbone=_build_efficientnet_backbone,
+        build_native_head=lambda native_model: native_model.classifier,
+        feature_dim=1280,
+        default_dropout=0.2,
+    ),
+    "resnet18": TorchvisionClassifierAdapter(
+        name="resnet18",
+        backbone_component_name="resnet18_native",
+        build_native_model=lambda num_classes, _dropout: resnet18(num_classes=num_classes),
+        build_backbone=_build_resnet_backbone,
+        build_native_head=lambda native_model: native_model.fc,
+        feature_dim=512,
+        default_dropout=0.0,
+    ),
+    "resnet34": TorchvisionClassifierAdapter(
+        name="resnet34",
+        backbone_component_name="resnet34_native",
+        build_native_model=lambda num_classes, _dropout: resnet34(num_classes=num_classes),
+        build_backbone=_build_resnet_backbone,
+        build_native_head=lambda native_model: native_model.fc,
+        feature_dim=512,
+        default_dropout=0.0,
+    ),
+    "resnet50": TorchvisionClassifierAdapter(
+        name="resnet50",
+        backbone_component_name="resnet50_native",
+        build_native_model=lambda num_classes, _dropout: resnet50(num_classes=num_classes),
+        build_backbone=_build_resnet_backbone,
+        build_native_head=lambda native_model: native_model.fc,
+        feature_dim=2048,
+        default_dropout=0.0,
+    ),
+}
 
 
 def _resolve_head_component_name(recipe: ModelRecipe) -> str:
@@ -91,108 +319,6 @@ def _resolve_neck_component_name(recipe: ModelRecipe) -> str:
     if recipe.components is None:
         return "avg_pool"
     return recipe.components.neck.name
-
-
-def _validate_mobilenet_v3_small_recipe(recipe: ModelRecipe) -> None:
-    """Validate the supported MobileNetV3 Small recipe subset."""
-    if recipe.base_model != "mobilenet_v3_small":
-        raise ValueError(f"Unsupported base_model for MobileNet builder: {recipe.base_model}")
-    if recipe.task_type != "classification":
-        raise ValueError(f"Unsupported task_type for MobileNet builder: {recipe.task_type}")
-    if not recipe.backbone:
-        raise ValueError("MobileNetV3 Small recipe must define backbone layers")
-    if not recipe.head:
-        raise ValueError("MobileNetV3 Small recipe must define head layers")
-    if recipe.neck:
-        raise ValueError("MobileNetV3 Small classification recipe does not support neck modules")
-    if recipe.backbone_config.stem_variant != "standard":
-        raise ValueError(f"Unsupported stem_variant for MobileNetV3 Small: {recipe.backbone_config.stem_variant}")
-    if recipe.backbone_config.attention_module != "none":
-        raise ValueError(f"Unsupported attention_module for MobileNetV3 Small: {recipe.backbone_config.attention_module}")
-    if recipe.backbone_config.last_channel_multiplier != 1.0:
-        raise ValueError(
-            "Unsupported last_channel_multiplier for MobileNetV3 Small: "
-            f"{recipe.backbone_config.last_channel_multiplier}"
-        )
-    if recipe.head_config.classifier_type != "linear":
-        raise ValueError(f"Unsupported classifier_type for MobileNetV3 Small: {recipe.head_config.classifier_type}")
-    if recipe.components is not None:
-        if recipe.components.backbone.name != "mobilenet_v3_small_native":
-            raise ValueError(
-                f"Unsupported backbone component for MobileNetV3 Small: {recipe.components.backbone.name}"
-            )
-        if recipe.components.neck.name not in {"avg_pool", "gem_pool"}:
-            raise ValueError(f"Unsupported neck component for MobileNetV3 Small: {recipe.components.neck.name}")
-        if recipe.components.head.name not in {"native_classifier", "linear", "dropout_linear"}:
-            raise ValueError(f"Unsupported head component for MobileNetV3 Small: {recipe.components.head.name}")
-    if recipe.modules:
-        raise ValueError(f"Unsupported extra recipe modules for MobileNetV3 Small: {sorted(recipe.modules.keys())}")
-    stem_layer = recipe.backbone[0]
-    if stem_layer.module != "stem_conv":
-        raise ValueError("MobileNetV3 Small recipe must start with one stem_conv layer")
-    if stem_layer.from_indices != -1:
-        raise ValueError("MobileNetV3 Small stem_conv must use from=-1")
-    if stem_layer.repeat != 1:
-        raise ValueError("MobileNetV3 Small stem_conv must use repeat=1")
-    if len(stem_layer.args) != 4:
-        raise ValueError("MobileNetV3 Small stem_conv layer requires 4 args")
-
-    for layer in recipe.backbone[1:]:
-        if layer.module != "inverted_residual":
-            raise ValueError(f"Unsupported backbone module for MobileNetV3 Small: {layer.module}")
-        if layer.from_indices != -1:
-            raise ValueError("MobileNetV3 Small v1 builder only supports sequential backbone layers")
-        if layer.repeat != 1:
-            raise ValueError("MobileNetV3 Small v1 builder only supports repeat=1")
-        if len(layer.args) != 8:
-            raise ValueError("MobileNetV3 Small inverted_residual layers require 8 args")
-    allowed_head_modules = {"pointwise_tail", "global_pool", "classifier"}
-    for layer in recipe.head:
-        if layer.module not in allowed_head_modules:
-            raise ValueError(f"Unsupported head module for MobileNetV3 Small: {layer.module}")
-        if layer.from_indices != -1:
-            raise ValueError("MobileNetV3 Small v1 builder only supports sequential head layers")
-        if layer.repeat != 1:
-            raise ValueError("MobileNetV3 Small v1 builder only supports repeat=1")
-        if layer.module == "pointwise_tail" and len(layer.args) != 2:
-            raise ValueError("MobileNetV3 Small pointwise_tail layer requires 2 args")
-        if layer.module == "global_pool" and layer.args:
-            raise ValueError("MobileNetV3 Small global_pool layer does not accept args")
-        if layer.module == "classifier" and len(layer.args) != 1:
-            raise ValueError("MobileNetV3 Small classifier layer requires 1 arg")
-
-
-def _build_mobilenet_v3_small_from_recipe(recipe: ModelRecipe, num_classes: int) -> nn.Module:
-    """Build one MobileNetV3 Small model from the supported recipe subset."""
-    recipe = hydrate_model_recipe(recipe)
-    _validate_mobilenet_v3_small_recipe(recipe)
-
-    output_classes = recipe.nc or num_classes
-    backbone_result = build_mobilenet_v3_small_native_backbone(recipe)
-    features = list(backbone_result.features)
-    tail_module, lastconv_output_channels = build_mobilenet_v3_small_tail(
-        recipe,
-        input_channels=backbone_result.output_channels,
-        norm_layer=backbone_result.norm_layer,
-    )
-    features.append(tail_module)
-
-    _find_recipe_layer(recipe.head, "global_pool")
-    head_component_name = _resolve_head_component_name(recipe)
-    neck_component_name = _resolve_neck_component_name(recipe)
-    avgpool = build_classification_neck(neck_component_name)
-    classifier = build_mobilenet_v3_small_classifier(
-        recipe,
-        head_name=head_component_name,
-        lastconv_output_channels=lastconv_output_channels,
-        num_classes=output_classes,
-    )
-    return RecipeMobileNetV3(
-        features=features,
-        avgpool=avgpool,
-        classifier=classifier,
-        num_classes=output_classes,
-    )
 
 
 def _validate_googlenet_recipe(recipe: ModelRecipe) -> None:
@@ -229,48 +355,6 @@ def _validate_googlenet_recipe(recipe: ModelRecipe) -> None:
         raise ValueError(f"Unsupported extra recipe modules for GoogLeNet: {extra_modules}")
 
 
-def _validate_mobilenet_v2_recipe(recipe: ModelRecipe) -> None:
-    """Validate the minimal supported MobileNetV2 recipe subset."""
-    if recipe.base_model != "mobilenet_v2":
-        raise ValueError(f"Unsupported base_model for MobileNetV2 builder: {recipe.base_model}")
-    if recipe.task_type != "classification":
-        raise ValueError(f"Unsupported task_type for MobileNetV2 builder: {recipe.task_type}")
-    if recipe.width_multiple != 1.0:
-        raise ValueError("MobileNetV2 v1 builder does not support width_multiple changes")
-    if recipe.backbone_config.stem_variant != "standard":
-        raise ValueError(f"Unsupported stem_variant for MobileNetV2: {recipe.backbone_config.stem_variant}")
-    if recipe.backbone_config.attention_module != "none":
-        raise ValueError(f"Unsupported attention_module for MobileNetV2: {recipe.backbone_config.attention_module}")
-    if recipe.backbone_config.last_channel_multiplier != 1.0:
-        raise ValueError("MobileNetV2 v1 builder does not support last_channel_multiplier changes")
-    if recipe.head_config.pooling_type != "avg":
-        raise ValueError(f"Unsupported pooling_type for MobileNetV2: {recipe.head_config.pooling_type}")
-    if recipe.head_config.classifier_type != "linear":
-        raise ValueError(f"Unsupported classifier_type for MobileNetV2: {recipe.head_config.classifier_type}")
-    if recipe.components is not None:
-        if recipe.components.backbone.name != "mobilenet_v2_native":
-            raise ValueError(f"Unsupported backbone component for MobileNetV2: {recipe.components.backbone.name}")
-        if recipe.components.neck.name != "avg_pool":
-            raise ValueError(f"Unsupported neck component for MobileNetV2: {recipe.components.neck.name}")
-        if recipe.components.head.name != "native_classifier":
-            raise ValueError(f"Unsupported head component for MobileNetV2: {recipe.components.head.name}")
-    if recipe.neck:
-        raise ValueError("MobileNetV2 v1 builder does not support neck configuration")
-    if recipe.modules:
-        raise ValueError(f"Unsupported extra recipe modules for MobileNetV2: {sorted(recipe.modules.keys())}")
-    if recipe.backbone or recipe.head:
-        raise ValueError("MobileNetV2 v1 builder does not support custom architecture layers")
-
-
-def _build_mobilenet_v2_from_recipe(recipe: ModelRecipe, num_classes: int) -> nn.Module:
-    """Build one MobileNetV2 model from the supported recipe subset."""
-    _validate_mobilenet_v2_recipe(recipe)
-    return mobilenet_v2(
-        num_classes=recipe.nc or num_classes,
-        dropout=recipe.head_config.classifier_dropout,
-    )
-
-
 def _build_googlenet_from_recipe(recipe: ModelRecipe, num_classes: int) -> nn.Module:
     """Build one GoogLeNet model from the supported recipe subset."""
     _validate_googlenet_recipe(recipe)
@@ -281,69 +365,19 @@ def _build_googlenet_from_recipe(recipe: ModelRecipe, num_classes: int) -> nn.Mo
     )
 
 
-def _validate_resnet18_recipe(recipe: ModelRecipe) -> None:
-    """Validate the minimal supported ResNet18 recipe subset."""
-    if recipe.base_model != "resnet18":
-        raise ValueError(f"Unsupported base_model for ResNet18 builder: {recipe.base_model}")
-    if recipe.task_type != "classification":
-        raise ValueError(f"Unsupported task_type for ResNet18 builder: {recipe.task_type}")
-    if recipe.width_multiple != 1.0:
-        raise ValueError("ResNet18 v1 builder does not support width_multiple changes")
-    if recipe.backbone_config.stem_variant != "standard":
-        raise ValueError(f"Unsupported stem_variant for ResNet18: {recipe.backbone_config.stem_variant}")
-    if recipe.backbone_config.attention_module != "none":
-        raise ValueError(f"Unsupported attention_module for ResNet18: {recipe.backbone_config.attention_module}")
-    if recipe.backbone_config.last_channel_multiplier != 1.0:
-        raise ValueError("ResNet18 v1 builder does not support last_channel_multiplier changes")
-    if recipe.head_config.pooling_type != "avg":
-        raise ValueError(f"Unsupported pooling_type for ResNet18: {recipe.head_config.pooling_type}")
-    if recipe.head_config.classifier_type != "linear":
-        raise ValueError(f"Unsupported classifier_type for ResNet18: {recipe.head_config.classifier_type}")
-    if recipe.head_config.classifier_dropout != 0.0:
-        raise ValueError("ResNet18 v1 builder does not support classifier_dropout changes")
-    if recipe.components is not None:
-        if recipe.components.backbone.name != "resnet18_native":
-            raise ValueError(f"Unsupported backbone component for ResNet18: {recipe.components.backbone.name}")
-        if recipe.components.neck.name != "avg_pool":
-            raise ValueError(f"Unsupported neck component for ResNet18: {recipe.components.neck.name}")
-        if recipe.components.head.name != "native_classifier":
-            raise ValueError(f"Unsupported head component for ResNet18: {recipe.components.head.name}")
-    if recipe.neck:
-        raise ValueError("ResNet18 v1 builder does not support neck configuration")
-    if recipe.modules:
-        raise ValueError(f"Unsupported extra recipe modules for ResNet18: {sorted(recipe.modules.keys())}")
-    if recipe.backbone or recipe.head:
-        raise ValueError("ResNet18 v1 builder does not support custom architecture layers")
-
-
-def _build_resnet18_from_recipe(recipe: ModelRecipe, num_classes: int) -> nn.Module:
-    """Build one ResNet18 model from the supported recipe subset."""
-    _validate_resnet18_recipe(recipe)
-    return resnet18(num_classes=recipe.nc or num_classes)
-
-
 CLASSIFICATION_MODEL_BUILDERS = {
-    "mobilenet_v2": ClassificationModelBuilderAdapter(
-        name="mobilenet_v2",
-        validate_recipe=_validate_mobilenet_v2_recipe,
-        build_model=_build_mobilenet_v2_from_recipe,
-    ),
-    "mobilenet_v3_small": ClassificationModelBuilderAdapter(
-        name="mobilenet_v3_small",
-        validate_recipe=_validate_mobilenet_v3_small_recipe,
-        build_model=_build_mobilenet_v3_small_from_recipe,
-    ),
     "googlenet": ClassificationModelBuilderAdapter(
         name="googlenet",
         validate_recipe=_validate_googlenet_recipe,
         build_model=_build_googlenet_from_recipe,
     ),
-    "resnet18": ClassificationModelBuilderAdapter(
-        name="resnet18",
-        validate_recipe=_validate_resnet18_recipe,
-        build_model=_build_resnet18_from_recipe,
-    ),
 }
+CLASSIFICATION_MODEL_BUILDERS.update(
+    {
+        model_name: _build_standard_torchvision_builder(adapter)
+        for model_name, adapter in TORCHVISION_CLASSIFIER_ADAPTERS.items()
+    }
+)
 
 
 def get_classification_model_builder(recipe: ModelRecipe) -> ClassificationModelBuilderAdapter:

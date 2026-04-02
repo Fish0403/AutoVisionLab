@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import json
 import random
 import time
 from pathlib import Path
@@ -18,6 +19,8 @@ from app.core.settings import get_settings
 from app.schemas.ai import ResultSchema
 from app.schemas.common import ArtifactPaths, MetricsSnapshot, ResourceUsage
 from app.schemas.parameter_space import ExperimentConfig
+from app.services.run_logging import get_experiment_checkpoint_path, get_experiment_recipe_path, get_run_log_path
+from app.trainers.manifest import TrainerManifest
 from app.trainers.classification.data_loading import (
     ManifestClassificationDataset,
     build_class_index,
@@ -61,12 +64,14 @@ class BaseClassificationTrainer:
         self.settings = get_settings()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.artifact_root = Path(self.settings.artifact_root)
-        self.log_path = self.artifact_root / "runs" / f"{self.run_id}.log"
-        self.checkpoint_path = self.artifact_root / "checkpoints" / f"{self.experiment_id}.pt"
+        self.log_path = get_run_log_path(self.run_id)
+        self.checkpoint_path = get_experiment_checkpoint_path(self.run_id, self.experiment_id)
+        self.recipe_path = get_experiment_recipe_path(self.run_id, self.experiment_id)
         self.data_root = Path(self.settings.data_root)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
         self.data_root.mkdir(parents=True, exist_ok=True)
+        self.write_recipe_snapshot()
 
     def create_model(self) -> nn.Module:
         """Create the model for this trainer."""
@@ -170,6 +175,7 @@ class BaseClassificationTrainer:
                 artifacts=ArtifactPaths(
                     log_path=str(self.log_path),
                     checkpoint_path=str(self.checkpoint_path),
+                    recipe_path=str(self.recipe_path),
                 ),
             )
         finally:
@@ -233,6 +239,12 @@ class BaseClassificationTrainer:
             DataLoader(train_dataset, shuffle=True, **common_dataloader_kwargs),
             DataLoader(val_dataset, shuffle=False, **common_dataloader_kwargs),
         )
+
+    def write_recipe_snapshot(self) -> None:
+        """Write one frozen experiment manifest snapshot for later inspection."""
+        manifest = TrainerManifest.from_experiment_config(self.config)
+        with self.recipe_path.open("w", encoding="utf-8") as recipe_file:
+            json.dump(manifest.model_dump(mode="python", by_alias=True), recipe_file, ensure_ascii=False, indent=2)
 
     def build_demo_subset(
         self,

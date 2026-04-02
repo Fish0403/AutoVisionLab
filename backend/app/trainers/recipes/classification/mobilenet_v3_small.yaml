@@ -24,4 +24,4 @@ head_config:
   classifier_type: linear
 modules: {}
 metadata:
-  notes: Native backbone and head layer details are hydrated from code-side model components.
+  notes: Components default to the torchvision MobileNetV3 Small backbone, neck, and classifier.
