@@ -52,21 +52,20 @@
 - 进入本仓库开始新任务时，默认先建立最小上下文，不要一次性全文读取所有文档。
 - 默认优先阅读：
   - [README.md](README.md)
-  - [docs/plan.md](docs/plan.md)
-  - [docs/tasks.md](docs/tasks.md)
-  - [docs/policies/README.md](docs/policies/README.md)
-  - [docs/schemas/README.md](docs/schemas/README.md)
+  - [docs/overview.md](docs/overview.md)
+  - [docs/artifacts.md](docs/artifacts.md)
+  - [docs/policies/search.md](docs/policies/search.md)
+  - [docs/policies/rank.md](docs/policies/rank.md)
 - 完成上述默认阅读后，应在首次回复或首次进度更新中显式告诉用户已经读了这些启动文档，避免让用户猜测是否已建立上下文。
+- 如果某个默认启动文档未来再次移动或删除，优先寻找同目录下职责最接近的现存概览文档，并在首次进度更新中明确说明实际读取了哪些文件。
 - 如果任务涉及 `auto-train`、proposal、搜索行为、停止条件或晋级逻辑，再按需阅读：
-  - [docs/policies/auto_train_search_policy.md](docs/policies/auto_train_search_policy.md)
-  - [docs/policies/auto_train_stop_policy.md](docs/policies/auto_train_stop_policy.md)
-  - [docs/policies/ranking_policy.md](docs/policies/ranking_policy.md)
-  - [docs/policies/run_promotion_policy.md](docs/policies/run_promotion_policy.md)
-  - [docs/policies/experiment_policy.md](docs/policies/experiment_policy.md)
+  - [docs/policies/search.md](docs/policies/search.md)
+  - [docs/policies/rank.md](docs/policies/rank.md)
+  - [docs/llm.md](docs/llm.md)
 - 如果任务涉及 `ExperimentConfig`、API payload、recipe、trainer 配置、数据对象或结构化字段，再按需阅读：
-  - [docs/schemas/model_recipe_schema.md](docs/schemas/model_recipe_schema.md)
-  - [docs/schemas/train_hyp_schema.md](docs/schemas/train_hyp_schema.md)
-  - [docs/schemas/dataset_recipe_schema.md](docs/schemas/dataset_recipe_schema.md)
+  - [docs/schemas/model_recipe.md](docs/schemas/model_recipe.md)
+  - [docs/schemas/train_hyp.md](docs/schemas/train_hyp.md)
+  - [docs/schemas/dataset_recipe.md](docs/schemas/dataset_recipe.md)
 - 如果任务涉及接口定义、请求体、响应体或错误码，再按需阅读：
   - [docs/api.md](docs/api.md)
 - 如果任务涉及数据准备、manifest、原始数据目录或切分脚本，再按需阅读：
