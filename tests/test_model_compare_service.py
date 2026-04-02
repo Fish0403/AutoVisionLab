@@ -6,6 +6,7 @@ import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from uuid import uuid4
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -27,12 +28,13 @@ from app.services.model_compare_service import (
 from app.schemas.run import ModelCompareCandidateResult, ModelCompareStartRequest, ModelCompareSummary
 
 
-def _build_base_config() -> ExperimentConfig:
+def _build_base_config(dataset_name: str | None = None) -> ExperimentConfig:
     """Build one minimal config payload for compare tests."""
+    dataset_name = dataset_name or f"dataset_{uuid4().hex}"
     return ExperimentConfig.model_validate(
         {
             "task_type": "classification",
-            "dataset": "DT",
+            "dataset": dataset_name,
             "model_family": "mobilenet",
             "model_name": "mobilenet_v3_small",
             "parameter_space_version": "mobilenet_v3_small@v1",
@@ -99,9 +101,10 @@ class ModelCompareServiceTest(unittest.TestCase):
         self.assertIn("Disabled component search", compare_notes[0])
 
     def test_start_model_compare_task_returns_queued_snapshot(self) -> None:
+        dataset_name = f"dataset_{uuid4().hex}"
         request = ModelCompareStartRequest(
-            dataset="DT",
-            config=_build_base_config(),
+            dataset=dataset_name,
+            config=_build_base_config(dataset_name),
             candidate_models=["mobilenet_v2", "googlenet"],
         )
 
@@ -115,11 +118,12 @@ class ModelCompareServiceTest(unittest.TestCase):
         self.assertEqual(task.status, "queued")
         self.assertEqual(task.total_models, 2)
         self.assertEqual(task.summary.mode, "model_compare")
-        self.assertEqual(task.summary.shared_baseline_config["dataset"], "DT")
+        self.assertEqual(task.summary.shared_baseline_config["dataset"], dataset_name)
 
     def test_build_compare_summary_prompt_contains_candidate_metrics(self) -> None:
+        dataset_name = f"dataset_{uuid4().hex}"
         summary = ModelCompareSummary(
-            shared_baseline_config={"dataset": "DT"},
+            shared_baseline_config={"dataset": dataset_name},
             candidate_results=[
                 ModelCompareCandidateResult(
                     model_name="mobilenet_v2",
@@ -137,8 +141,9 @@ class ModelCompareServiceTest(unittest.TestCase):
         self.assertIn("\"latency_ms\": 2.1", user_prompt)
 
     def test_try_attach_compare_ai_summary_updates_summary(self) -> None:
+        dataset_name = f"dataset_{uuid4().hex}"
         summary = ModelCompareSummary(
-            shared_baseline_config={"dataset": "DT"},
+            shared_baseline_config={"dataset": dataset_name},
             candidate_results=[
                 ModelCompareCandidateResult(
                     model_name="mobilenet_v2",
@@ -156,16 +161,44 @@ class ModelCompareServiceTest(unittest.TestCase):
             updated_summary = _try_attach_compare_ai_summary("cmp_test", summary)
 
         self.assertEqual(updated_summary.ai_summary, "MobileNetV2 leads with 85.0% Top1 at 2.1 ms latency.")
+        self.assertIsNone(updated_summary.ai_summary_error)
+
+    def test_try_attach_compare_ai_summary_records_error_when_provider_fails(self) -> None:
+        dataset_name = f"dataset_{uuid4().hex}"
+        summary = ModelCompareSummary(
+            shared_baseline_config={"dataset": dataset_name},
+            candidate_results=[
+                ModelCompareCandidateResult(
+                    model_name="mobilenet_v2",
+                    status="success",
+                    top1_acc=0.85,
+                    latency_ms=2.1,
+                )
+            ],
+        )
+
+        with (
+            patch(
+                "app.services.model_compare_service._generate_compare_ai_summary",
+                side_effect=RuntimeError("provider quota exceeded"),
+            ),
+            patch("app.services.model_compare_service._append_task_log"),
+        ):
+            updated_summary = _try_attach_compare_ai_summary("cmp_test", summary)
+
+        self.assertIsNone(updated_summary.ai_summary)
+        self.assertEqual(updated_summary.ai_summary_error, "provider quota exceeded")
 
     def test_list_model_compare_tasks_prefers_ai_summary(self) -> None:
+        dataset_name = f"dataset_{uuid4().hex}"
         with patch(
             "app.services.model_compare_service.list_task_payloads",
             return_value=[
                 {
                     "task_id": "cmp_demo_001",
-                    "title": "Compare DT",
+                    "title": f"Compare {dataset_name}",
                     "status": "success",
-                    "dataset": "DT",
+                    "dataset": dataset_name,
                     "candidate_models": ["mobilenet_v2", "googlenet"],
                     "current_model_index": 2,
                     "total_models": 2,
@@ -173,7 +206,7 @@ class ModelCompareServiceTest(unittest.TestCase):
                     "updated_at": "2026-03-31T00:01:00+00:00",
                     "summary": {
                         "mode": "model_compare",
-                        "shared_baseline_config": {"dataset": "DT"},
+                        "shared_baseline_config": {"dataset": dataset_name},
                         "candidate_results": [],
                         "ai_summary": "GoogLeNet leads with 91.8% Top1 at 3.23 ms latency.",
                     },

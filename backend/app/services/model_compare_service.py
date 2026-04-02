@@ -227,6 +227,8 @@ def _generate_compare_ai_summary(summary: ModelCompareSummary) -> str | None:
     """Generate one concise compare-results summary using AIHubMix."""
     if not summary.candidate_results:
         return None
+    if not any(candidate.status == "success" for candidate in summary.candidate_results):
+        return None
     system_prompt, user_prompt = _build_compare_summary_prompt(summary)
     client = AIHubMixClient()
     response_payload = client.create_json_completion(system_prompt, user_prompt)
@@ -245,7 +247,9 @@ def _try_attach_compare_ai_summary(task_id: str, summary: ModelCompareSummary) -
     except Exception as error:
         _append_task_log(task_id, f"Compare summary generation failed: {error}")
         updated_summary.ai_summary = None
+        updated_summary.ai_summary_error = str(error)
         return updated_summary
+    updated_summary.ai_summary_error = None
     if ai_summary:
         updated_summary.ai_summary = ai_summary
         _append_task_log(task_id, "Compare summary generated")
@@ -465,6 +469,7 @@ def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> 
 
         final_status = "success" if successful_candidate_count > 0 else "failed"
         final_error = None if successful_candidate_count > 0 else "All model compare candidates failed"
+        _set_activity_message(task_id, "Generating compare summary")
         summary = _try_attach_compare_ai_summary(task_id, summary)
         _update_task(
             task_id,
@@ -478,6 +483,7 @@ def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> 
             activity_message=summary.ai_summary or "Compare finished",
         )
     except ModelCompareStoppedError:
+        _set_activity_message(task_id, "Generating compare summary")
         summary = _try_attach_compare_ai_summary(task_id, summary)
         _update_task(
             task_id,

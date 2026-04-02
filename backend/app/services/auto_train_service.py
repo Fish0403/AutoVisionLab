@@ -437,7 +437,9 @@ def _try_attach_auto_train_ai_summary(
     except Exception as error:
         _append_task_log(task_id, f"Search summary generation failed: {error}")
         updated_summary["ai_summary"] = None
+        updated_summary["ai_summary_error"] = str(error)
         return updated_summary
+    updated_summary["ai_summary_error"] = None
     if ai_summary:
         updated_summary["ai_summary"] = ai_summary
         _append_task_log(task_id, "Search summary generated")

@@ -149,6 +149,7 @@ class ModelCompareSummary(BaseModel):
     shared_baseline_config: dict[str, Any]
     candidate_results: list[ModelCompareCandidateResult] = Field(default_factory=list)
     ai_summary: str | None = None
+    ai_summary_error: str | None = None
 
 
 class ModelCompareTaskResponse(BaseModel):

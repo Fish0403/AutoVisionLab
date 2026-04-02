@@ -457,6 +457,33 @@ class AutoTrainServiceTest(unittest.TestCase):
                 "No separate follow-up strategy showed a clear improvement."
             ),
         )
+        self.assertIsNone(updated_summary.get("ai_summary_error"))
+
+    def test_try_attach_auto_train_ai_summary_records_error_when_provider_fails(self) -> None:
+        search_summary = {
+            "mode": "auto",
+            "run_id": "run_1",
+            "baseline": {"experiment_id": "exp_1", "summary": "top1_acc=0.81"},
+            "rounds": [],
+            "current_proposal": None,
+        }
+
+        with (
+            patch(
+                "app.services.auto_train_service._generate_auto_train_ai_summary",
+                side_effect=RuntimeError("provider quota exceeded"),
+            ),
+            patch("app.services.auto_train_service._append_task_log"),
+        ):
+            updated_summary = _try_attach_auto_train_ai_summary(
+                "auto_test",
+                "run_1",
+                search_summary,
+                stop_reason="Stopped by user request.",
+            )
+
+        self.assertIsNone(updated_summary["ai_summary"])
+        self.assertEqual(updated_summary["ai_summary_error"], "provider quota exceeded")
 
     def test_stop_auto_train_task_finishes_queued_task_immediately(self) -> None:
         AUTO_TRAIN_TASKS["task_1"] = {

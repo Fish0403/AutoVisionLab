@@ -2009,6 +2009,7 @@ type AutoTrainSummarySnapshot = {
   rounds?: RoundSnapshot[];
   current_proposal?: ProposalSnapshot | null;
   ai_summary?: string | null;
+  ai_summary_error?: string | null;
   stop_reason?: string | null;
 };
 
@@ -2242,16 +2243,27 @@ function isCompareRecommendationReady(task: ModelCompareTask | null) {
 
 function buildCompareResultSummary(task: ModelCompareTask | null) {
   const aiSummary = task?.summary?.ai_summary?.trim();
-  return aiSummary || null;
+  if (aiSummary) {
+    return aiSummary;
+  }
+  const aiSummaryError = task?.summary?.ai_summary_error?.trim();
+  if (!aiSummaryError) {
+    return null;
+  }
+  return `AI summary failed: ${aiSummaryError}`;
 }
 
 function buildCompareResultSummarySource(task: ModelCompareTask | null) {
   const aiSummary = task?.summary?.ai_summary?.trim();
   const aiModelLabel = formatAiModelLabel(task?.ai_model_name);
-  if (!aiSummary) {
+  if (aiSummary) {
+    return aiModelLabel ? `Summary from ${aiModelLabel}` : "Summary";
+  }
+  const aiSummaryError = task?.summary?.ai_summary_error?.trim();
+  if (!aiSummaryError) {
     return null;
   }
-  return aiModelLabel ? `Summary from ${aiModelLabel}` : "Summary";
+  return aiModelLabel ? `Summary failed from ${aiModelLabel}` : "Summary failed";
 }
 
 function buildCompareSearchCandidate(
@@ -2320,7 +2332,14 @@ function getSearchSuggestionText(
 
 function buildSearchResultSummary(summary: AutoTrainSummarySnapshot | null) {
   const aiSummary = summary?.ai_summary?.trim();
-  return aiSummary || null;
+  if (aiSummary) {
+    return aiSummary;
+  }
+  const aiSummaryError = summary?.ai_summary_error?.trim();
+  if (!aiSummaryError) {
+    return null;
+  }
+  return `AI summary failed: ${aiSummaryError}`;
 }
 
 function buildSearchResultSummarySource(
@@ -2329,10 +2348,14 @@ function buildSearchResultSummarySource(
 ) {
   const aiSummary = summary?.ai_summary?.trim();
   const aiModelLabel = formatAiModelLabel(task?.ai_model_name);
-  if (!aiSummary) {
+  if (aiSummary) {
+    return aiModelLabel ? `Summary from ${aiModelLabel}` : "Summary";
+  }
+  const aiSummaryError = summary?.ai_summary_error?.trim();
+  if (!aiSummaryError) {
     return null;
   }
-  return aiModelLabel ? `Summary from ${aiModelLabel}` : "Summary";
+  return aiModelLabel ? `Summary failed from ${aiModelLabel}` : "Summary failed";
 }
 
 function buildSearchSummaryLoadingText(task: AutoTrainTask | null, summaryText: string | null) {

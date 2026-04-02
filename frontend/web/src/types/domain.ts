@@ -156,12 +156,8 @@ export interface AutoTrainTask {
       train_hyp_changes?: Record<string, unknown> | null;
       recipe_changes?: Record<string, unknown> | null;
     } | null;
-    final_proposal?: {
-      hypothesis?: string;
-      changes?: Record<string, unknown>;
-    } | null;
-    final_suggestion_error?: string | null;
     ai_summary?: string | null;
+    ai_summary_error?: string | null;
     stop_reason?: string | null;
   } | null;
   error?: string | null;
@@ -211,6 +207,7 @@ export interface ModelCompareTask {
     shared_baseline_config: Record<string, unknown>;
     candidate_results: ModelCompareCandidateResult[];
     ai_summary?: string | null;
+    ai_summary_error?: string | null;
   } | null;
   error?: string | null;
   stop_requested?: boolean;
