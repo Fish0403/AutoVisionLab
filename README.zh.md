@@ -1,6 +1,10 @@
 # AutoVisionLab
 
-工业视觉实验平台。当前实现聚焦图像分类，提供结构化实验、后台自动搜索和跨模型比较。
+工业视觉里的模型优化，很多时候仍然是偏手工的工作：调参数、跑实验、看结果、再改一轮。真正耗时的往往不是问题本身，而是重复试验、零散对比和来回切换工具。
+
+AutoVisionLab 关注的就是这一段重复流程。它把 AI 接入训练和实验闭环，让实验结果在完成后被自动收集、结构化，并进入统一的分析流程。系统会基于已有实验做比较、总结趋势，并给出下一步探索方向。
+
+工程师仍然负责定义目标、约束和判断标准，AI 负责执行重复但必要的分析与迭代工作。这样实验过程会更容易追踪、比较和持续积累。
 
 [English](README.md) | 中文
 
@@ -8,22 +12,6 @@
 ![FastAPI](https://img.shields.io/badge/后端-FastAPI-009688?logo=fastapi&logoColor=white)
 ![PyTorch](https://img.shields.io/badge/训练-PyTorch-EE4C2C?logo=pytorch&logoColor=white)
 ![SQLite](https://img.shields.io/badge/数据库-SQLite-003B57?logo=sqlite&logoColor=white)
-![Classification](https://img.shields.io/badge/任务-分类-2E7D32)
-
-## 概览
-
-AutoVisionLab 以 `run` 为实验容器，以 `experiment` 为单次训练记录，以 `task` 为后台编排单元，以结构化 `proposal`、`result` 和 `reflection` 连接 AI 搜索、训练和复盘。
-
-当前实现支持图像分类，并已接入 `MobileNetV2`、`MobileNetV3 Small`、`GoogLeNet` 和 `ResNet18`。其他任务类型和模型仍在开发中。
-
-当前实现包含：
-
-- 图像分类训练闭环
-- 结构化 `model_recipe`、`train_hyp`、`dataset_recipe`
-- 白名单参数空间与搜索策略校验
-- `Auto Train` 后台持续搜索
-- `Compare Models` 后台跨模型 baseline 比较
-- SQLite 元数据存储与本地产物落盘
 
 ![Task 页](docs/screenshots/task.png)
 
@@ -31,37 +19,26 @@ AutoVisionLab 以 `run` 为实验容器，以 `experiment` 为单次训练记录
 
 ![Compare 模式页](docs/screenshots/compare.png)
 
-## 数据与产物
+## 数据准备
 
 分类数据分成两层：
 
 - `data/raw/<dataset_name>/` 存按类别名分文件夹的图片
 - `data/classification/<dataset_name>/` 存由 `raw/` 生成的切分清单
 
-训练器读取的是这些清单文件：
+训练器读取的切分文件通常包括 `train.txt`、`val.txt`，以及可选的 `test.txt`。
 
-- 必需：`train.txt`、`val.txt`
-- 可选：`test.txt`
+以仓库自带的 `NEU` 数据集为例：
 
-使用 `data/prepare_classification_split.py` 扫描 `data/raw/<dataset_name>/` 下的类别文件夹，并生成或刷新切分清单。
+1. 从东北大学官方页面下载 `NEU-CLS`：[NEU surface defect database](http://faculty.neu.edu.cn/songkechen/zh_CN/zdylm/263270/list/)
+2. 将解压后的 `NEU-CLS` 放到 `data/raw/NEU-CLS/`
+3. 使用 `data/prepare_neucls_split.py` 生成 `train.txt`、`val.txt` 和 `test.txt`
 
-示例：
+   ```bash
+   python3 data/prepare_neucls_split.py --source-root data/raw/NEU-CLS --dataset-name NEU --val-ratio 0.2 --test-ratio 0.1 --seed 42 --force
+   ```
 
-```bash
-python3 data/prepare_classification_split.py \
-  --source-dir data/raw/your_dataset \
-  --dataset-name your_dataset \
-  --val-ratio 0.2 \
-  --test-ratio 0.1 \
-  --seed 42
-```
-
-训练产物写入本地目录：
-
-- `artifacts/runs/<run_id>/run.log`
-- `artifacts/runs/<run_id>/llm.jsonl`
-- `artifacts/runs/<run_id>/experiments/<experiment_id>/recipe.json`
-- `artifacts/runs/<run_id>/experiments/<experiment_id>/checkpoint.pt`
+Demo Mode 可用于本地快速验证。开启后，如果数据集大于限制，会使用更小的确定性子集。
 
 ## 快速开始
 
@@ -76,7 +53,7 @@ python3 data/prepare_classification_split.py \
 2. 安装后端依赖。
 
    ```bash
-   pip install -e ./backend
+   pip install -r requirements.txt
    ```
 
 3. 安装前端依赖。
@@ -86,7 +63,15 @@ python3 data/prepare_classification_split.py \
    npm install
    ```
 
-4. 启动后端和前端。
+4. 配置环境变量。
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   在启动后端前填好 `.env` 中的 API key、模型和 base URL。
+
+5. 启动后端和前端。
 
    ```bash
    ./scripts/run_backend.sh
@@ -95,15 +80,8 @@ python3 data/prepare_classification_split.py \
 
 默认地址：
 
-- Backend: `http://127.0.0.1:8000`
-- Frontend: `http://127.0.0.1:5173`
-
-环境配置：
-
-- 复制 `.env.example` 为 `.env`
-- 启动后先把 API key、模型和 base URL 配好
-- 直接参考 `.env.example` 里的示例值开始填
-- 前端开发服务会把 `/api` 代理到后端，因此本地调试时浏览器请求可以保持同源
+- 后端：`http://127.0.0.1:8000`
+- 前端：`http://127.0.0.1:5173`
 
 ## 文档导航
 
@@ -119,4 +97,5 @@ python3 data/prepare_classification_split.py \
 
 本项目采用 [Apache License 2.0](LICENSE)。
 
-如果这个项目对你有帮助，欢迎点个 star。
+[如果这个项目对你有帮助，欢迎给仓库点个 Star：]
+[![在 GitHub 上 Star](https://img.shields.io/badge/Star_on_GitHub-AutoVisionLab-181717?style=for-the-badge&logo=github)](https://github.com/Fish0403/AutoVisionLab)

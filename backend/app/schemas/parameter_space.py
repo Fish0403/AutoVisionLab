@@ -68,6 +68,16 @@ class AugmentationParams(BaseModel):
     random_erasing_prob: float = Field(default=0.0, ge=0, le=1)
 
 
+def _normalize_null_label_smoothing(payload: Any) -> Any:
+    """Treat explicit null label smoothing as the default disabled value."""
+    if not isinstance(payload, dict):
+        return payload
+    normalized_payload = deepcopy(payload)
+    if normalized_payload.get("label_smoothing") is None:
+        normalized_payload["label_smoothing"] = 0.0
+    return normalized_payload
+
+
 class ExperimentParams(BaseModel):
     """Structured training parameters allowed in the MVP."""
 
@@ -86,6 +96,12 @@ class ExperimentParams(BaseModel):
     loss_params: LossParams = Field(default_factory=LossParams)
     label_smoothing: float = Field(ge=0, le=0.2)
     aux_logits: bool | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_null_label_smoothing(cls, payload: Any) -> Any:
+        """Treat explicit null label smoothing as the default disabled value."""
+        return _normalize_null_label_smoothing(payload)
 
 
 class SearchPolicy(BaseModel):
@@ -289,6 +305,12 @@ class TrainHyp(BaseModel):
     loss: TrainHypLoss = Field(default_factory=TrainHypLoss)
     runtime: TrainHypRuntime = Field(default_factory=TrainHypRuntime)
     metadata: TrainHypMetadata = Field(default_factory=TrainHypMetadata)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_null_label_smoothing(cls, payload: Any) -> Any:
+        """Treat explicit null label smoothing as the default disabled value."""
+        return _normalize_null_label_smoothing(payload)
 
     def to_experiment_params(self, *, aux_logits: bool | None = None) -> "ExperimentParams":
         """Convert the training recipe into the legacy result payload shape."""

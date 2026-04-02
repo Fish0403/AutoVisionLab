@@ -1,6 +1,10 @@
 # AutoVisionLab
 
-Industrial vision experimentation platform. The current implementation focuses on image classification and provides structured experiments, background auto-search, and cross-model comparison.
+Industrial vision model optimization still involves a lot of manual work: tuning parameters, running experiments, checking results, and iterating again. The real cost is often not the problem itself, but the repetition, scattered comparisons, and constant tool switching.
+
+AutoVisionLab focuses on that repetitive part of the workflow. It brings AI into the training and experimentation loop so results are collected, structured, and fed into a shared analysis flow. The system compares past runs, summarizes trends, and suggests the next direction to explore.
+
+Engineers still define the goals, constraints, and acceptance criteria, while AI handles the repetitive but necessary analysis and iteration work. The result is a workflow that is easier to trace, compare, and build on over time.
 
 English | [中文](README.zh.md)
 
@@ -8,22 +12,6 @@ English | [中文](README.zh.md)
 ![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688?logo=fastapi&logoColor=white)
 ![PyTorch](https://img.shields.io/badge/Training-PyTorch-EE4C2C?logo=pytorch&logoColor=white)
 ![SQLite](https://img.shields.io/badge/Database-SQLite-003B57?logo=sqlite&logoColor=white)
-![Classification](https://img.shields.io/badge/Task-Classification-2E7D32)
-
-## Overview
-
-AutoVisionLab uses `run` as the experiment container, `experiment` as the unit of training history, `task` as the background orchestration unit, and structured `proposal`, `result`, and `reflection` objects to connect AI search, training, and review.
-
-Current implementation supports image classification with `MobileNetV2`, `MobileNetV3 Small`, `GoogLeNet`, and `ResNet18`. Other task types and models are still under development.
-
-Current implementation includes:
-
-- Image-classification training loop
-- Structured `model_recipe`, `train_hyp`, and `dataset_recipe`
-- Whitelisted parameter spaces and search-policy validation
-- Background `Auto Train`
-- Background `Compare Models`
-- SQLite metadata storage and local artifact persistence
 
 ![Task page](docs/screenshots/task.png)
 
@@ -31,37 +19,26 @@ Current implementation includes:
 
 ![Compare mode](docs/screenshots/compare.png)
 
-## Data and Artifacts
+## Data Preparation
 
-Classification data is prepared in two layers:
+Classification datasets are organized in two layers:
 
 - `data/raw/<dataset_name>/` stores images grouped by class name
 - `data/classification/<dataset_name>/` stores split manifests generated from `raw/`
 
-The manifests are the files the trainer reads:
+The trainer reads split manifests such as `train.txt`, `val.txt`, and optional `test.txt`.
 
-- Required: `train.txt` and `val.txt`
-- Optional: `test.txt`
+Example with the bundled `NEU` dataset:
 
-Use `data/prepare_classification_split.py` to scan the class folders under `data/raw/<dataset_name>/` and generate or refresh the split manifests.
+1. Download `NEU-CLS` from the official page: [NEU surface defect database](http://faculty.neu.edu.cn/songkechen/zh_CN/zdylm/263270/list/)
+2. Extract `NEU-CLS` under `data/raw/NEU-CLS/`
+3. Use `data/prepare_neucls_split.py` to generate `train.txt`, `val.txt`, and `test.txt`
 
-Example:
+   ```bash
+   python3 data/prepare_neucls_split.py --source-root data/raw/NEU-CLS --dataset-name NEU --val-ratio 0.2 --test-ratio 0.1 --seed 42 --force
+   ```
 
-```bash
-python3 data/prepare_classification_split.py \
-  --source-dir data/raw/your_dataset \
-  --dataset-name your_dataset \
-  --val-ratio 0.2 \
-  --test-ratio 0.1 \
-  --seed 42
-```
-
-Training artifacts are written locally:
-
-- `artifacts/runs/<run_id>/run.log`
-- `artifacts/runs/<run_id>/llm.jsonl`
-- `artifacts/runs/<run_id>/experiments/<experiment_id>/recipe.json`
-- `artifacts/runs/<run_id>/experiments/<experiment_id>/checkpoint.pt`
+Demo Mode is available for quick local testing. When enabled, it uses a smaller deterministic subset if the dataset is larger than the demo limit.
 
 ## Quick Start
 
@@ -76,7 +53,7 @@ Training artifacts are written locally:
 2. Install the backend dependencies.
 
    ```bash
-   pip install -e ./backend
+   pip install -r requirements.txt
    ```
 
 3. Install the frontend dependencies.
@@ -86,7 +63,15 @@ Training artifacts are written locally:
    npm install
    ```
 
-4. Start the backend and frontend.
+4. Configure the environment.
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Fill in the API key, model, and base URL in `.env` before starting the backend.
+
+5. Start the backend and frontend.
 
    ```bash
    ./scripts/run_backend.sh
@@ -97,13 +82,6 @@ Default endpoints:
 
 - Backend: `http://127.0.0.1:8000`
 - Frontend: `http://127.0.0.1:5173`
-
-Environment configuration:
-
-- Copy `.env.example` to `.env`
-- Configure the API key, model, and base URL before starting the backend
-- Use the values shown in `.env.example` as the starting point
-- The frontend development server proxies `/api` to the backend, so browser requests can stay on the same origin during local development
 
 ## Documentation
 
@@ -119,4 +97,5 @@ Environment configuration:
 
 This project is licensed under the [Apache License 2.0](LICENSE).
 
-If this project is useful to you, please leave a star.
+[If you find this project useful, feel free to star the repository:]
+[![Star on GitHub](https://img.shields.io/badge/Star_on_GitHub-AutoVisionLab-181717?style=for-the-badge&logo=github)](https://github.com/Fish0403/AutoVisionLab)
