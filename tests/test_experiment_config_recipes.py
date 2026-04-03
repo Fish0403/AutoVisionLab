@@ -14,19 +14,25 @@ VENV_SITE_PACKAGES = next((REPO_ROOT / ".venv" / "lib").glob("python*/site-packa
 sys.path.insert(0, str(VENV_SITE_PACKAGES))
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
-from app.schemas.parameter_space import ExperimentConfig
+from app.schemas.parameter_space import (
+    ExperimentConfig,
+    ExperimentParams,
+    build_default_model_recipe,
+)
 from app.trainers.templates import load_builtin_model_recipe_payload
+from tests.helpers.experiment_config_builders import build_default_dataset_recipe, build_train_hyp_from_params
 
 
-def _build_config_payload() -> dict[str, object]:
-    """Build one minimal legacy experiment config payload."""
-    return {
-        "task_type": "classification",
-        "dataset": "neu",
-        "model_family": "mobilenet",
-        "model_name": "mobilenet_v3_small",
-        "parameter_space_version": "mobilenet_v3_small@v1",
-        "params": {
+def _build_config_payload(
+    *,
+    dataset: str = "neu",
+    model_family: str = "mobilenet",
+    model_name: str = "mobilenet_v3_small",
+    parameter_space_version: str = "mobilenet_v3_small@v1",
+) -> dict[str, object]:
+    """Build one minimal structured experiment config payload."""
+    params = ExperimentParams.model_validate(
+        {
             "optimizer": "adamw",
             "learning_rate": 0.003,
             "batch_size": 64,
@@ -44,7 +50,28 @@ def _build_config_payload() -> dict[str, object]:
             "loss_params": {"focal_gamma": 2.0},
             "label_smoothing": 0.1,
             "aux_logits": False,
-        },
+        }
+    )
+    return {
+        "task_type": "classification",
+        "dataset": dataset,
+        "model_family": model_family,
+        "model_name": model_name,
+        "parameter_space_version": parameter_space_version,
+        "params": params.model_dump(),
+        "model_recipe": build_default_model_recipe(
+            model_name=model_name,
+            task_type="classification",
+            model_family=model_family,
+        ).model_dump(by_alias=True),
+        "train_hyp": build_train_hyp_from_params(
+            task_type="classification",
+            params=params,
+        ).model_dump(),
+        "dataset_recipe": build_default_dataset_recipe(
+            dataset_name=dataset,
+            task_type="classification",
+        ).model_dump(),
     }
 
 
@@ -57,23 +84,18 @@ class ExperimentConfigRecipeTest(unittest.TestCase):
         self.assertNotIn("backbone", template_payload)
         self.assertNotIn("head", template_payload)
 
-    def test_legacy_payload_is_backfilled_with_default_recipes(self) -> None:
+    def test_structured_payload_hydrates_default_recipes(self) -> None:
         config = ExperimentConfig.model_validate(_build_config_payload())
 
-        self.assertIsNotNone(config.model_recipe)
         self.assertEqual(config.model_recipe.base_model, "mobilenet_v3_small")
         self.assertEqual(config.model_recipe.head_config.classifier_dropout, 0.2)
         self.assertEqual(config.model_recipe.components.backbone.name, "mobilenet_v3_small_native")
         self.assertEqual(config.model_recipe.components.neck.name, "avg_pool")
         self.assertEqual(config.model_recipe.components.head.name, "native_classifier")
-        self.assertEqual(config.model_recipe.backbone[0].module, "stem_conv")
-        self.assertEqual(config.model_recipe.backbone[0].args, [16, 3, 2, "hardswish"])
-        self.assertEqual(len(config.model_recipe.backbone), 12)
-        self.assertEqual(config.model_recipe.backbone[1].module, "inverted_residual")
-        self.assertIsNotNone(config.train_hyp)
+        self.assertEqual(config.model_recipe.backbone, [])
+        self.assertEqual(config.model_recipe.head, [])
         self.assertEqual(config.train_hyp.lr0, 0.003)
         self.assertEqual(config.train_hyp.augmentation.mixup, 0.2)
-        self.assertIsNotNone(config.dataset_recipe)
         self.assertEqual(config.dataset_recipe.dataset_name, "neu")
         self.assertEqual(len(config.dataset_recipe.class_names), 6)
         self.assertEqual(config.model_recipe.nc, 6)
@@ -83,17 +105,17 @@ class ExperimentConfigRecipeTest(unittest.TestCase):
         )
 
     def test_default_dataset_recipe_leaves_class_names_empty_without_manifests(self) -> None:
-        payload = _build_config_payload()
-        payload["dataset"] = f"dataset_{uuid4().hex}"
+        payload = _build_config_payload(dataset=f"dataset_{uuid4().hex}")
         config = ExperimentConfig.model_validate(payload)
 
         self.assertEqual(config.dataset_recipe.class_names, [])
         self.assertIsNone(config.model_recipe.nc)
 
     def test_mobilenet_v2_defaults_attach_native_components_and_dropout(self) -> None:
-        payload = _build_config_payload()
-        payload["model_name"] = "mobilenet_v2"
-        payload["parameter_space_version"] = "mobilenet_v2@v1"
+        payload = _build_config_payload(
+            model_name="mobilenet_v2",
+            parameter_space_version="mobilenet_v2@v1",
+        )
         config = ExperimentConfig.model_validate(payload)
 
         self.assertEqual(config.model_recipe.base_model, "mobilenet_v2")
@@ -144,6 +166,7 @@ class ExperimentConfigRecipeTest(unittest.TestCase):
                 "random_erasing": 0.2,
             },
             "loss": {"name": "focal_loss"},
+            "fl_gamma": 2.0,
         }
         payload["dataset_recipe"] = {
             "version": "dataset_recipe@v1",
@@ -167,7 +190,7 @@ class ExperimentConfigRecipeTest(unittest.TestCase):
         self.assertEqual(config.model_recipe.backbone_config.stem_variant, "deep_stem")
         self.assertEqual(config.model_recipe.head_config.pooling_type, "gem")
         self.assertEqual(config.model_recipe.components.neck.name, "gem_pool")
-        self.assertEqual(len(config.model_recipe.backbone), 12)
+        self.assertEqual(config.model_recipe.backbone, [])
         self.assertEqual(config.train_hyp.lr0, 0.001)
         self.assertEqual(config.train_hyp.loss.name, "focal_loss")
         self.assertEqual(config.dataset_recipe.class_names, ["crazing"])
@@ -176,9 +199,9 @@ class ExperimentConfigRecipeTest(unittest.TestCase):
             "data/raw/neu/classification_source",
         )
 
-    def test_legacy_params_null_label_smoothing_is_normalized_to_zero(self) -> None:
+    def test_structured_train_hyp_null_label_smoothing_is_normalized_to_zero(self) -> None:
         payload = _build_config_payload()
-        payload["params"]["label_smoothing"] = None
+        payload["train_hyp"]["label_smoothing"] = None
 
         config = ExperimentConfig.model_validate(payload)
 
@@ -213,10 +236,11 @@ class ExperimentConfigRecipeTest(unittest.TestCase):
         self.assertEqual(config.result_params().label_smoothing, 0.0)
 
     def test_result_params_are_derived_from_train_hyp(self) -> None:
-        payload = _build_config_payload()
-        payload["model_family"] = "googlenet"
-        payload["model_name"] = "googlenet"
-        payload["parameter_space_version"] = "googlenet@v1"
+        payload = _build_config_payload(
+            model_family="googlenet",
+            model_name="googlenet",
+            parameter_space_version="googlenet@v1",
+        )
         payload["model_recipe"] = {
             "version": "model_recipe@v1",
             "task_type": "classification",
@@ -258,7 +282,7 @@ class ExperimentConfigRecipeTest(unittest.TestCase):
         self.assertEqual(result_params.loss_params.focal_gamma, 1.5)
         self.assertTrue(result_params.aux_logits)
 
-    def test_legacy_architecture_payload_is_migrated_to_flat_backbone_head_lists(self) -> None:
+    def test_legacy_recipe_layout_is_rejected(self) -> None:
         payload = _build_config_payload()
         payload["model_recipe"] = {
             "version": "model_recipe@v1",
@@ -293,12 +317,8 @@ class ExperimentConfigRecipeTest(unittest.TestCase):
             },
         }
 
-        config = ExperimentConfig.model_validate(payload)
-
-        self.assertEqual(config.model_recipe.backbone_config.stem_variant, "standard")
-        self.assertEqual(config.model_recipe.backbone[0].module, "stem_conv")
-        self.assertEqual(config.model_recipe.head[-1].module, "classifier")
-        self.assertEqual(config.model_recipe.components.neck.name, "avg_pool")
+        with self.assertRaisesRegex(ValueError, "architecture|backbone|head"):
+            ExperimentConfig.model_validate(payload)
 
 
 if __name__ == "__main__":

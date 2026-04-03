@@ -48,7 +48,6 @@ LOSS_SEARCH_FIELDS = {"loss_name", "focal_gamma"}
 AUGMENTATION_SEARCH_FIELDS = {"augmentation_policy", "mixup_alpha", "cutmix_alpha", "random_erasing_prob"}
 MODEL_MODULE_SEARCH_FIELDS = {
     "aux_logits",
-    "backbone_name",
     "neck_name",
     "head_name",
 }

@@ -53,8 +53,6 @@ class TrainerManifest(BaseModel):
     @classmethod
     def from_experiment_config(cls, config: ExperimentConfig) -> "TrainerManifest":
         """Project one experiment config into the unified trainer manifest view."""
-        if config.model_recipe is None or config.train_hyp is None or config.dataset_recipe is None:
-            raise ValueError("ExperimentConfig must include model_recipe, train_hyp, and dataset_recipe")
         return cls(
             task_type=config.task_type,
             parameter_space_version=config.parameter_space_version,

@@ -28,6 +28,13 @@ AutoVisionLab 是一个面向工业视觉实验的结构化工作台。当前实
 - `result`
   - 训练结果快照，包含指标、资源信息、参数快照和产物路径
 
+## 当前配置口径
+
+- `ExperimentConfig` 以 `model_recipe`、`train_hyp`、`dataset_recipe` 为主配置结构
+- `search_policy` 决定 AI 可搜索的字段范围和约束
+- `ranking_policy` 决定实验排序与晋级指标
+- `params` 用作归一化参数快照，便于结果展示、历史摘要和实验对比
+
 ## 策略入口
 
 - [docs/policies/rank.md](policies/rank.md)

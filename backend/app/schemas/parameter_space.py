@@ -168,6 +168,8 @@ class ModelRecipeArchitectureLayer(BaseModel):
 class ModelRecipe(BaseModel):
     """Structured model recipe attached to one experiment config."""
 
+    model_config = ConfigDict(extra="forbid")
+
     version: str = "model_recipe@v1"
     task_type: RecipeTaskType = "classification"
     model_family: str
@@ -183,76 +185,6 @@ class ModelRecipe(BaseModel):
     head: list[ModelRecipeArchitectureLayer] = Field(default_factory=list)
     modules: dict[str, Any] = Field(default_factory=dict)
     metadata: ModelRecipeMetadata = Field(default_factory=ModelRecipeMetadata)
-
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_legacy_layout(cls, payload: Any) -> Any:
-        """Migrate legacy model recipe payloads into the flattened YOLO-style layout."""
-        if not isinstance(payload, dict):
-            return payload
-
-        normalized_payload = deepcopy(payload)
-        base_model = str(normalized_payload.get("base_model") or "")
-        legacy_backbone_payload = normalized_payload.get("backbone")
-        if "backbone_config" not in normalized_payload and isinstance(legacy_backbone_payload, dict):
-            normalized_payload["backbone_config"] = normalized_payload.pop("backbone")
-
-        legacy_head_payload = normalized_payload.get("head")
-        if "head_config" not in normalized_payload and isinstance(legacy_head_payload, dict):
-            normalized_payload["head_config"] = normalized_payload.pop("head")
-
-        architecture_payload = normalized_payload.pop("architecture", None)
-        if isinstance(architecture_payload, dict):
-            migrated_backbone_layers = list(architecture_payload.get("backbone") or [])
-            migrated_neck_layers = list(architecture_payload.get("neck") or [])
-            migrated_head_layers = list(architecture_payload.get("head") or [])
-            legacy_stem_payload = architecture_payload.get("stem")
-            if isinstance(legacy_stem_payload, dict):
-                migrated_backbone_layers = [
-                    {
-                        "from": -1,
-                        "repeat": 1,
-                        "module": "stem_conv",
-                        "args": [
-                            legacy_stem_payload.get("out_channels"),
-                            legacy_stem_payload.get("kernel_size"),
-                            legacy_stem_payload.get("stride"),
-                            legacy_stem_payload.get("activation_type", "hardswish"),
-                        ],
-                        "tag": "stem",
-                    },
-                    *migrated_backbone_layers,
-                ]
-
-            if not isinstance(normalized_payload.get("backbone"), list):
-                normalized_payload["backbone"] = migrated_backbone_layers
-            if not isinstance(normalized_payload.get("neck"), list):
-                normalized_payload["neck"] = migrated_neck_layers
-            if not isinstance(normalized_payload.get("head"), list):
-                normalized_payload["head"] = migrated_head_layers
-        if normalized_payload.get("components") is None and base_model:
-            pooling_type = (
-                ((normalized_payload.get("head_config") or {}).get("pooling_type"))
-                or ((normalized_payload.get("head") or {}).get("pooling_type"))
-                or "avg"
-            )
-            normalized_payload["components"] = build_default_model_recipe_components(
-                base_model=base_model,
-                pooling_type=str(pooling_type),
-            )
-        if base_model:
-            from app.trainers.classification.model_components import (
-                build_default_backbone_layers,
-                build_default_head_layers,
-            )
-
-            if not normalized_payload.get("backbone"):
-                normalized_payload["backbone"] = build_default_backbone_layers(base_model)
-            if "neck" not in normalized_payload or normalized_payload.get("neck") is None:
-                normalized_payload["neck"] = []
-            if not normalized_payload.get("head"):
-                normalized_payload["head"] = build_default_head_layers(base_model)
-        return normalized_payload
 
 
 class TrainHypAugmentation(BaseModel):
@@ -422,75 +354,46 @@ class ExperimentConfig(BaseModel):
     participates_in_ranking: bool = True
     search_policy: SearchPolicy = Field(default_factory=SearchPolicy)
     ranking_policy: RankingPolicy = Field(default_factory=RankingPolicy)
-    params: ExperimentParams
-    model_recipe: ModelRecipe | None = None
-    train_hyp: TrainHyp | None = None
-    dataset_recipe: DatasetRecipe | None = None
+    params: ExperimentParams | None = None
+    model_recipe: ModelRecipe
+    train_hyp: TrainHyp
+    dataset_recipe: DatasetRecipe
 
     def use_aux_logits(self) -> bool:
         """Return whether GoogLeNet auxiliary heads should be enabled."""
-        if self.model_name != "googlenet" or self.model_recipe is None:
+        if self.model_name != "googlenet":
             return False
         return bool(self.model_recipe.modules.get("aux_logits", False))
 
     def result_params(self) -> ExperimentParams:
-        """Return the legacy result payload derived from the active recipes."""
-        if self.train_hyp is None:
-            return self.params
-        return self.train_hyp.to_experiment_params(aux_logits=self.use_aux_logits())
+        """Return the normalized result payload derived from the active recipes."""
+        if self.params is None:
+            raise ValueError("ExperimentConfig.params must be hydrated from train_hyp before use")
+        return self.params
 
     @model_validator(mode="after")
-    def populate_default_recipes(self) -> "ExperimentConfig":
-        """Backfill default recipe objects for legacy payloads."""
-        if self.model_recipe is None:
-            self.model_recipe = build_default_model_recipe(
-                model_name=self.model_name,
-                task_type=self.task_type,
-                model_family=self.model_family,
-            )
-        else:
-            self.model_recipe = hydrate_model_recipe(self.model_recipe)
-        if self.train_hyp is None:
-            self.train_hyp = TrainHyp(
-                task_type=self.task_type,
-                optimizer=self.params.optimizer,
-                lr0=self.params.learning_rate,
-                weight_decay=self.params.weight_decay,
-                scheduler=self.params.scheduler,
-                epochs=self.params.epochs,
-                batch_size=self.params.batch_size,
-                image_size=self.params.image_size,
-                label_smoothing=self.params.label_smoothing,
-                fl_gamma=self.params.loss_params.focal_gamma if self.params.loss_name == "focal_loss" else 0.0,
-                augmentation=TrainHypAugmentation(
-                    policy=self.params.augmentation_policy,
-                    mixup=self.params.augmentation_params.mixup_alpha,
-                    cutmix=self.params.augmentation_params.cutmix_alpha,
-                    random_erasing=self.params.augmentation_params.random_erasing_prob,
-                ),
-                loss=TrainHypLoss(name=self.params.loss_name),
-            )
-        if self.dataset_recipe is None:
-            dataset_root = self.dataset.strip()
-            self.dataset_recipe = DatasetRecipe(
-                task_type=self.task_type,
-                dataset_name=self.dataset,
-                source=DatasetRecipeSource(root_dir=f"data/raw/{dataset_root}"),
-                splits=DatasetRecipeSplits(
-                    train_manifest=f"data/classification/{dataset_root}/train.txt",
-                    val_manifest=f"data/classification/{dataset_root}/val.txt",
-                    test_manifest=f"data/classification/{dataset_root}/test.txt",
-                ),
-            )
-        if self.dataset_recipe is not None and not self.dataset_recipe.class_names:
+    def validate_and_hydrate_structured_config(self) -> "ExperimentConfig":
+        """Validate cross-field consistency for the structured experiment config."""
+        self.model_recipe = hydrate_model_recipe(self.model_recipe)
+
+        if self.model_recipe.task_type != self.task_type:
+            raise ValueError("model_recipe.task_type must match ExperimentConfig.task_type")
+        if self.train_hyp.task_type != self.task_type:
+            raise ValueError("train_hyp.task_type must match ExperimentConfig.task_type")
+        if self.dataset_recipe.task_type != self.task_type:
+            raise ValueError("dataset_recipe.task_type must match ExperimentConfig.task_type")
+        if self.model_recipe.base_model != self.model_name:
+            raise ValueError("model_recipe.base_model must match ExperimentConfig.model_name")
+        if self.model_recipe.model_family != self.model_family:
+            raise ValueError("model_recipe.model_family must match ExperimentConfig.model_family")
+        if self.dataset_recipe.dataset_name != self.dataset:
+            raise ValueError("dataset_recipe.dataset_name must match ExperimentConfig.dataset")
+
+        if not self.dataset_recipe.class_names:
             self.dataset_recipe.class_names = _infer_dataset_class_names(self.dataset_recipe)
-        if (
-            self.model_recipe is not None
-            and self.model_recipe.nc is None
-            and self.dataset_recipe is not None
-            and self.dataset_recipe.class_names
-        ):
+        if self.model_recipe.nc is None and self.dataset_recipe.class_names:
             self.model_recipe.nc = len(self.dataset_recipe.class_names)
+        self.params = self.train_hyp.to_experiment_params(aux_logits=self.use_aux_logits())
         return self
 
 
@@ -697,8 +600,6 @@ def apply_proposal_changes_to_model_recipe(
             updated_payload.setdefault("components", {}).setdefault("neck", {})["name"] = "gem_pool" if value == "gem" else "avg_pool"
         elif field_name == "classifier_dropout":
             updated_payload.setdefault("head_config", {})["classifier_dropout"] = value
-        elif field_name == "backbone_name":
-            updated_payload.setdefault("components", {}).setdefault("backbone", {})["name"] = value
         elif field_name == "neck_name":
             updated_payload.setdefault("components", {}).setdefault("neck", {})["name"] = value
             if value == "gem_pool":
@@ -733,8 +634,6 @@ def build_model_recipe_change_payload(proposal_changes: dict[str, Any]) -> dict[
             )
         elif field_name == "classifier_dropout":
             recipe_changes.setdefault("head_config", {})["classifier_dropout"] = value
-        elif field_name == "backbone_name":
-            recipe_changes.setdefault("components", {}).setdefault("backbone", {})["name"] = value
         elif field_name == "neck_name":
             recipe_changes.setdefault("components", {}).setdefault("neck", {})["name"] = value
             if value == "gem_pool":

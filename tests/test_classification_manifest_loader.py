@@ -17,13 +17,39 @@ VENV_SITE_PACKAGES = next((REPO_ROOT / ".venv" / "lib").glob("python*/site-packa
 sys.path.insert(0, str(VENV_SITE_PACKAGES))
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
-from app.schemas.parameter_space import ExperimentConfig
+from app.schemas.parameter_space import (
+    ExperimentConfig,
+    ExperimentParams,
+    build_default_model_recipe,
+)
 from app.trainers.classification.base_trainer import BaseClassificationTrainer
 from app.trainers.classification.data_loading import ManifestClassificationDataset, resolve_classification_dataset_files
+from tests.helpers.experiment_config_builders import build_default_dataset_recipe, build_train_hyp_from_params
 
 
 def _build_config(dataset_name: str) -> ExperimentConfig:
     """Build a minimal config for data loading tests."""
+    params = ExperimentParams.model_validate(
+        {
+            "optimizer": "adamw",
+            "learning_rate": 0.001,
+            "batch_size": 2,
+            "image_size": 32,
+            "epochs": 1,
+            "weight_decay": 0.0,
+            "scheduler": "none",
+            "augmentation_policy": "none",
+            "augmentation_params": {
+                "mixup_alpha": 0.0,
+                "cutmix_alpha": 0.0,
+                "random_erasing_prob": 0.0,
+            },
+            "loss_name": "cross_entropy",
+            "loss_params": {"focal_gamma": 2.0},
+            "label_smoothing": 0.0,
+            "aux_logits": False,
+        }
+    )
     return ExperimentConfig.model_validate(
         {
             "task_type": "classification",
@@ -31,25 +57,20 @@ def _build_config(dataset_name: str) -> ExperimentConfig:
             "model_family": "mobilenet",
             "model_name": "mobilenet_v3_small",
             "parameter_space_version": "test-v1",
-            "params": {
-                "optimizer": "adamw",
-                "learning_rate": 0.001,
-                "batch_size": 2,
-                "image_size": 32,
-                "epochs": 1,
-                "weight_decay": 0.0,
-                "scheduler": "none",
-                "augmentation_policy": "none",
-                "augmentation_params": {
-                    "mixup_alpha": 0.0,
-                    "cutmix_alpha": 0.0,
-                    "random_erasing_prob": 0.0,
-                },
-                "loss_name": "cross_entropy",
-                "loss_params": {"focal_gamma": 2.0},
-                "label_smoothing": 0.0,
-                "aux_logits": False,
-            },
+            "params": params.model_dump(),
+            "model_recipe": build_default_model_recipe(
+                model_name="mobilenet_v3_small",
+                task_type="classification",
+                model_family="mobilenet",
+            ).model_dump(by_alias=True),
+            "train_hyp": build_train_hyp_from_params(
+                task_type="classification",
+                params=params,
+            ).model_dump(),
+            "dataset_recipe": build_default_dataset_recipe(
+                dataset_name=dataset_name,
+                task_type="classification",
+            ).model_dump(),
         }
     )
 

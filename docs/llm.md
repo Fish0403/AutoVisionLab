@@ -132,7 +132,6 @@
     "focal_gamma": null,
     "label_smoothing": null,
     "aux_logits": null,
-    "backbone_name": null,
     "neck_name": "avg_pool",
     "head_name": "linear"
   },

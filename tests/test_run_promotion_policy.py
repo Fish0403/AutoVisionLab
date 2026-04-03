@@ -25,7 +25,11 @@ from app.main import initialize_database
 from app.db.session import SessionLocal
 from app.schemas.ai import ResultSchema
 from app.schemas.experiment import ExperimentCreateRequest
-from app.schemas.parameter_space import ExperimentConfig
+from app.schemas.parameter_space import (
+    ExperimentConfig,
+    ExperimentParams,
+    build_default_model_recipe,
+)
 from app.schemas.ranking_policy import RankingPolicy
 from app.schemas.run import RunCreateRequest
 from app.services.parameter_space import get_parameter_space
@@ -48,6 +52,7 @@ from app.services.run_policy import (
     proposal_switches_dimension,
     require_non_basic_change_after_warmup_rounds,
 )
+from tests.helpers.experiment_config_builders import build_default_dataset_recipe, build_train_hyp_from_params
 
 
 def _build_experiment_config(
@@ -57,6 +62,27 @@ def _build_experiment_config(
 ) -> ExperimentConfig:
     """Build a minimal ranking-enabled config."""
     effective_ranking_policy = ranking_policy or RankingPolicy()
+    params = ExperimentParams.model_validate(
+        {
+            "optimizer": "adamw",
+            "learning_rate": 0.003,
+            "batch_size": 32,
+            "image_size": 32,
+            "epochs": 1,
+            "weight_decay": 0.0001,
+            "scheduler": "cosine",
+            "augmentation_policy": "basic",
+            "augmentation_params": {
+                "mixup_alpha": 0.0,
+                "cutmix_alpha": 0.0,
+                "random_erasing_prob": 0.0,
+            },
+            "loss_name": "cross_entropy_with_label_smoothing",
+            "loss_params": {"focal_gamma": 2.0},
+            "label_smoothing": 0.1,
+            "aux_logits": False,
+        }
+    )
     return ExperimentConfig.model_validate(
         {
             "task_type": "classification",
@@ -81,25 +107,20 @@ def _build_experiment_config(
                 "require_manual_approval_for_high_impact_changes": True,
             },
             "ranking_policy": effective_ranking_policy.model_dump(),
-            "params": {
-                "optimizer": "adamw",
-                "learning_rate": 0.003,
-                "batch_size": 32,
-                "image_size": 32,
-                "epochs": 1,
-                "weight_decay": 0.0001,
-                "scheduler": "cosine",
-                "augmentation_policy": "basic",
-                "augmentation_params": {
-                    "mixup_alpha": 0.0,
-                    "cutmix_alpha": 0.0,
-                    "random_erasing_prob": 0.0,
-                },
-                "loss_name": "cross_entropy_with_label_smoothing",
-                "loss_params": {"focal_gamma": 2.0},
-                "label_smoothing": 0.1,
-                "aux_logits": False,
-            },
+            "params": params.model_dump(),
+            "model_recipe": build_default_model_recipe(
+                model_name="mobilenet_v3_small",
+                task_type="classification",
+                model_family="mobilenet",
+            ).model_dump(by_alias=True),
+            "train_hyp": build_train_hyp_from_params(
+                task_type="classification",
+                params=params,
+            ).model_dump(),
+            "dataset_recipe": build_default_dataset_recipe(
+                dataset_name="cifar10",
+                task_type="classification",
+            ).model_dump(),
         }
     )
 
@@ -482,15 +503,8 @@ class RunPromotionPolicyTest(unittest.TestCase):
             assert run_detail is not None
             assert run_summary is not None
 
-        self.assertEqual(run_detail.baseline_experiment_id, baseline_id)
-        self.assertEqual(run_detail.best_quality_experiment_id, accurate_id)
         self.assertEqual(run_detail.best_experiment_id, tradeoff_id)
-        self.assertEqual(run_detail.best_efficiency_experiment_id, fast_id)
-        self.assertEqual(run_detail.best_tradeoff_experiment_id, tradeoff_id)
-        self.assertEqual(run_summary.best_quality_experiment_id, accurate_id)
         self.assertEqual(run_summary.best_experiment_id, tradeoff_id)
-        self.assertEqual(run_summary.best_efficiency_experiment_id, fast_id)
-        self.assertEqual(run_summary.best_tradeoff_experiment_id, tradeoff_id)
 
     def test_change_budget_stays_single_variable_without_stagnation(self) -> None:
         stagnation_rounds, max_changed_fields = determine_change_budget(

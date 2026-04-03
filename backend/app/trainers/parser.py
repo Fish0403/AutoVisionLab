@@ -12,13 +12,8 @@ from app.trainers.manifest import TrainerManifest
 
 
 LAYER_SECTION_NAMES = ("backbone", "neck", "head")
-TOP_LEVEL_SECTION_ALIASES = {
-    "model_recipe": "model",
-    "train_hyp": "train",
-    "dataset_recipe": "data",
-    "search_policy": "search",
-    "ranking_policy": "ranking",
-}
+LEGACY_TOP_LEVEL_SECTION_NAMES = ("model_recipe", "train_hyp", "dataset_recipe", "search_policy", "ranking_policy")
+LEGACY_RUNTIME_FIELD_NAMES = ("use_demo_mode", "participates_in_ranking")
 
 
 def parse_model_layer_payload(layer_payload: Any) -> dict[str, Any]:
@@ -46,18 +41,12 @@ def parse_model_layer_payload(layer_payload: Any) -> dict[str, Any]:
 def parse_model_recipe_payload(model_payload: dict[str, Any]) -> dict[str, Any]:
     """Normalize one model recipe payload before schema validation."""
     normalized_payload = deepcopy(model_payload)
+    if "architecture" in normalized_payload:
+        raise ValueError("Legacy model.architecture is no longer supported")
     for section_name in LAYER_SECTION_NAMES:
         section_layers = normalized_payload.get(section_name)
         if isinstance(section_layers, list):
             normalized_payload[section_name] = [parse_model_layer_payload(layer_payload) for layer_payload in section_layers]
-
-    architecture_payload = normalized_payload.get("architecture")
-    if not isinstance(architecture_payload, dict):
-        return normalized_payload
-
-    for section_name in LAYER_SECTION_NAMES:
-        section_layers = architecture_payload.get(section_name) or []
-        architecture_payload[section_name] = [parse_model_layer_payload(layer_payload) for layer_payload in section_layers]
     return normalized_payload
 
 
@@ -67,17 +56,22 @@ def parse_trainer_manifest_payload(manifest_payload: dict[str, Any]) -> TrainerM
         raise ValueError("Trainer manifest payload must be a mapping")
 
     normalized_payload = deepcopy(manifest_payload)
-    for legacy_name, canonical_name in TOP_LEVEL_SECTION_ALIASES.items():
-        if canonical_name not in normalized_payload and legacy_name in normalized_payload:
-            normalized_payload[canonical_name] = normalized_payload.pop(legacy_name)
+    legacy_sections = sorted(
+        field_name for field_name in LEGACY_TOP_LEVEL_SECTION_NAMES if field_name in normalized_payload
+    )
+    if legacy_sections:
+        legacy_section_text = ", ".join(legacy_sections)
+        raise ValueError(f"Legacy manifest sections are no longer supported: {legacy_section_text}")
 
-    runtime_payload = dict(normalized_payload.get("runtime") or {})
-    if "use_demo_mode" in normalized_payload and "use_demo_mode" not in runtime_payload:
-        runtime_payload["use_demo_mode"] = normalized_payload.pop("use_demo_mode")
-    if "participates_in_ranking" in normalized_payload and "participates_in_ranking" not in runtime_payload:
-        runtime_payload["participates_in_ranking"] = normalized_payload.pop("participates_in_ranking")
-    if runtime_payload:
-        normalized_payload["runtime"] = runtime_payload
+    legacy_runtime_fields = sorted(
+        field_name for field_name in LEGACY_RUNTIME_FIELD_NAMES if field_name in normalized_payload
+    )
+    if legacy_runtime_fields:
+        legacy_runtime_text = ", ".join(legacy_runtime_fields)
+        raise ValueError(
+            "Legacy top-level runtime fields are no longer supported. "
+            f"Move them under runtime: {legacy_runtime_text}"
+        )
 
     model_payload = normalized_payload.get("model")
     if isinstance(model_payload, dict):

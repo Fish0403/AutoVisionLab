@@ -84,7 +84,7 @@ class BaseClassificationTrainer:
 
     def measure_inference_latency_ms(self, model: nn.Module) -> float:
         """Run a tiny inference benchmark on the current device."""
-        input_channels = self.config.model_recipe.input_channels if self.config.model_recipe is not None else 3
+        input_channels = self.config.model_recipe.input_channels
         image_size = self.config.train_hyp.image_size
         dummy_input = torch.randn(1, input_channels, image_size, image_size, device=self.device)
         warmup_steps = 2

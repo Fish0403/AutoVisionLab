@@ -35,7 +35,12 @@ from app.main import healthcheck, initialize_database
 from app.schemas.ai import ResultSchema
 from app.schemas.api import ApiResponse
 from app.schemas.experiment import ExperimentCreateRequest
-from app.schemas.parameter_space import EditableParameterSpace, ExperimentConfig
+from app.schemas.parameter_space import (
+    EditableParameterSpace,
+    ExperimentConfig,
+    ExperimentParams,
+    build_default_model_recipe,
+)
 from app.schemas.run import (
     ModelCompareStartRequest,
     ModelCompareSummary,
@@ -43,6 +48,7 @@ from app.schemas.run import (
     RunCreateRequest,
 )
 from app.services.persistence import clear_all_records
+from tests.helpers.experiment_config_builders import build_default_dataset_recipe, build_train_hyp_from_params
 
 
 def _build_experiment_config(
@@ -52,6 +58,29 @@ def _build_experiment_config(
     model_family: str = "mobilenet",
 ) -> dict[str, object]:
     """Build a minimal valid experiment config payload."""
+    params = ExperimentParams.model_validate(
+        {
+            "optimizer": "adamw",
+            "learning_rate": 0.003,
+            "batch_size": 32,
+            "image_size": 32,
+            "epochs": 1,
+            "weight_decay": 0.0001,
+            "scheduler": "cosine",
+            "augmentation_policy": "basic",
+            "augmentation_params": {
+                "mixup_alpha": 0.0,
+                "cutmix_alpha": 0.0,
+                "random_erasing_prob": 0.0,
+            },
+            "loss_name": "cross_entropy_with_label_smoothing",
+            "loss_params": {
+                "focal_gamma": 2.0,
+            },
+            "label_smoothing": 0.1,
+            "aux_logits": False,
+        }
+    )
     return {
         "task_type": "classification",
         "dataset": "cifar10",
@@ -74,27 +103,20 @@ def _build_experiment_config(
             "allow_augmentation_search": False,
             "require_manual_approval_for_high_impact_changes": True,
         },
-        "params": {
-            "optimizer": "adamw",
-            "learning_rate": 0.003,
-            "batch_size": 32,
-            "image_size": 32,
-            "epochs": 1,
-            "weight_decay": 0.0001,
-            "scheduler": "cosine",
-            "augmentation_policy": "basic",
-            "augmentation_params": {
-                "mixup_alpha": 0.0,
-                "cutmix_alpha": 0.0,
-                "random_erasing_prob": 0.0,
-            },
-            "loss_name": "cross_entropy_with_label_smoothing",
-            "loss_params": {
-                "focal_gamma": 2.0,
-            },
-            "label_smoothing": 0.1,
-            "aux_logits": False,
-        },
+        "params": params.model_dump(),
+        "model_recipe": build_default_model_recipe(
+            model_name=model_name,
+            task_type="classification",
+            model_family=model_family,
+        ).model_dump(by_alias=True),
+        "train_hyp": build_train_hyp_from_params(
+            task_type="classification",
+            params=params,
+        ).model_dump(),
+        "dataset_recipe": build_default_dataset_recipe(
+            dataset_name="cifar10",
+            task_type="classification",
+        ).model_dump(),
     }
 
 
@@ -146,8 +168,8 @@ class ApiResponseEnvelopeTest(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["message"], "Parameter space loaded.")
         self.assertEqual(payload["data"]["model_name"], "mobilenet_v2")
-        self.assertNotIn("neck_name", payload["data"]["editable_params"])
-        self.assertNotIn("head_name", payload["data"]["editable_params"])
+        self.assertIn("neck_name", payload["data"]["editable_params"])
+        self.assertIn("head_name", payload["data"]["editable_params"])
 
     def test_experiment_endpoints_use_api_response_envelope(self) -> None:
         parameter_space_response = read_parameter_space("mobilenet_v3_small")

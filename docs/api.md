@@ -124,7 +124,8 @@
 
 ### Experiment 说明
 
-- `ExperimentConfig` 保存 `search_policy`、`ranking_policy`、`params`、`model_recipe`、`train_hyp` 和 `dataset_recipe`
+- `ExperimentConfig` 以 `model_recipe`、`train_hyp`、`dataset_recipe` 为主配置，同时保存 `search_policy` 和 `ranking_policy`
+- `ExperimentConfig.params` 是从结构化配置归一化得到的参数快照
 - `parameter_space` 是本次实验的白名单快照
 - `result` 保存指标、资源、参数和产物路径
 
@@ -175,6 +176,7 @@ AI 生成的结构化 proposal，主要字段：
 - `metrics`
 - `resource`
 - `params`
+  - 从结构化配置和训练结果归一化得到的参数快照
 - `artifacts`
 
 ## 相关文档

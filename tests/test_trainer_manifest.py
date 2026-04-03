@@ -16,22 +16,22 @@ VENV_SITE_PACKAGES = next((REPO_ROOT / ".venv" / "lib").glob("python*/site-packa
 sys.path.insert(0, str(VENV_SITE_PACKAGES))
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
-from app.schemas.parameter_space import ExperimentConfig
+from app.schemas.parameter_space import (
+    ExperimentConfig,
+    ExperimentParams,
+    build_default_model_recipe,
+)
 from app.trainers.builder import build_model_from_manifest
 from app.trainers.factory import build_trainer_from_config
 from app.trainers.parser import load_trainer_manifest, parse_trainer_manifest_payload
 from app.trainers.validator import validate_trainer_manifest
+from tests.helpers.experiment_config_builders import build_default_dataset_recipe, build_train_hyp_from_params
 
 
 def _build_config_payload(model_name: str, model_family: str, parameter_space_version: str) -> dict[str, object]:
     """Build one minimal experiment config payload."""
-    return {
-        "task_type": "classification",
-        "dataset": "neu",
-        "model_family": model_family,
-        "model_name": model_name,
-        "parameter_space_version": parameter_space_version,
-        "params": {
+    params = ExperimentParams.model_validate(
+        {
             "optimizer": "adamw",
             "learning_rate": 0.003,
             "batch_size": 64,
@@ -49,14 +49,35 @@ def _build_config_payload(model_name: str, model_family: str, parameter_space_ve
             "loss_params": {"focal_gamma": 2.0},
             "label_smoothing": 0.1,
             "aux_logits": False,
-        },
+        }
+    )
+    return {
+        "task_type": "classification",
+        "dataset": "neu",
+        "model_family": model_family,
+        "model_name": model_name,
+        "parameter_space_version": parameter_space_version,
+        "params": params.model_dump(),
+        "model_recipe": build_default_model_recipe(
+            model_name=model_name,
+            task_type="classification",
+            model_family=model_family,
+        ).model_dump(by_alias=True),
+        "train_hyp": build_train_hyp_from_params(
+            task_type="classification",
+            params=params,
+        ).model_dump(),
+        "dataset_recipe": build_default_dataset_recipe(
+            dataset_name="neu",
+            task_type="classification",
+        ).model_dump(),
     }
 
 
 class TrainerManifestTest(unittest.TestCase):
     """Verify the unified manifest entrypoints."""
 
-    def test_load_manifest_parses_short_layer_form_and_alias_sections(self) -> None:
+    def test_load_manifest_parses_short_layer_form(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             manifest_path = Path(temp_dir) / "manifest.yaml"
             manifest_path.write_text(
@@ -64,7 +85,7 @@ class TrainerManifestTest(unittest.TestCase):
 version: trainer_manifest@v1
 task_type: classification
 parameter_space_version: mobilenet_v3_small@v1
-model_recipe:
+model:
   version: model_recipe@v1
   task_type: classification
   model_family: mobilenet
@@ -80,7 +101,7 @@ model_recipe:
     - [-1, 1, pointwise_tail, [6, hardswish], tail]
     - [-1, 1, global_pool, [], pool]
     - [-1, 1, classifier, [1024], cls]
-train_hyp:
+train:
   version: train_hyp@v1
   task_type: classification
   optimizer: adamw
@@ -90,7 +111,7 @@ train_hyp:
   epochs: 10
   batch_size: 64
   image_size: 96
-dataset_recipe:
+data:
   version: dataset_recipe@v1
   task_type: classification
   dataset_name: neu
@@ -99,7 +120,7 @@ dataset_recipe:
   splits:
     train_manifest: data/classification/neu/train.txt
     val_manifest: data/classification/neu/val.txt
-search_policy:
+search:
   allow_model_module_search: true
 """.strip(),
                 encoding="utf-8",
@@ -153,6 +174,46 @@ search_policy:
         with self.assertRaisesRegex(ValueError, "custom architecture layers"):
             validate_trainer_manifest(manifest)
 
+    def test_parser_rejects_legacy_model_architecture_section(self) -> None:
+        with self.assertRaisesRegex(ValueError, "model.architecture"):
+            parse_trainer_manifest_payload(
+                {
+                    "version": "trainer_manifest@v1",
+                    "task_type": "classification",
+                    "parameter_space_version": "mobilenet_v3_small@v1",
+                    "model": {
+                        "version": "model_recipe@v1",
+                        "task_type": "classification",
+                        "model_family": "mobilenet",
+                        "base_model": "mobilenet_v3_small",
+                        "architecture": {
+                            "backbone": [[-1, 1, "stem_conv", [16, 3, 2, "hardswish"], "stem"]],
+                        },
+                    },
+                    "train": {
+                        "version": "train_hyp@v1",
+                        "task_type": "classification",
+                        "optimizer": "adamw",
+                        "lr0": 0.003,
+                        "weight_decay": 0.0001,
+                        "scheduler": "cosine",
+                        "epochs": 10,
+                        "batch_size": 32,
+                        "image_size": 96,
+                    },
+                    "data": {
+                        "version": "dataset_recipe@v1",
+                        "task_type": "classification",
+                        "dataset_name": "neu",
+                        "source": {"root_dir": "data/raw/neu"},
+                        "splits": {
+                            "train_manifest": "data/classification/neu/train.txt",
+                            "val_manifest": "data/classification/neu/val.txt",
+                        },
+                    },
+                }
+            )
+
     def test_build_model_from_manifest_dispatches_to_resnet_builder(self) -> None:
         config = ExperimentConfig.model_validate(_build_config_payload("resnet18", "resnet", "resnet18@v1"))
         manifest = parse_trainer_manifest_payload(
@@ -175,7 +236,7 @@ search_policy:
         model = build_model_from_manifest(manifest)
         output = model(torch.zeros(1, 3, 96, 96))
 
-        self.assertEqual(model.__class__.__name__, "ResNet")
+        self.assertEqual(model.__class__.__name__, "GenericTorchvisionClassifier")
         self.assertEqual(tuple(output.shape), (1, 6))
 
     def test_build_model_from_manifest_dispatches_to_mobilenet_v2_builder(self) -> None:
@@ -200,9 +261,9 @@ search_policy:
         model = build_model_from_manifest(manifest)
         output = model(torch.zeros(1, 3, 96, 96))
 
-        self.assertEqual(model.__class__.__name__, "MobileNetV2")
+        self.assertEqual(model.__class__.__name__, "GenericTorchvisionClassifier")
         self.assertEqual(tuple(output.shape), (1, 6))
-        self.assertEqual(model.classifier[0].p, 0.2)
+        self.assertEqual(model.head[0].p, 0.2)
 
     def test_build_model_from_manifest_infers_output_classes_from_split_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -255,7 +316,7 @@ search_policy:
 
             model = build_model_from_manifest(manifest)
 
-        self.assertEqual(model.classifier[-1].out_features, 3)
+        self.assertEqual(model.head[-1].out_features, 3)
 
     def test_build_trainer_from_config_dispatches_to_trainer_factory(self) -> None:
         payload = _build_config_payload("googlenet", "googlenet", "googlenet@v1")

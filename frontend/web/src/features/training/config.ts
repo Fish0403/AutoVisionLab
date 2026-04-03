@@ -169,36 +169,61 @@ export function buildExperimentConfig(
   modelName?: SupportedModelName,
 ) {
   const effectiveModelName = modelName ?? values.modelName;
+  const modelFamily = getModelFamily(effectiveModelName);
   return {
     task_type: "classification",
     dataset: values.dataset,
-    model_family: getModelFamily(effectiveModelName),
+    model_family: modelFamily,
     model_name: effectiveModelName,
     parameter_space_version: parameterSpaceVersion,
     use_demo_mode: values.useDemoMode,
     participates_in_ranking: true,
     search_policy: buildSearchPolicy(),
     ranking_policy: buildRankingPolicy(),
-    params: {
+    model_recipe: {
+      version: "model_recipe@v1",
+      task_type: "classification",
+      model_family: modelFamily,
+      base_model: effectiveModelName,
+      modules: effectiveModelName === "googlenet" ? { aux_logits: false } : {}
+    },
+    train_hyp: {
+      version: "train_hyp@v1",
+      task_type: "classification",
       optimizer: values.optimizer,
-      learning_rate: values.learningRate,
-      batch_size: values.batchSize,
-      image_size: imageSize,
-      epochs: values.epochs,
+      lr0: values.learningRate,
       weight_decay: values.weightDecay,
       scheduler: values.scheduler,
-      augmentation_policy: values.augmentationPolicy,
-      augmentation_params: {
-        mixup_alpha: 0,
-        cutmix_alpha: 0,
-        random_erasing_prob: 0
-      },
-      loss_name: "cross_entropy_with_label_smoothing",
-      loss_params: {
-        focal_gamma: 2
-      },
+      epochs: values.epochs,
+      batch_size: values.batchSize,
+      image_size: imageSize,
       label_smoothing: values.labelSmoothing,
-      aux_logits: effectiveModelName === "googlenet" ? false : null
+      augmentation: {
+        policy: values.augmentationPolicy,
+        mixup: 0,
+        cutmix: 0,
+        random_erasing: 0
+      },
+      loss: {
+        name: "cross_entropy_with_label_smoothing"
+      }
+    },
+    dataset_recipe: {
+      version: "dataset_recipe@v1",
+      task_type: "classification",
+      dataset_name: values.dataset,
+      class_names: [],
+      source: {
+        root_dir: `data/raw/${values.dataset}`
+      },
+      splits: {
+        train_manifest: `data/classification/${values.dataset}/train.txt`,
+        val_manifest: `data/classification/${values.dataset}/val.txt`,
+        test_manifest: `data/classification/${values.dataset}/test.txt`
+      },
+      metadata: {
+        image_size_options: []
+      }
     }
   };
 }

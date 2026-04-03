@@ -31,16 +31,44 @@ from app.api.routes.runs import (
 )
 from app.db.session import SessionLocal
 from app.main import initialize_database
-from app.schemas.parameter_space import ExperimentConfig
+from app.models.experiment import ExperimentModel
+from app.models.run import RunModel
+from app.schemas.parameter_space import (
+    ExperimentConfig,
+    ExperimentParams,
+    build_default_model_recipe,
+)
 from app.schemas.run import AutoTrainStartRequest, ModelCompareStartRequest
 from app.services.auto_train_service import AUTO_TRAIN_TASKS
 from app.services.model_compare_service import MODEL_COMPARE_TASKS
 from app.services.persistence import clear_all_records
 from app.services.task_store import cleanup_stale_task_payloads
+from tests.helpers.experiment_config_builders import build_default_dataset_recipe, build_train_hyp_from_params
 
 
 def _build_experiment_config(parameter_space_version: str) -> dict[str, object]:
     """Build a minimal valid experiment config payload."""
+    params = ExperimentParams.model_validate(
+        {
+            "optimizer": "adamw",
+            "learning_rate": 0.003,
+            "batch_size": 32,
+            "image_size": 32,
+            "epochs": 1,
+            "weight_decay": 0.0001,
+            "scheduler": "cosine",
+            "augmentation_policy": "basic",
+            "augmentation_params": {
+                "mixup_alpha": 0.0,
+                "cutmix_alpha": 0.0,
+                "random_erasing_prob": 0.0,
+            },
+            "loss_name": "cross_entropy_with_label_smoothing",
+            "loss_params": {"focal_gamma": 2.0},
+            "label_smoothing": 0.1,
+            "aux_logits": False,
+        }
+    )
     return {
         "task_type": "classification",
         "dataset": "cifar10",
@@ -63,25 +91,20 @@ def _build_experiment_config(parameter_space_version: str) -> dict[str, object]:
             "allow_augmentation_search": False,
             "require_manual_approval_for_high_impact_changes": True,
         },
-        "params": {
-            "optimizer": "adamw",
-            "learning_rate": 0.003,
-            "batch_size": 32,
-            "image_size": 32,
-            "epochs": 1,
-            "weight_decay": 0.0001,
-            "scheduler": "cosine",
-            "augmentation_policy": "basic",
-            "augmentation_params": {
-                "mixup_alpha": 0.0,
-                "cutmix_alpha": 0.0,
-                "random_erasing_prob": 0.0,
-            },
-            "loss_name": "cross_entropy_with_label_smoothing",
-            "loss_params": {"focal_gamma": 2.0},
-            "label_smoothing": 0.1,
-            "aux_logits": False,
-        },
+        "params": params.model_dump(),
+        "model_recipe": build_default_model_recipe(
+            model_name="mobilenet_v3_small",
+            task_type="classification",
+            model_family="mobilenet",
+        ).model_dump(by_alias=True),
+        "train_hyp": build_train_hyp_from_params(
+            task_type="classification",
+            params=params,
+        ).model_dump(),
+        "dataset_recipe": build_default_dataset_recipe(
+            dataset_name="cifar10",
+            task_type="classification",
+        ).model_dump(),
     }
 
 
@@ -174,6 +197,50 @@ class TaskHistoryPersistenceTest(unittest.TestCase):
         task_response = get_auto_train_endpoint(task_id)
         self.assertEqual(task_response.data.status, "stopped")
         self.assertEqual(task_response.data.stop_reason, "Task interrupted by backend restart.")
+
+    def test_restart_cleanup_deletes_invalid_legacy_experiment_configs(self) -> None:
+        legacy_config = _build_experiment_config("mobilenet_v3_small@v1")
+        legacy_config.pop("model_recipe", None)
+        legacy_config.pop("train_hyp", None)
+        legacy_config.pop("dataset_recipe", None)
+
+        with SessionLocal() as db:
+            db.add(
+                RunModel(
+                    id="run_legacy_cleanup",
+                    name="legacy-cleanup",
+                    task_type="classification",
+                    dataset="cifar10",
+                    model_name="mobilenet_v3_small",
+                    status="active",
+                )
+            )
+            db.add(
+                ExperimentModel(
+                    id="exp_legacy_cleanup",
+                    run_id="run_legacy_cleanup",
+                    status="success",
+                    experiment_config=legacy_config,
+                    editable_parameter_space={
+                        "model_name": "mobilenet_v3_small",
+                        "version": "mobilenet_v3_small@v1",
+                        "editable_params": {},
+                    },
+                    proposal=None,
+                    result=None,
+                    reflection=None,
+                )
+            )
+            db.commit()
+
+        initialize_database()
+
+        with SessionLocal() as db:
+            self.assertIsNone(db.get(ExperimentModel, "exp_legacy_cleanup"))
+            run = db.get(RunModel, "run_legacy_cleanup")
+            self.assertIsNotNone(run)
+            self.assertIsNone(run.baseline_experiment_id)
+            self.assertIsNone(run.best_experiment_id)
 
     def test_model_compare_task_history_survives_memory_reset(self) -> None:
         parameter_space_response = read_parameter_space("mobilenet_v3_small")

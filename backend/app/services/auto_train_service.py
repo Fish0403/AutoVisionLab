@@ -542,7 +542,7 @@ def _resolve_structured_recipe_changes(proposal_payload: dict) -> dict:
     compatibility_change_payload = {
         field_name: value
         for field_name, value in change_payload.items()
-        if field_name in {"backbone_name", "neck_name", "head_name", "pooling_type", "classifier_dropout"}
+        if field_name in {"neck_name", "head_name", "pooling_type", "classifier_dropout"}
     }
     derived_recipe_changes = build_model_recipe_change_payload(compatibility_change_payload)
     for field_name, value in derived_recipe_changes.items():
@@ -1031,7 +1031,7 @@ def start_auto_train_task(request: AutoTrainStartRequest) -> AutoTrainTaskRespon
     task_id = f"auto_{uuid4().hex[:8]}"
     created_at = _now_iso()
     ai_model_name = get_settings().aihubmix_model
-    training_image_size = request.config.train_hyp.image_size if request.config.train_hyp is not None else request.config.params.image_size
+    training_image_size = request.config.train_hyp.image_size
     dataset_summary = build_dataset_summary_text(
         get_local_dataset_summary(request.dataset),
         training_image_size=training_image_size,

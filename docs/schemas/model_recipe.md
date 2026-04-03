@@ -4,7 +4,7 @@
 
 ## 作用
 
-- 用结构化对象表达模型结构和兼容配置
+- 用结构化对象表达模型结构和可调组件配置
 - 为训练器、配置持久化和受限搜索提供统一入口
 - 让结构变化可以落盘、回放和做受限校验
 
@@ -24,9 +24,9 @@
 - `components`
   - 当前主要使用的粗粒度组件视图
 - `backbone_config`
-  - 主干兼容配置
+  - 主干配置
 - `head_config`
-  - 头部兼容配置
+  - 头部配置
 - `modules`
   - 轻量结构开关
 - `metadata`
@@ -50,12 +50,12 @@
 其中：
 
 - `components` 是对外最稳定的粗粒度结构视图
-- `backbone_config` 和 `head_config` 是当前 builder 兼容层
+- `backbone_config` 和 `head_config` 是当前 builder 直接消费的配置子结构
 - `modules` 用于轻量结构开关，例如 `aux_logits`
 
 ## 展开后的架构字段
 
-`backbone`、`neck`、`head` 三个字段仍保留在 schema 中，用于展开后的架构表示和模板兼容，但它们不是当前工作台和搜索策略的主要入口。
+`backbone`、`neck`、`head` 三个字段用于展开后的架构表示和模板输出，但当前工作台和搜索策略主要围绕 `components`、`backbone_config`、`head_config` 与 `modules` 工作。
 
 ## 当前分类口径
 

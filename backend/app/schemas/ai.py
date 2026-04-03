@@ -33,7 +33,6 @@ class ProposalChanges(BaseModel):
     width_multiple: float | None = Field(default=None, gt=0)
     pooling_type: str | None = None
     classifier_dropout: float | None = Field(default=None, ge=0, le=1)
-    backbone_name: str | None = None
     neck_name: str | None = None
     head_name: str | None = None
 

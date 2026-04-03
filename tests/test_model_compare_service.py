@@ -15,7 +15,11 @@ VENV_SITE_PACKAGES = next((REPO_ROOT / ".venv" / "lib").glob("python*/site-packa
 sys.path.insert(0, str(VENV_SITE_PACKAGES))
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
-from app.schemas.parameter_space import ExperimentConfig
+from app.schemas.parameter_space import (
+    ExperimentConfig,
+    ExperimentParams,
+    build_default_model_recipe,
+)
 from app.services.model_compare_service import (
     MODEL_COMPARE_TASKS,
     _build_compare_config,
@@ -26,11 +30,33 @@ from app.services.model_compare_service import (
     start_model_compare_task,
 )
 from app.schemas.run import ModelCompareCandidateResult, ModelCompareStartRequest, ModelCompareSummary
+from tests.helpers.experiment_config_builders import build_default_dataset_recipe, build_train_hyp_from_params
 
 
 def _build_base_config(dataset_name: str | None = None) -> ExperimentConfig:
     """Build one minimal config payload for compare tests."""
     dataset_name = dataset_name or f"dataset_{uuid4().hex}"
+    params = ExperimentParams.model_validate(
+        {
+            "optimizer": "adamw",
+            "learning_rate": 0.003,
+            "batch_size": 64,
+            "image_size": 96,
+            "epochs": 10,
+            "weight_decay": 0.0001,
+            "scheduler": "cosine",
+            "augmentation_policy": "basic",
+            "augmentation_params": {
+                "mixup_alpha": 0.1,
+                "cutmix_alpha": 0.0,
+                "random_erasing_prob": 0.1,
+            },
+            "loss_name": "cross_entropy_with_label_smoothing",
+            "loss_params": {"focal_gamma": 2.0},
+            "label_smoothing": 0.1,
+            "aux_logits": True,
+        }
+    )
     return ExperimentConfig.model_validate(
         {
             "task_type": "classification",
@@ -48,25 +74,20 @@ def _build_base_config(dataset_name: str | None = None) -> ExperimentConfig:
                 "allow_model_module_search": True,
                 "require_manual_approval_for_high_impact_changes": True,
             },
-            "params": {
-                "optimizer": "adamw",
-                "learning_rate": 0.003,
-                "batch_size": 64,
-                "image_size": 96,
-                "epochs": 10,
-                "weight_decay": 0.0001,
-                "scheduler": "cosine",
-                "augmentation_policy": "basic",
-                "augmentation_params": {
-                    "mixup_alpha": 0.1,
-                    "cutmix_alpha": 0.0,
-                    "random_erasing_prob": 0.1,
-                },
-                "loss_name": "cross_entropy_with_label_smoothing",
-                "loss_params": {"focal_gamma": 2.0},
-                "label_smoothing": 0.1,
-                "aux_logits": True,
-            },
+            "params": params.model_dump(),
+            "model_recipe": build_default_model_recipe(
+                model_name="mobilenet_v3_small",
+                task_type="classification",
+                model_family="mobilenet",
+            ).model_dump(by_alias=True),
+            "train_hyp": build_train_hyp_from_params(
+                task_type="classification",
+                params=params,
+            ).model_dump(),
+            "dataset_recipe": build_default_dataset_recipe(
+                dataset_name=dataset_name,
+                task_type="classification",
+            ).model_dump(),
         }
     )
 
@@ -87,7 +108,7 @@ class ModelCompareServiceTest(unittest.TestCase):
         self.assertFalse(compare_config.params.aux_logits)
         self.assertFalse(compare_config.search_policy.allow_basic_hparam_search)
         self.assertFalse(compare_config.search_policy.allow_strategy_search)
-        self.assertIn("Forced aux_logits=False", compare_notes[0])
+        self.assertEqual(compare_notes, [])
 
     def test_build_compare_config_for_mobilenet_v3_small_disables_component_search(self) -> None:
         compare_config, compare_notes = _build_compare_config(

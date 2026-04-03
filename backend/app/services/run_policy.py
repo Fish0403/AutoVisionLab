@@ -73,17 +73,8 @@ def _get_effective_history_change_fields(experiment: dict[str, Any]) -> set[str]
     }
 
 
-def _extract_experiment_params(experiment: dict[str, Any]) -> dict[str, Any]:
-    """Return the structured params payload from one history item."""
-    if isinstance(experiment.get("params"), dict):
-        return experiment["params"]
-    config_payload = experiment.get("config") or {}
-    params_payload = config_payload.get("params")
-    return params_payload if isinstance(params_payload, dict) else {}
-
-
 def _extract_experiment_search_values(experiment: dict[str, Any]) -> dict[str, Any]:
-    """Return one normalized search payload from recipes or legacy params."""
+    """Return one normalized search payload from structured recipe fields."""
     if isinstance(experiment.get("train_hyp"), dict):
         train_hyp_payload = experiment["train_hyp"]
         model_recipe_payload = experiment.get("model_recipe") or {}
@@ -92,68 +83,36 @@ def _extract_experiment_search_values(experiment: dict[str, Any]) -> dict[str, A
         train_hyp_payload = config_payload.get("train_hyp") or {}
         model_recipe_payload = config_payload.get("model_recipe") or {}
 
-    if isinstance(train_hyp_payload, dict) and train_hyp_payload:
-        augmentation_payload = train_hyp_payload.get("augmentation") or {}
-        loss_payload = train_hyp_payload.get("loss") or {}
-        modules_payload = model_recipe_payload.get("modules") or {}
-        legacy_head_payload = model_recipe_payload.get("head")
-        head_config_payload = model_recipe_payload.get("head_config") or (
-            legacy_head_payload if isinstance(legacy_head_payload, dict) else {}
-        )
-        components_payload = model_recipe_payload.get("components") or {}
-        backbone_component_payload = components_payload.get("backbone") or {}
-        neck_component_payload = components_payload.get("neck") or {}
-        head_component_payload = components_payload.get("head") or {}
-        flattened_payload = {
-            "optimizer": train_hyp_payload.get("optimizer"),
-            "learning_rate": train_hyp_payload.get("lr0"),
-            "batch_size": train_hyp_payload.get("batch_size"),
-            "weight_decay": train_hyp_payload.get("weight_decay"),
-            "scheduler": train_hyp_payload.get("scheduler"),
-            "label_smoothing": train_hyp_payload.get("label_smoothing"),
-            "image_size": train_hyp_payload.get("image_size"),
-            "augmentation_policy": augmentation_payload.get("policy"),
-            "mixup_alpha": augmentation_payload.get("mixup"),
-            "cutmix_alpha": augmentation_payload.get("cutmix"),
-            "random_erasing_prob": augmentation_payload.get("random_erasing"),
-            "loss_name": loss_payload.get("name"),
-            "focal_gamma": train_hyp_payload.get("fl_gamma"),
-            "aux_logits": modules_payload.get("aux_logits"),
-            "width_multiple": model_recipe_payload.get("width_multiple"),
-            "pooling_type": head_config_payload.get("pooling_type"),
-            "classifier_dropout": head_config_payload.get("classifier_dropout"),
-            "backbone_name": backbone_component_payload.get("name"),
-            "neck_name": neck_component_payload.get("name"),
-            "head_name": head_component_payload.get("name"),
-        }
-        return {
-            field_name: value
-            for field_name, value in flattened_payload.items()
-            if value is not None
-        }
+    if not isinstance(train_hyp_payload, dict) or not train_hyp_payload:
+        return {}
 
-    return _flatten_search_params(_extract_experiment_params(experiment))
-
-
-def _flatten_search_params(params_payload: dict[str, Any]) -> dict[str, Any]:
-    """Flatten nested params into the search field namespace."""
-    augmentation_params = params_payload.get("augmentation_params") or {}
-    loss_params = params_payload.get("loss_params") or {}
+    augmentation_payload = train_hyp_payload.get("augmentation") or {}
+    loss_payload = train_hyp_payload.get("loss") or {}
+    modules_payload = model_recipe_payload.get("modules") or {}
+    head_config_payload = model_recipe_payload.get("head_config") or {}
+    components_payload = model_recipe_payload.get("components") or {}
+    neck_component_payload = components_payload.get("neck") or {}
+    head_component_payload = components_payload.get("head") or {}
     flattened_payload = {
-        "optimizer": params_payload.get("optimizer"),
-        "learning_rate": params_payload.get("learning_rate"),
-        "batch_size": params_payload.get("batch_size"),
-        "weight_decay": params_payload.get("weight_decay"),
-        "scheduler": params_payload.get("scheduler"),
-        "label_smoothing": params_payload.get("label_smoothing"),
-        "image_size": params_payload.get("image_size"),
-        "augmentation_policy": params_payload.get("augmentation_policy"),
-        "mixup_alpha": augmentation_params.get("mixup_alpha"),
-        "cutmix_alpha": augmentation_params.get("cutmix_alpha"),
-        "random_erasing_prob": augmentation_params.get("random_erasing_prob"),
-        "loss_name": params_payload.get("loss_name"),
-        "focal_gamma": loss_params.get("focal_gamma"),
-        "aux_logits": params_payload.get("aux_logits"),
+        "optimizer": train_hyp_payload.get("optimizer"),
+        "learning_rate": train_hyp_payload.get("lr0"),
+        "batch_size": train_hyp_payload.get("batch_size"),
+        "weight_decay": train_hyp_payload.get("weight_decay"),
+        "scheduler": train_hyp_payload.get("scheduler"),
+        "label_smoothing": train_hyp_payload.get("label_smoothing"),
+        "image_size": train_hyp_payload.get("image_size"),
+        "augmentation_policy": augmentation_payload.get("policy"),
+        "mixup_alpha": augmentation_payload.get("mixup"),
+        "cutmix_alpha": augmentation_payload.get("cutmix"),
+        "random_erasing_prob": augmentation_payload.get("random_erasing"),
+        "loss_name": loss_payload.get("name"),
+        "focal_gamma": train_hyp_payload.get("fl_gamma"),
+        "aux_logits": modules_payload.get("aux_logits"),
+        "width_multiple": model_recipe_payload.get("width_multiple"),
+        "pooling_type": head_config_payload.get("pooling_type"),
+        "classifier_dropout": head_config_payload.get("classifier_dropout"),
+        "neck_name": neck_component_payload.get("name"),
+        "head_name": head_component_payload.get("name"),
     }
     return {
         field_name: value
@@ -411,9 +370,6 @@ def _get_experiment_image_size(experiment: ExperimentModel) -> int | None:
     config_payload = experiment.experiment_config or {}
     train_hyp_payload = config_payload.get("train_hyp") or {}
     image_size = train_hyp_payload.get("image_size")
-    if not isinstance(image_size, int):
-        params_payload = config_payload.get("params") or {}
-        image_size = params_payload.get("image_size")
     return int(image_size) if isinstance(image_size, int) else None
 
 

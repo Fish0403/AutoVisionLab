@@ -2504,7 +2504,6 @@ const PROPOSAL_CHANGE_LABELS: Record<string, string> = {
   width_multiple: "Width",
   pooling_type: "Pooling",
   classifier_dropout: "Dropout",
-  backbone_name: "Backbone",
   neck_name: "Neck",
   head_name: "Head"
 };
@@ -2528,7 +2527,6 @@ const PROPOSAL_CHANGE_SHORT_LABELS: Record<string, string> = {
   width_multiple: "width",
   pooling_type: "pool",
   classifier_dropout: "drop",
-  backbone_name: "backbone",
   neck_name: "neck",
   head_name: "head"
 };

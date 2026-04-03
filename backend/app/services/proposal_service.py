@@ -63,24 +63,6 @@ def _contains_unsupported_text_hint(
     return None
 
 
-def _contains_non_basic_change(proposal: ProposalSchema) -> bool:
-    """Return whether the proposal changes include at least one non-basic search field."""
-    non_basic_fields = {
-        "augmentation_policy",
-        "mixup_alpha",
-        "cutmix_alpha",
-        "random_erasing_prob",
-        "loss_name",
-        "focal_gamma",
-        "aux_logits",
-        "backbone_name",
-        "neck_name",
-        "head_name",
-    }
-    proposal_changes = proposal.changes.model_dump()
-    return any(proposal_changes.get(field_name) is not None for field_name in non_basic_fields)
-
-
 def _build_retry_note(
     *,
     last_error: str | None,
@@ -189,8 +171,7 @@ def _load_followup_source_constraints(db: Session, run: RunModel) -> dict[str, A
         }
     config_payload = source_experiment.experiment_config or {}
     train_hyp_payload = config_payload.get("train_hyp") or {}
-    params_payload = config_payload.get("params") or {}
-    source_image_size = train_hyp_payload.get("image_size") or params_payload.get("image_size")
+    source_image_size = train_hyp_payload.get("image_size")
     return {
         "experiment_id": source_experiment.id,
         "image_size": source_image_size,
@@ -285,7 +266,7 @@ def generate_aihubmix_proposal(
         '"scheduler":"string|null","augmentation_policy":"string|null","mixup_alpha":"number|null",'
         '"cutmix_alpha":"number|null","random_erasing_prob":"number|null","loss_name":"string|null",'
         '"focal_gamma":"number|null","label_smoothing":"number|null","aux_logits":"boolean|null",'
-        '"backbone_name":"string|null","neck_name":"string|null","head_name":"string|null"},'
+        '"neck_name":"string|null","head_name":"string|null"},'
         '"train_hyp_changes":"object|null","recipe_changes":"object|null",'
         '"reason":"string","risk":"low|medium|high"}'
         "hypothesis and reason must be concise English. "

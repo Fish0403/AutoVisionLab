@@ -7,6 +7,8 @@
 - `Auto Train` 在同一个 `run` 内继续追加实验
 - 一个 `run` 固定一个数据集和一个模型
 - `AI` 只能在当前模型 `parameter_space` 声明的可编辑字段内搜索
+- 当前搜索状态由实验配置中的 `train_hyp` 和 `model_recipe` 投影得到
+- proposal 使用扁平 `changes` 字段表达本轮可搜索变更，键名必须落在白名单内
 - 前端不再要求用户手动勾选搜索维度
 - proposal 可以同时修改一个或多个字段，只要字段和值都合法
 - 若 proposal 修改 `image_size`，新值必须是正整数，且严格小于当前 source experiment 的 `image_size`
@@ -36,20 +38,41 @@
 
 ## 结构字段口径
 
-- 标准 torchvision 分类模型
-  - 主要使用 `neck_name`、`head_name`
-- `GoogLeNet`
-  - 主要使用 `aux_logits`
+- `train_hyp`
+  - `optimizer` -> `optimizer`
+  - `lr0` -> `learning_rate`
+  - `batch_size` -> `batch_size`
+  - `weight_decay` -> `weight_decay`
+  - `scheduler` -> `scheduler`
+  - `label_smoothing` -> `label_smoothing`
+  - `image_size` -> `image_size`
+  - `augmentation.policy` -> `augmentation_policy`
+  - `augmentation.mixup` -> `mixup_alpha`
+  - `augmentation.cutmix` -> `cutmix_alpha`
+  - `augmentation.random_erasing` -> `random_erasing_prob`
+  - `loss.name` -> `loss_name`
+  - `fl_gamma` -> `focal_gamma`
+- `model_recipe`
+  - `modules.aux_logits` -> `aux_logits`
+  - `components.neck.name` -> `neck_name`
+  - `components.head.name` -> `head_name`
 
-具体允许值以当前模型的 editable `parameter_space` 为准。
+## 分类模型口径
+
+- 标准 torchvision 分类模型
+  - 当前有效的模块搜索字段主要是 `neck_name`、`head_name`
+- `GoogLeNet`
+  - 当前有效的模块搜索字段主要是 `aux_logits`
+
+具体允许值和有效字段集合以当前模型的 `editable parameter_space` 为准。
 
 ## Proposal 约束
 
 - proposal 必须是结构化 JSON
 - proposal 必须通过 schema 校验
 - proposal 必须通过 parameter space 校验
+- proposal 的 `changes` 至少包含一个非空字段
 - proposal 必须能构建出当前训练器可接受的 follow-up config
-- proposal 不能为空
 
 ## 失败与重试
 

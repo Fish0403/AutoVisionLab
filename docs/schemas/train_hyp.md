@@ -6,7 +6,7 @@
 
 - 统一表达训练超参数、增强和 loss 相关配置
 - 作为当前分类训练链路的主训练参数对象
-- 作为 `ExperimentConfig.params` 的结构化替代视图
+- 为搜索、训练执行和结果归档提供统一训练配置来源
 
 ## 字段
 
@@ -45,9 +45,9 @@
   - `amp`
   - `grad_clip_norm`
 
-## 映射
+## 归一化参数快照
 
-`TrainHyp.to_experiment_params()` 会把结构化字段回填为旧的 `params` 视图，当前映射为：
+`TrainHyp.to_experiment_params()` 会把结构化字段投影为统一参数快照，当前映射为：
 
 - `optimizer` -> `optimizer`
 - `lr0` -> `learning_rate`
@@ -72,7 +72,6 @@
 - `scheduler`
 - `batch_size`
 - `image_size`
-- `dropout`
 - `label_smoothing`
 - `augmentation.mixup`
 - `augmentation.cutmix`
@@ -89,12 +88,14 @@
 - `loss.name`
   - `cross_entropy`、`cross_entropy_with_label_smoothing`、`focal_loss`
 - `image_size`
-  - 当前分类参数空间使用离散值
+  - 当前分类参数空间使用数值区间
 - `batch_size`
   - 当前分类参数空间使用离散值
 
-## 返回位置
+## 输出位置
 
 - `ExperimentConfig.train_hyp`
 - `ExperimentConfig.params`
 - 实验 result 的 `params` 字段
+
+其中 `ExperimentConfig.params` 和 result 内的 `params` 都是从 `train_hyp`、`model_recipe` 等结构化字段归一化得到的参数快照，不是主配置入口。

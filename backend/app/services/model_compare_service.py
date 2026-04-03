@@ -14,7 +14,7 @@ from app.core.settings import get_settings
 from app.db.session import SessionLocal
 from app.llm.aihubmix_client import AIHubMixClient
 from app.schemas.experiment import ExperimentCreateRequest
-from app.schemas.parameter_space import ExperimentConfig, SearchPolicy
+from app.schemas.parameter_space import ExperimentConfig, SearchPolicy, build_default_model_recipe
 from app.schemas.run import (
     ModelCompareCandidateResult,
     ModelCompareStartRequest,
@@ -266,29 +266,30 @@ def _build_compare_config(
     if parameter_space is None:
         raise ValueError(f"Parameter space not found for compare model {model_name}")
 
-    params_payload = base_config.params.model_dump()
+    compare_model_family = _infer_model_family(model_name)
+    compare_model_recipe = build_default_model_recipe(
+        model_name=model_name,
+        task_type=base_config.task_type,
+        model_family=compare_model_family,
+    )
     notes: list[str] = []
     if model_name == "googlenet":
-        if params_payload.get("aux_logits") not in {None, False}:
+        if base_config.use_aux_logits():
             notes.append("Forced aux_logits=False for fair cross-model comparison.")
-        params_payload["aux_logits"] = False
-    else:
-        params_payload["aux_logits"] = None
+        compare_model_recipe.modules["aux_logits"] = False
     if model_name in {"mobilenet_v3_small", "mobilenet_v3_large"}:
         notes.append("Disabled component search and used the default native recipe.")
 
-    compare_payload = {
-        "task_type": base_config.task_type,
-        "dataset": base_config.dataset,
-        "model_family": _infer_model_family(model_name),
-        "model_name": model_name,
-        "parameter_space_version": parameter_space.version,
-        "use_demo_mode": base_config.use_demo_mode,
-        "participates_in_ranking": base_config.participates_in_ranking,
-        "search_policy": _build_shared_search_policy().model_dump(),
-        "ranking_policy": base_config.ranking_policy.model_dump(),
-        "params": params_payload,
-    }
+    compare_payload = base_config.model_dump(mode="python")
+    compare_payload.update(
+        {
+            "model_family": compare_model_family,
+            "model_name": model_name,
+            "parameter_space_version": parameter_space.version,
+            "search_policy": _build_shared_search_policy().model_dump(),
+            "model_recipe": compare_model_recipe.model_dump(by_alias=True),
+        }
+    )
     return ExperimentConfig.model_validate(compare_payload), notes
 
 
@@ -526,7 +527,7 @@ def start_model_compare_task(request: ModelCompareStartRequest) -> ModelCompareT
     )
     created_at = _now_iso()
     ai_model_name = get_settings().aihubmix_model
-    training_image_size = request.config.train_hyp.image_size if request.config.train_hyp is not None else request.config.params.image_size
+    training_image_size = request.config.train_hyp.image_size
     dataset_summary = build_dataset_summary_text(
         get_local_dataset_summary(request.dataset),
         training_image_size=training_image_size,

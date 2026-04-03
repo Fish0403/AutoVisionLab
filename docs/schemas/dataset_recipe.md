@@ -6,6 +6,7 @@
 
 - 把数据集入口、切分和训练侧数据视图收敛成结构化对象
 - 为 `ExperimentConfig` 提供统一的数据集配置入口
+- 为训练器、历史持久化和任务回放提供稳定的数据集快照
 
 ## 字段
 
@@ -32,14 +33,16 @@
 - `metadata.image_size_options`
 - `metadata.notes`
 
-## 默认回填规则
+## 默认构造
 
-`ExperimentConfig` 在缺省 `dataset_recipe` 时会回填：
+当前代码提供默认 `dataset_recipe` 构造 helper，默认值为：
 
 - `source.root_dir = data/raw/<dataset>`
 - `splits.train_manifest = data/classification/<dataset>/train.txt`
 - `splits.val_manifest = data/classification/<dataset>/val.txt`
 - `splits.test_manifest = data/classification/<dataset>/test.txt`
+
+这些值表示默认构造结果；如果调用方显式提供字段，则以显式值为准。
 
 ## class_names 推断规则
 
@@ -51,6 +54,6 @@
 ## 当前校验口径
 
 - `task_type == classification`
-- `dataset_name` 非空
+- `dataset_name` 必须与 `ExperimentConfig.dataset` 保持一致
 - `train_manifest` 和 `val_manifest` 必须可配置
 - `class_names` 可以为空，但只有在已有 manifest 时才会被自动补全

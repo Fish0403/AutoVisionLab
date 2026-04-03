@@ -17,20 +17,19 @@ VENV_SITE_PACKAGES = next((REPO_ROOT / ".venv" / "lib").glob("python*/site-packa
 sys.path.insert(0, str(VENV_SITE_PACKAGES))
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
-from app.schemas.parameter_space import ExperimentConfig
+from app.schemas.parameter_space import (
+    ExperimentConfig,
+    ExperimentParams,
+    build_default_model_recipe,
+)
 from app.trainers.classification.base_trainer import BaseClassificationTrainer
+from tests.helpers.experiment_config_builders import build_default_dataset_recipe, build_train_hyp_from_params
 
 
 def _build_config_payload() -> dict[str, object]:
     """Build a minimal classification config payload for dataloader tests."""
-    return {
-        "task_type": "classification",
-        "dataset": "temp-dataset",
-        "model_family": "mobilenet",
-        "model_name": "mobilenet_v3_small",
-        "parameter_space_version": "mobilenet_v3_small@v1",
-        "use_demo_mode": False,
-        "params": {
+    params = ExperimentParams.model_validate(
+        {
             "optimizer": "adamw",
             "learning_rate": 0.003,
             "batch_size": 2,
@@ -48,7 +47,29 @@ def _build_config_payload() -> dict[str, object]:
             "loss_params": {"focal_gamma": 2.0},
             "label_smoothing": 0.1,
             "aux_logits": False,
-        },
+        }
+    )
+    return {
+        "task_type": "classification",
+        "dataset": "temp-dataset",
+        "model_family": "mobilenet",
+        "model_name": "mobilenet_v3_small",
+        "parameter_space_version": "mobilenet_v3_small@v1",
+        "use_demo_mode": False,
+        "params": params.model_dump(),
+        "model_recipe": build_default_model_recipe(
+            model_name="mobilenet_v3_small",
+            task_type="classification",
+            model_family="mobilenet",
+        ).model_dump(by_alias=True),
+        "train_hyp": build_train_hyp_from_params(
+            task_type="classification",
+            params=params,
+        ).model_dump(),
+        "dataset_recipe": build_default_dataset_recipe(
+            dataset_name="temp-dataset",
+            task_type="classification",
+        ).model_dump(),
     }
 
 

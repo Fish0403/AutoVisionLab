@@ -18,7 +18,11 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 import requests
 
-from app.schemas.parameter_space import ExperimentConfig
+from app.schemas.parameter_space import (
+    ExperimentConfig,
+    ExperimentParams,
+    build_default_model_recipe,
+)
 from app.schemas.run import AutoTrainStartRequest
 from app.llm.aihubmix_client import AIHubMixRequestError
 from app.services.auto_train_service import (
@@ -37,49 +41,76 @@ from app.services.auto_train_service import (
     stop_auto_train_task,
 )
 from app.services.parameter_space import get_parameter_space
+from tests.helpers.experiment_config_builders import build_default_dataset_recipe, build_train_hyp_from_params
+
+
+def _build_auto_train_config_payload(
+    *,
+    dataset_name: str | None = None,
+    model_family: str = "mobilenet",
+    model_name: str = "mobilenet_v3_small",
+    parameter_space_version: str = "mobilenet_v3_small@v1",
+    use_demo_mode: bool = True,
+) -> dict[str, object]:
+    """Build one minimal structured auto-train config payload for service tests."""
+    dataset_name = dataset_name or f"dataset_{uuid4().hex}"
+    params = ExperimentParams.model_validate(
+        {
+            "optimizer": "adamw",
+            "learning_rate": 0.003,
+            "batch_size": 64,
+            "image_size": 96,
+            "epochs": 10,
+            "weight_decay": 0.0001,
+            "scheduler": "cosine",
+            "augmentation_policy": "basic",
+            "augmentation_params": {
+                "mixup_alpha": 0.1,
+                "cutmix_alpha": 0.0,
+                "random_erasing_prob": 0.1,
+            },
+            "loss_name": "cross_entropy_with_label_smoothing",
+            "loss_params": {"focal_gamma": 2.0},
+            "label_smoothing": 0.1,
+            "aux_logits": True,
+        }
+    )
+    return {
+        "task_type": "classification",
+        "dataset": dataset_name,
+        "model_family": model_family,
+        "model_name": model_name,
+        "parameter_space_version": parameter_space_version,
+        "use_demo_mode": use_demo_mode,
+        "search_policy": {
+            "allow_basic_hparam_search": True,
+            "allowed_basic_hparam_fields": ["learning_rate", "image_size"],
+            "allow_strategy_search": False,
+            "allow_loss_search": True,
+            "allow_augmentation_search": True,
+            "allow_model_module_search": True,
+            "require_manual_approval_for_high_impact_changes": True,
+        },
+        "params": params.model_dump(),
+        "model_recipe": build_default_model_recipe(
+            model_name=model_name,
+            task_type="classification",
+            model_family=model_family,
+        ).model_dump(by_alias=True),
+        "train_hyp": build_train_hyp_from_params(
+            task_type="classification",
+            params=params,
+        ).model_dump(),
+        "dataset_recipe": build_default_dataset_recipe(
+            dataset_name=dataset_name,
+            task_type="classification",
+        ).model_dump(),
+    }
 
 
 def _build_auto_train_config(dataset_name: str | None = None) -> ExperimentConfig:
     """Build one minimal auto-train config payload for service tests."""
-    dataset_name = dataset_name or f"dataset_{uuid4().hex}"
-    return ExperimentConfig.model_validate(
-        {
-            "task_type": "classification",
-            "dataset": dataset_name,
-            "model_family": "mobilenet",
-            "model_name": "mobilenet_v3_small",
-            "parameter_space_version": "mobilenet_v3_small@v1",
-            "use_demo_mode": True,
-            "search_policy": {
-                "allow_basic_hparam_search": True,
-                "allowed_basic_hparam_fields": ["learning_rate", "image_size"],
-                "allow_strategy_search": False,
-                "allow_loss_search": True,
-                "allow_augmentation_search": True,
-                "allow_model_module_search": True,
-                "require_manual_approval_for_high_impact_changes": True,
-            },
-            "params": {
-                "optimizer": "adamw",
-                "learning_rate": 0.003,
-                "batch_size": 64,
-                "image_size": 96,
-                "epochs": 10,
-                "weight_decay": 0.0001,
-                "scheduler": "cosine",
-                "augmentation_policy": "basic",
-                "augmentation_params": {
-                    "mixup_alpha": 0.1,
-                    "cutmix_alpha": 0.0,
-                    "random_erasing_prob": 0.1,
-                },
-                "loss_name": "cross_entropy_with_label_smoothing",
-                "loss_params": {"focal_gamma": 2.0},
-                "label_smoothing": 0.1,
-                "aux_logits": True,
-            },
-        }
-    )
+    return ExperimentConfig.model_validate(_build_auto_train_config_payload(dataset_name=dataset_name))
 
 
 class AutoTrainServiceTest(unittest.TestCase):
@@ -92,56 +123,33 @@ class AutoTrainServiceTest(unittest.TestCase):
         AUTO_TRAIN_TASKS.clear()
 
     def test_build_followup_config_preserves_search_and_ranking_policies(self) -> None:
+        latest_config = _build_auto_train_config_payload(dataset_name="cifar10")
+        latest_config["parameter_space_version"] = "test-v1"
+        latest_config["participates_in_ranking"] = True
+        latest_config["search_policy"] = {
+            "allow_basic_hparam_search": True,
+            "allowed_basic_hparam_fields": ["learning_rate"],
+            "allow_strategy_search": False,
+            "allow_loss_search": True,
+            "allow_augmentation_search": False,
+            "allow_model_module_search": True,
+            "require_manual_approval_for_high_impact_changes": True,
+        }
+        latest_config["ranking_policy"] = {
+            "primary_metric": "top1_acc",
+            "primary_metric_mode": "max",
+            "min_primary_metric_improvement": 0.005,
+            "primary_metric_parity_epsilon": 0.0005,
+            "tie_breaker_metric": "val_loss",
+            "tie_breaker_mode": "min",
+            "min_tie_breaker_metric_improvement": 0.01,
+            "max_image_size": 64,
+        }
+        latest_config["train_hyp"]["batch_size"] = 32
+        latest_config["train_hyp"]["image_size"] = 32
+        latest_config["train_hyp"]["epochs"] = 1
         followup_config = _build_followup_config(
-            latest_experiment={
-                "config": {
-                    "task_type": "classification",
-                    "dataset": "cifar10",
-                    "model_family": "mobilenet",
-                    "model_name": "mobilenet_v3_small",
-                    "parameter_space_version": "test-v1",
-                    "use_demo_mode": True,
-                    "participates_in_ranking": True,
-                    "search_policy": {
-                        "allow_basic_hparam_search": True,
-                        "allowed_basic_hparam_fields": ["learning_rate"],
-                        "allow_strategy_search": False,
-                        "allow_loss_search": True,
-                        "allow_augmentation_search": False,
-                        "allow_model_module_search": True,
-                        "require_manual_approval_for_high_impact_changes": True,
-                    },
-                    "ranking_policy": {
-                        "primary_metric": "top1_acc",
-                        "primary_metric_mode": "max",
-                        "min_primary_metric_improvement": 0.005,
-                        "primary_metric_parity_epsilon": 0.0005,
-                        "tie_breaker_metric": "val_loss",
-                        "tie_breaker_mode": "min",
-                        "min_tie_breaker_metric_improvement": 0.01,
-                        "max_image_size": 64,
-                    },
-                    "params": {
-                        "optimizer": "adamw",
-                        "learning_rate": 0.003,
-                        "batch_size": 32,
-                        "image_size": 32,
-                        "epochs": 1,
-                        "weight_decay": 0.0001,
-                        "scheduler": "cosine",
-                        "augmentation_policy": "basic",
-                        "augmentation_params": {
-                            "mixup_alpha": 0.0,
-                            "cutmix_alpha": 0.0,
-                            "random_erasing_prob": 0.0,
-                        },
-                        "loss_name": "cross_entropy_with_label_smoothing",
-                        "loss_params": {"focal_gamma": 2.0},
-                        "label_smoothing": 0.1,
-                        "aux_logits": False,
-                    },
-                }
-            },
+            latest_experiment={"config": ExperimentConfig.model_validate(latest_config).model_dump(mode="python")},
             proposal_payload={"changes": {"learning_rate": 0.001}},
         )
 
@@ -156,35 +164,18 @@ class AutoTrainServiceTest(unittest.TestCase):
         self.assertTrue(followup_config["search_policy"]["allow_model_module_search"])
 
     def test_build_followup_config_maps_aux_logits_to_model_recipe(self) -> None:
+        latest_config = _build_auto_train_config_payload(
+            dataset_name="cifar10",
+            model_family="googlenet",
+            model_name="googlenet",
+            parameter_space_version="test-v1",
+        )
+        latest_config["train_hyp"]["batch_size"] = 32
+        latest_config["train_hyp"]["image_size"] = 32
+        latest_config["train_hyp"]["epochs"] = 1
+        latest_config["model_recipe"]["modules"] = {"aux_logits": False}
         followup_config = _build_followup_config(
-            latest_experiment={
-                "config": {
-                    "task_type": "classification",
-                    "dataset": "cifar10",
-                    "model_family": "googlenet",
-                    "model_name": "googlenet",
-                    "parameter_space_version": "test-v1",
-                    "params": {
-                        "optimizer": "adamw",
-                        "learning_rate": 0.003,
-                        "batch_size": 32,
-                        "image_size": 32,
-                        "epochs": 1,
-                        "weight_decay": 0.0001,
-                        "scheduler": "cosine",
-                        "augmentation_policy": "basic",
-                        "augmentation_params": {
-                            "mixup_alpha": 0.0,
-                            "cutmix_alpha": 0.0,
-                            "random_erasing_prob": 0.0,
-                        },
-                        "loss_name": "cross_entropy_with_label_smoothing",
-                        "loss_params": {"focal_gamma": 2.0},
-                        "label_smoothing": 0.1,
-                        "aux_logits": False,
-                    },
-                }
-            },
+            latest_experiment={"config": ExperimentConfig.model_validate(latest_config).model_dump(mode="python")},
             proposal_payload={"changes": {"aux_logits": True}},
         )
 
@@ -192,35 +183,18 @@ class AutoTrainServiceTest(unittest.TestCase):
         self.assertTrue(followup_config["params"]["aux_logits"])
 
     def test_build_followup_config_prefers_structured_change_views(self) -> None:
+        latest_config = _build_auto_train_config_payload(
+            dataset_name="cifar10",
+            model_family="googlenet",
+            model_name="googlenet",
+            parameter_space_version="test-v1",
+        )
+        latest_config["train_hyp"]["batch_size"] = 32
+        latest_config["train_hyp"]["image_size"] = 32
+        latest_config["train_hyp"]["epochs"] = 1
+        latest_config["model_recipe"]["modules"] = {"aux_logits": False}
         followup_config = _build_followup_config(
-            latest_experiment={
-                "config": {
-                    "task_type": "classification",
-                    "dataset": "cifar10",
-                    "model_family": "googlenet",
-                    "model_name": "googlenet",
-                    "parameter_space_version": "test-v1",
-                    "params": {
-                        "optimizer": "adamw",
-                        "learning_rate": 0.003,
-                        "batch_size": 32,
-                        "image_size": 32,
-                        "epochs": 1,
-                        "weight_decay": 0.0001,
-                        "scheduler": "cosine",
-                        "augmentation_policy": "basic",
-                        "augmentation_params": {
-                            "mixup_alpha": 0.0,
-                            "cutmix_alpha": 0.0,
-                            "random_erasing_prob": 0.0,
-                        },
-                        "loss_name": "cross_entropy_with_label_smoothing",
-                        "loss_params": {"focal_gamma": 2.0},
-                        "label_smoothing": 0.1,
-                        "aux_logits": False,
-                    },
-                }
-            },
+            latest_experiment={"config": ExperimentConfig.model_validate(latest_config).model_dump(mode="python")},
             proposal_payload={
                 "changes": {
                     "learning_rate": 0.009,
@@ -247,33 +221,12 @@ class AutoTrainServiceTest(unittest.TestCase):
     def test_build_followup_config_normalizes_head_name_recipe_compatibility(self) -> None:
         dataset_name = f"dataset_{uuid4().hex}"
         latest_config = ExperimentConfig.model_validate(
-            {
-                "task_type": "classification",
-                "dataset": dataset_name,
-                "model_family": "resnet",
-                "model_name": "resnet18",
-                "parameter_space_version": "resnet18@v1",
-                "use_demo_mode": True,
-                "params": {
-                    "optimizer": "adamw",
-                    "learning_rate": 0.003,
-                    "batch_size": 64,
-                    "image_size": 96,
-                    "epochs": 10,
-                    "weight_decay": 0.0001,
-                    "scheduler": "cosine",
-                    "augmentation_policy": "basic",
-                    "augmentation_params": {
-                        "mixup_alpha": 0.0,
-                        "cutmix_alpha": 0.0,
-                        "random_erasing_prob": 0.0,
-                    },
-                    "loss_name": "cross_entropy_with_label_smoothing",
-                    "loss_params": {"focal_gamma": 2.0},
-                    "label_smoothing": 0.1,
-                    "aux_logits": False,
-                },
-            }
+            _build_auto_train_config_payload(
+                dataset_name=dataset_name,
+                model_family="resnet",
+                model_name="resnet18",
+                parameter_space_version="resnet18@v1",
+            )
         )
 
         followup_config = _build_followup_config(
@@ -295,33 +248,12 @@ class AutoTrainServiceTest(unittest.TestCase):
     def test_validate_followup_proposal_rejects_builder_incompatible_recipe_changes(self) -> None:
         dataset_name = f"dataset_{uuid4().hex}"
         latest_config = ExperimentConfig.model_validate(
-            {
-                "task_type": "classification",
-                "dataset": dataset_name,
-                "model_family": "resnet",
-                "model_name": "resnet18",
-                "parameter_space_version": "resnet18@v1",
-                "use_demo_mode": True,
-                "params": {
-                    "optimizer": "adamw",
-                    "learning_rate": 0.003,
-                    "batch_size": 64,
-                    "image_size": 96,
-                    "epochs": 10,
-                    "weight_decay": 0.0001,
-                    "scheduler": "cosine",
-                    "augmentation_policy": "basic",
-                    "augmentation_params": {
-                        "mixup_alpha": 0.0,
-                        "cutmix_alpha": 0.0,
-                        "random_erasing_prob": 0.0,
-                    },
-                    "loss_name": "cross_entropy_with_label_smoothing",
-                    "loss_params": {"focal_gamma": 2.0},
-                    "label_smoothing": 0.1,
-                    "aux_logits": False,
-                },
-            }
+            _build_auto_train_config_payload(
+                dataset_name=dataset_name,
+                model_family="resnet",
+                model_name="resnet18",
+                parameter_space_version="resnet18@v1",
+            )
         )
 
         with (
