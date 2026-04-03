@@ -23,7 +23,7 @@ artifacts/
   - 保存该 `run` 的过程日志和实验子目录
 - `artifacts/runs/<run_id>/run.log`
   - `run` 级文本日志
-  - 记录实验创建、训练开始、训练结果、proposal 摘要等事件
+  - 记录实验创建、训练开始、训练结果和 proposal 摘要等事件
 - `artifacts/runs/<run_id>/llm.jsonl`
   - `run` 级 LLM 交互日志
   - 记录 `proposal_request`、`proposal_response`、`proposal_error`
@@ -54,16 +54,3 @@ artifacts/
   - `llm.jsonl`
 - [backend/app/services/persistence.py](../backend/app/services/persistence.py)
   - 清理 `run` / `experiment` 产物
-
-## 数据目录
-
-```text
-data/
-  raw/
-    <dataset_name>/
-  classification/
-    <dataset_name>/
-      train.txt
-      val.txt
-      test.txt
-```

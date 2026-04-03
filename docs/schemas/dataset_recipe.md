@@ -4,8 +4,8 @@
 
 ## 作用
 
-- 把数据集入口、切分和任务路径收敛成结构化对象
-- 当前分类训练链路使用它保存数据集视图
+- 把数据集入口、切分和训练侧数据视图收敛成结构化对象
+- 为 `ExperimentConfig` 提供统一的数据集配置入口
 
 ## 字段
 
@@ -32,33 +32,25 @@
 - `metadata.image_size_options`
 - `metadata.notes`
 
-## 当前分类口径
+## 默认回填规则
 
-- 分类训练使用 manifest 文件
-- manifest 每行格式为 `relative/path/to/image<TAB>class_name`
-- `ExperimentConfig` 在缺省 `dataset_recipe` 时会回填：
-  - `source.root_dir = data/raw/<dataset>`
-  - `splits.train_manifest = data/classification/<dataset>/train.txt`
-  - `splits.val_manifest = data/classification/<dataset>/val.txt`
-  - `splits.test_manifest = data/classification/<dataset>/test.txt`
-- 如果 `class_names` 为空，系统会从已有 manifest 推断
+`ExperimentConfig` 在缺省 `dataset_recipe` 时会回填：
 
-## 当前数据目录
+- `source.root_dir = data/raw/<dataset>`
+- `splits.train_manifest = data/classification/<dataset>/train.txt`
+- `splits.val_manifest = data/classification/<dataset>/val.txt`
+- `splits.test_manifest = data/classification/<dataset>/test.txt`
 
-```text
-data/
-  raw/
-    <dataset_name>/
-  classification/
-    <dataset_name>/
-      train.txt
-      val.txt
-      test.txt
-```
+## class_names 推断规则
+
+- 如果 `class_names` 已显式提供，直接使用
+- 如果 `class_names` 为空，系统会尝试从已有 manifest 推断
+- 当前会读取 `train_manifest`、`val_manifest`，以及存在时的 `test_manifest`
+- 如果这些 manifest 都不可用，则 `class_names` 保持为空
 
 ## 当前校验口径
 
 - `task_type == classification`
 - `dataset_name` 非空
-- `class_names` 非空或可从 manifest 推断
-- `train_manifest` 和 `val_manifest` 可用
+- `train_manifest` 和 `val_manifest` 必须可配置
+- `class_names` 可以为空，但只有在已有 manifest 时才会被自动补全

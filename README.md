@@ -15,11 +15,14 @@
 
 </div>
 
-Industrial vision model optimization still involves a lot of manual work: tuning parameters, running experiments, checking results, and iterating again. The real cost is often not the problem itself, but the repetition, scattered comparisons, and constant tool switching.
+Industrial vision model optimization still involves a lot of manual work: tuning parameters, running experiments, checking results, and iterating again. The real cost is often not the problem itself, but the repetition, scattered comparisons, and constant tool switching. AutoVisionLab focuses on that repetitive part of the workflow. It brings AI into the training and experimentation loop so results are collected, structured, and fed into a shared analysis flow.
 
-AutoVisionLab focuses on that repetitive part of the workflow. It brings AI into the training and experimentation loop so results are collected, structured, and fed into a shared analysis flow. The system compares past runs, summarizes trends, and suggests the next direction to explore.
+Engineers still define the goals, constraints, and acceptance criteria, while AI handles the repetitive but necessary analysis and iteration work. The system compares past runs, summarizes trends, suggests the next direction to explore, and keeps the whole process easier to trace, compare, and build on over time.
 
-Engineers still define the goals, constraints, and acceptance criteria, while AI handles the repetitive but necessary analysis and iteration work. The result is a workflow that is easier to trace, compare, and build on over time.
+## Current Capabilities
+
+- Compare: Used for multi-model baseline comparison and focused review of key metric differences
+- Search: Continues searching for better configurations based on experiment history, while tracking each iteration and the current best path
 
 ![Task page](docs/screenshots/task.png)
 
