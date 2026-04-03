@@ -108,5 +108,5 @@ Default endpoints:
 
 This project is licensed under the [Apache License 2.0](LICENSE).
 
-[If you find this project useful, feel free to star the repository:]
+If you find this project useful, feel free to star the repository ⭐
 [![Star on GitHub](https://img.shields.io/badge/Star_on_GitHub-AutoVisionLab-181717?style=for-the-badge&logo=github)](https://github.com/Fish0403/AutoVisionLab)
