@@ -101,6 +101,7 @@ class AutoTrainTaskResponse(BaseModel):
     created_at: str | None = None
     updated_at: str | None = None
     activity_message: str | None = None
+    proposal_warning: str | None = None
     dataset_summary: str | None = None
     training_image_size: int | None = None
     ai_model_name: str | None = None

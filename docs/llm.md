@@ -83,11 +83,18 @@
 - 严格遵循 `ProposalSchema`
 - `task_type` 固定为 `classification`
 - `model_name` 不可修改
-- `epochs` 不可修改
+- `epochs` 是否可修改取决于当前 run 的 `search_policy`
 - `changes` 至少包含一个非空字段
 - `hypothesis` 和 `reason` 使用简洁英文
 - 只能使用当前参数空间和白名单字段
 - 结合整个 run 的历史，而不是只看最后一轮
+- 涉及增强时应直接使用当前有效字段和取值，例如 `augmentation_policy=none/basic`、`mixup_alpha`、`cutmix_alpha`、`random_erasing_prob`
+
+补充说明：
+
+- 当 `search_policy` 未开放 `epochs` 时，prompt 会明确要求模型不要修改 `epochs`
+- 当 `search_policy` 开放 `epochs` 时，prompt 会允许模型调整 `epochs`，并要求把它当作 `training budget` 变化来解释
+- 若 proposal 因字段不在白名单、值不合法或 follow-up config 校验失败被拒绝，拒绝原因会作为 `Previous rejection reason` 回喂给下一次请求
 
 ### 传给模型的数据
 
@@ -115,7 +122,7 @@
   "task_type": "classification",
   "model_name": "mobilenet_v3_small",
   "based_on_experiment_ids": ["exp_001", "exp_003"],
-  "hypothesis": "A slightly lower learning rate with stronger regularization may improve validation stability.",
+  "hypothesis": "A slightly lower learning rate with higher weight decay may improve validation stability.",
   "changes": {
     "optimizer": null,
     "learning_rate": 0.0005,
@@ -248,7 +255,7 @@
 
 ```text
 [2026-04-02T08:00:00] [proposal-meta] attempt=1 | history_items=4 | prompt_chars=8124 | prompt_tokens_estimate=2140
-[2026-04-02T08:00:05] [proposal] based_on=exp_001,exp_003 | changed_fields=["learning_rate","weight_decay","scheduler"] | prompt_tokens_estimate=2140 | provider_usage={"prompt_tokens":2140,"completion_tokens":312,"total_tokens":2452} | hypothesis=A slightly lower learning rate with stronger regularization may improve validation stability. | changes={"learning_rate":0.0005,"weight_decay":0.0001,"scheduler":"cosine"} | reason=The current best result already sits in a stable range, so a more conservative tuning step is a reasonable next move.
+[2026-04-02T08:00:05] [proposal] based_on=exp_001,exp_003 | changed_fields=["learning_rate","weight_decay","scheduler"] | prompt_tokens_estimate=2140 | provider_usage={"prompt_tokens":2140,"completion_tokens":312,"total_tokens":2452} | hypothesis=A slightly lower learning rate with higher weight decay may improve validation stability. | changes={"learning_rate":0.0005,"weight_decay":0.0001,"scheduler":"cosine"} | reason=The current best result already sits in a stable range, so a more conservative tuning step is a reasonable next move.
 ```
 
 ### `compare summary` 日志示例

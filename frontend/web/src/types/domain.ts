@@ -118,6 +118,7 @@ export interface AutoTrainTask {
   created_at?: string | null;
   updated_at?: string | null;
   activity_message?: string | null;
+  proposal_warning?: string | null;
   dataset_summary?: string | null;
   training_image_size?: number | null;
   ai_model_name?: string | null;

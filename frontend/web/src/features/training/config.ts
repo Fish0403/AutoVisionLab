@@ -57,6 +57,7 @@ export interface TrainingFormValues {
   modelName: SupportedModelName;
   compareCandidateModels: SupportedModelName[];
   useDemoMode: boolean;
+  allowEpochSearch: boolean;
   optimizer: "adamw" | "adam" | "sgd";
   learningRate: number;
   batchSize: number;
@@ -73,6 +74,7 @@ export function defaultFormValues(dataset: string): TrainingFormValues {
     modelName: "mobilenet_v3_small",
     compareCandidateModels: [...COMPARE_CANDIDATE_MODELS],
     useDemoMode: true,
+    allowEpochSearch: false,
     optimizer: "adamw",
     learningRate: 0.003,
     batchSize: 64,
@@ -129,7 +131,7 @@ export function getDatasetBaselineImageSize(datasets: DatasetSummary[], datasetN
   return getDatasetImageOptions(datasets, datasetName)[0] ?? 64;
 }
 
-export function buildSearchPolicy() {
+export function buildSearchPolicy(allowEpochSearch = false) {
   return {
     allow_basic_hparam_search: true,
     allowed_basic_hparam_fields: [
@@ -139,7 +141,8 @@ export function buildSearchPolicy() {
       "weight_decay",
       "scheduler",
       "label_smoothing",
-      "image_size"
+      "image_size",
+      ...(allowEpochSearch ? ["epochs"] : [])
     ],
     allow_strategy_search: false,
     allow_loss_search: true,
@@ -167,6 +170,9 @@ export function buildExperimentConfig(
   imageSize: number,
   parameterSpaceVersion: string,
   modelName?: SupportedModelName,
+  options?: {
+    allowEpochSearch?: boolean;
+  }
 ) {
   const effectiveModelName = modelName ?? values.modelName;
   const modelFamily = getModelFamily(effectiveModelName);
@@ -178,7 +184,7 @@ export function buildExperimentConfig(
     parameter_space_version: parameterSpaceVersion,
     use_demo_mode: values.useDemoMode,
     participates_in_ranking: true,
-    search_policy: buildSearchPolicy(),
+    search_policy: buildSearchPolicy(Boolean(options?.allowEpochSearch)),
     ranking_policy: buildRankingPolicy(),
     model_recipe: {
       version: "model_recipe@v1",

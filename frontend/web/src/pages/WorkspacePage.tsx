@@ -51,6 +51,8 @@ const MODEL_FAMILY_LABELS: Record<(typeof MODEL_FAMILY_ORDER)[number], string> =
   resnet: "ResNet",
   googlenet: "GoogLeNet"
 };
+const DEMO_TOGGLE_TOOLTIP = "Use a smaller deterministic subset for quicker local testing.";
+const EPOCH_SEARCH_TOOLTIP = "Allow Auto Train to adjust epochs as part of the search.";
 const SEARCH_TREND_METRICS = [
   { metricName: "top1_acc", label: "Top1 Acc", color: "#2b59ff", axis: "left" as const, family: "accuracy" as const, defaultVisible: true },
   { metricName: "val_loss", label: "Val Loss", color: "#d9485f", axis: "right" as const, family: "loss" as const, defaultVisible: true },
@@ -357,7 +359,9 @@ export function WorkspacePage() {
         source_task_id: isSearchFromCompareContext ? selectedTaskId : null,
         source_task_title: isSearchFromCompareContext ? currentCompareTask?.title ?? null : null,
         source_model_name: isSearchFromCompareContext ? selectedCompareCandidate?.modelName ?? formValues.modelName : null,
-        config: buildExperimentConfig(formValues, baselineImageSize, parameterSpace.version),
+        config: buildExperimentConfig(formValues, baselineImageSize, parameterSpace.version, undefined, {
+          allowEpochSearch: formValues.allowEpochSearch
+        }),
         parameter_space: parameterSpace
       });
       await Promise.all([
@@ -506,7 +510,27 @@ export function WorkspacePage() {
               <h2>Parameters</h2>
             </div>
             <div className="form-grid">
-              <FormField label="Dataset">
+              <FormField
+                label="Dataset"
+                labelAccessory={
+                  <span className="field-label-accessory">
+                    <label className="inline-checkbox inline-checkbox-compact" title={DEMO_TOGGLE_TOOLTIP}>
+                      <input
+                        aria-label={DEMO_TOGGLE_TOOLTIP}
+                        checked={formValues.useDemoMode}
+                        onChange={(event) =>
+                          setFormValues((previous) => ({
+                            ...previous,
+                            useDemoMode: event.target.checked
+                          }))
+                        }
+                        type="checkbox"
+                      />
+                      <span>Demo</span>
+                    </label>
+                  </span>
+                }
+              >
                 <select
                   disabled={!isDatasetSelectorReady}
                   value={formValues.dataset}
@@ -572,20 +596,6 @@ export function WorkspacePage() {
                   onChange={(event) => setFormValues((previous) => ({ ...previous, learningRate: Number(event.target.value) }))}
                 />
               </FormField>
-              <FormField label="Demo Mode">
-                <select
-                  value={formValues.useDemoMode ? "true" : "false"}
-                  onChange={(event) =>
-                    setFormValues((previous) => ({
-                      ...previous,
-                      useDemoMode: event.target.value === "true"
-                    }))
-                  }
-                >
-                  <option value="true">Enabled</option>
-                  <option value="false">Disabled</option>
-                </select>
-              </FormField>
             </div>
           </div>
 
@@ -609,31 +619,45 @@ export function WorkspacePage() {
                 Search
               </button>
             </div>
-            {hasCompareBackLink ? (
-              <div className="search-model-link-row">
-                <span className="workspace-label">Model</span>
-                {useModeSwitchBackToCompare ? (
-                  <button
-                    className="text-button"
-                    onClick={() => handleModeSelect("compare")}
-                    type="button"
-                  >
-                    Back to Compare
-                  </button>
-                ) : (
-                  <Link
-                    className="text-button"
-                    to={`/workspace?taskId=${compareSourceTaskId}&taskType=model_compare`}
-                  >
-                    Back to Compare
-                  </Link>
-                )}
-              </div>
-            ) : null}
             {controlMode === "search" ? (
               <>
                 {hasCompareBackLink ? (
                   <div className="form-field">
+                    <div className="search-model-link-row">
+                      <span className="workspace-label">Model</span>
+                      <div className="search-model-link-actions">
+                        <label className="inline-checkbox inline-checkbox-compact" title={EPOCH_SEARCH_TOOLTIP}>
+                          <input
+                            aria-label={EPOCH_SEARCH_TOOLTIP}
+                            checked={formValues.allowEpochSearch}
+                            onChange={(event) =>
+                              setFormValues((previous) => ({
+                                ...previous,
+                                allowEpochSearch: event.target.checked
+                              }))
+                            }
+                            type="checkbox"
+                          />
+                          <span>Search epochs</span>
+                        </label>
+                        {useModeSwitchBackToCompare ? (
+                          <button
+                            className="text-button"
+                            onClick={() => handleModeSelect("compare")}
+                            type="button"
+                          >
+                            Back to Compare
+                          </button>
+                        ) : (
+                          <Link
+                            className="text-button"
+                            to={`/workspace?taskId=${compareSourceTaskId}&taskType=model_compare`}
+                          >
+                            Back to Compare
+                          </Link>
+                        )}
+                      </div>
+                    </div>
                     <div className="model-select-grid">
                       <select
                         aria-label="Model family"
@@ -675,7 +699,27 @@ export function WorkspacePage() {
                     </div>
                   </div>
                 ) : (
-                  <FormField label="Model">
+                  <FormField
+                    label="Model"
+                    labelAccessory={
+                      <span className="field-label-accessory">
+                        <label className="inline-checkbox inline-checkbox-compact" title={EPOCH_SEARCH_TOOLTIP}>
+                          <input
+                            aria-label={EPOCH_SEARCH_TOOLTIP}
+                            checked={formValues.allowEpochSearch}
+                            onChange={(event) =>
+                              setFormValues((previous) => ({
+                                ...previous,
+                                allowEpochSearch: event.target.checked
+                              }))
+                            }
+                            type="checkbox"
+                          />
+                          <span>Search epochs</span>
+                        </label>
+                      </span>
+                    }
+                  >
                     <div className="model-select-grid">
                       <select
                         aria-label="Model family"
@@ -1076,16 +1120,6 @@ function WarningNoticeIcon() {
         strokeWidth="1.5"
       />
       <path d="M8 6v3.7M8 11.9h.01" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="1.5" />
-    </svg>
-  );
-}
-
-function LoadingDotsIcon() {
-  return (
-    <svg aria-hidden="true" className="progress-inline-icon progress-inline-icon-loading" viewBox="0 0 16 16">
-      <circle cx="3.5" cy="8" r="1.25" fill="currentColor" />
-      <circle cx="8" cy="8" r="1.25" fill="currentColor" />
-      <circle cx="12.5" cy="8" r="1.25" fill="currentColor" />
     </svg>
   );
 }
@@ -2459,6 +2493,10 @@ function buildTaskWarningNotice(task: AutoTrainTask | null) {
   if (!task || task.status === "failed") {
     return null;
   }
+  const proposalWarning = task.proposal_warning?.trim() ?? "";
+  if (proposalWarning) {
+    return proposalWarning;
+  }
   const activityMessage = task.activity_message?.trim() ?? "";
   if (!/retry/i.test(activityMessage)) {
     return null;
@@ -2485,52 +2523,6 @@ function buildTaskWarningNotice(task: AutoTrainTask | null) {
   return `Request failed. Retrying in ${delayText}${attemptText}.`;
 }
 
-const PROPOSAL_CHANGE_LABELS: Record<string, string> = {
-  optimizer: "Optimizer",
-  learning_rate: "LR",
-  batch_size: "Batch Size",
-  image_size: "Image Size",
-  epochs: "Epochs",
-  weight_decay: "Weight Decay",
-  scheduler: "Scheduler",
-  augmentation_policy: "Augmentation",
-  mixup_alpha: "Mixup",
-  cutmix_alpha: "CutMix",
-  random_erasing_prob: "Random Erasing",
-  loss_name: "Loss",
-  focal_gamma: "Focal Gamma",
-  label_smoothing: "Label Smoothing",
-  aux_logits: "Aux Logits",
-  width_multiple: "Width",
-  pooling_type: "Pooling",
-  classifier_dropout: "Dropout",
-  neck_name: "Neck",
-  head_name: "Head"
-};
-
-const PROPOSAL_CHANGE_SHORT_LABELS: Record<string, string> = {
-  optimizer: "opt",
-  learning_rate: "lr",
-  batch_size: "bs",
-  image_size: "img",
-  epochs: "ep",
-  weight_decay: "wd",
-  scheduler: "sch",
-  augmentation_policy: "aug",
-  mixup_alpha: "mix",
-  cutmix_alpha: "cut",
-  random_erasing_prob: "re",
-  loss_name: "loss",
-  focal_gamma: "fg",
-  label_smoothing: "ls",
-  aux_logits: "aux",
-  width_multiple: "width",
-  pooling_type: "pool",
-  classifier_dropout: "drop",
-  neck_name: "neck",
-  head_name: "head"
-};
-
 const PROPOSAL_CHANGE_SHORT_VALUE_LABELS: Record<string, string> = {
   cross_entropy: "ce",
   cross_entropy_with_label_smoothing: "ce+ls",
@@ -2555,9 +2547,7 @@ function describeProposalChangeSummary(proposal: ProposalSnapshot | null) {
   if (!proposal) {
     return null;
   }
-  const changedFields = Object.entries(proposal.changes ?? {})
-    .filter(([, value]) => value !== null && value !== undefined)
-    .map(([fieldName]) => PROPOSAL_CHANGE_LABELS[fieldName] ?? fieldName.replace(/_/g, " "));
+  const changedFields = collectStructuredProposalChangeEntries(proposal).map((entry) => entry.path);
   if (!changedFields.length) {
     return null;
   }
@@ -2568,16 +2558,52 @@ function describeCompactProposalChanges(proposal: ProposalSnapshot | null) {
   if (!proposal) {
     return null;
   }
-  const changedFields = Object.entries(proposal.changes ?? {})
-    .filter(([, value]) => value !== null && value !== undefined)
-    .map(([fieldName, value]) => {
-      const fieldLabel = PROPOSAL_CHANGE_SHORT_LABELS[fieldName] ?? fieldName;
-      return `${fieldLabel} ${formatCompactProposalValue(value)}`;
-    });
+  const changedFields = collectStructuredProposalChangeEntries(proposal).map((entry) => {
+    return `${entry.path} ${formatCompactProposalValue(entry.value)}`;
+  });
   if (!changedFields.length) {
     return null;
   }
   return changedFields.join(" | ");
+}
+
+function collectStructuredProposalChangeEntries(proposal: ProposalSnapshot) {
+  const structuredEntries = [
+    ...flattenChangeTree(proposal.train_hyp_changes, ["train_hyp"]),
+    ...flattenChangeTree(proposal.recipe_changes, ["model_recipe"])
+  ];
+  if (structuredEntries.length > 0) {
+    return structuredEntries;
+  }
+  return Object.entries(proposal.changes ?? {})
+    .filter(([, value]) => value !== null && value !== undefined)
+    .map(([fieldName, value]) => ({ path: fieldName, value }));
+}
+
+function flattenChangeTree(changeTree: unknown, pathParts: string[] = []): Array<{ path: string; value: unknown }> {
+  if (!isPlainObject(changeTree)) {
+    return [];
+  }
+  const flattenedEntries: Array<{ path: string; value: unknown }> = [];
+  for (const [fieldName, value] of Object.entries(changeTree)) {
+    if (value === null || value === undefined) {
+      continue;
+    }
+    const nextPathParts = [...pathParts, fieldName];
+    if (isPlainObject(value)) {
+      const nestedEntries = flattenChangeTree(value, nextPathParts);
+      if (nestedEntries.length > 0) {
+        flattenedEntries.push(...nestedEntries);
+      }
+      continue;
+    }
+    flattenedEntries.push({ path: nextPathParts.join("."), value });
+  }
+  return flattenedEntries;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function formatCompactProposalValue(value: unknown) {

@@ -33,11 +33,12 @@ PARAMETER_SPACES = {
     "resnet50": RESNET50_PARAMETER_SPACE,
 }
 
-AI_BLOCKED_PROPOSAL_FIELDS = {"epochs"}
+AI_BLOCKED_PROPOSAL_FIELDS: set[str] = set()
 BASIC_HPARAM_SEARCH_FIELDS = {
     "optimizer",
     "learning_rate",
     "batch_size",
+    "epochs",
     "weight_decay",
     "scheduler",
     "label_smoothing",
@@ -80,6 +81,12 @@ def get_allowed_ai_search_fields(
         else:
             allowed_fields.update(MODEL_MODULE_SEARCH_FIELDS)
     return allowed_fields - AI_BLOCKED_PROPOSAL_FIELDS
+
+
+def is_epoch_search_enabled(search_policy: SearchPolicy | None) -> bool:
+    """Return whether the current policy explicitly allows epoch search."""
+    policy = search_policy or SearchPolicy()
+    return policy.allow_basic_hparam_search and "epochs" in set(policy.allowed_basic_hparam_fields)
 
 
 def build_full_search_policy(parameter_space: EditableParameterSpace | None) -> SearchPolicy:

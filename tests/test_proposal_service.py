@@ -27,6 +27,10 @@ def _build_parameter_space() -> EditableParameterSpace:
             "model_name": "mobilenet_v3_small",
             "version": "test-v1",
             "editable_params": {
+                "epochs": {
+                    "type": "discrete_values",
+                    "choices": [10, 20, 30],
+                },
                 "label_smoothing": {
                     "type": "number_range",
                     "min": 0.0,
@@ -298,15 +302,19 @@ class ProposalServiceTest(unittest.TestCase):
             )
 
         first_prompt = mock_client.create_json_completion_with_metadata.call_args.kwargs["user_prompt"]
+        system_prompt = mock_client.create_json_completion_with_metadata.call_args.kwargs["system_prompt"]
         self.assertIn("Previous full-proposal rejection", first_prompt)
         self.assertIn("image_size must stay within dataset bounds", first_prompt)
-        self.assertIn("strictly smaller than the current source experiment image_size", first_prompt)
+        self.assertIn("Prefer a smaller value than the current source experiment image_size", first_prompt)
+        self.assertIn("Do not change epochs; epochs is fixed and the AI is not allowed to adjust it.", first_prompt)
+        self.assertIn("augmentation_policy=none/basic", system_prompt)
+        self.assertIn("mixup_alpha", system_prompt)
 
-    def test_generate_aihubmix_proposal_retries_when_image_size_does_not_shrink(self) -> None:
+    def test_generate_aihubmix_proposal_accepts_larger_image_size_when_allowed(self) -> None:
         db = Mock()
         db.get.return_value = SimpleNamespace(
             id="run_1",
-            name="image-size-retry",
+            name="image-size-preference",
             dataset="cifar10",
             model_name="mobilenet_v3_small",
             baseline_experiment_id="exp_keep",
@@ -317,32 +325,75 @@ class ProposalServiceTest(unittest.TestCase):
             {"id": "exp_keep", "status": "success", "decision": "keep"},
         ]
         mock_client = Mock()
-        mock_client.create_json_completion_with_metadata.side_effect = [
-            (
-                {
-                    "task_type": "classification",
-                    "model_name": "mobilenet_v3_small",
-                    "based_on_experiment_ids": ["exp_keep"],
-                    "hypothesis": "Try a larger image size.",
-                    "changes": {"image_size": 128},
-                    "reason": "Probe a bigger crop.",
-                    "risk": "medium",
-                },
-                {},
+        mock_client.create_json_completion_with_metadata.return_value = (
+            {
+                "task_type": "classification",
+                "model_name": "mobilenet_v3_small",
+                "based_on_experiment_ids": ["exp_keep"],
+                "hypothesis": "Try a larger image size.",
+                "changes": {"image_size": 128},
+                "reason": "Probe a bigger crop that is still inside the allowed search space.",
+                "risk": "medium",
+            },
+            {},
+        )
+
+        with (
+            patch("app.services.proposal_service.get_run_history_payload", return_value=experiment_history),
+            patch(
+                "app.services.proposal_service._load_latest_search_policy",
+                return_value=SearchPolicy(
+                    allow_basic_hparam_search=True,
+                    allowed_basic_hparam_fields=["image_size"],
+                    allow_strategy_search=False,
+                    allow_loss_search=False,
+                    allow_augmentation_search=False,
+                    allow_model_module_search=False,
+                ),
             ),
-            (
-                {
-                    "task_type": "classification",
-                    "model_name": "mobilenet_v3_small",
-                    "based_on_experiment_ids": ["exp_keep"],
-                    "hypothesis": "Try a smaller image size.",
-                    "changes": {"image_size": 64},
-                    "reason": "Reduce compute while staying within the current source bound.",
-                    "risk": "low",
-                },
-                {},
+            patch(
+                "app.services.proposal_service._load_latest_parameter_space",
+                return_value=_build_parameter_space(),
             ),
+            patch(
+                "app.services.proposal_service._load_followup_source_constraints",
+                return_value={"experiment_id": "exp_keep", "image_size": 96},
+            ),
+            patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
+            patch("app.services.proposal_service.append_run_log"),
+        ):
+            proposal = generate_aihubmix_proposal(db, "run_1")
+
+        self.assertEqual(proposal.changes.image_size, 128)
+        mock_client.create_json_completion_with_metadata.assert_called_once()
+
+    def test_generate_aihubmix_proposal_accepts_concrete_regularization_wording(self) -> None:
+        db = Mock()
+        db.get.return_value = SimpleNamespace(
+            id="run_1",
+            name="text-hint-precision",
+            dataset="cifar10",
+            model_name="mobilenet_v3_small",
+            baseline_experiment_id="exp_keep",
+            best_experiment_id="exp_keep",
+            frontier_experiment_id="exp_keep",
+        )
+        experiment_history = [
+            {"id": "exp_keep", "status": "success", "decision": "keep"},
         ]
+        mock_client = Mock()
+        mock_client.create_json_completion_with_metadata.return_value = (
+            {
+                "task_type": "classification",
+                "model_name": "mobilenet_v3_small",
+                "based_on_experiment_ids": ["exp_keep"],
+                "hypothesis": "A slightly lower learning rate with higher weight decay may improve stability.",
+                "changes": {"weight_decay": 0.0005},
+                "reason": "Keep the plan simple while using the current best result as the baseline.",
+                "risk": "low",
+            },
+            {},
+        )
 
         with (
             patch("app.services.proposal_service.get_run_history_payload", return_value=experiment_history),
@@ -360,12 +411,10 @@ class ProposalServiceTest(unittest.TestCase):
         ):
             proposal = generate_aihubmix_proposal(db, "run_1")
 
-        self.assertEqual(proposal.changes.image_size, 64)
-        self.assertEqual(mock_client.create_json_completion_with_metadata.call_count, 2)
-        second_prompt = mock_client.create_json_completion_with_metadata.call_args_list[1].kwargs["user_prompt"]
-        self.assertIn("image_size must be smaller than the current source experiment exp_keep value 96: 128", second_prompt)
+        self.assertEqual(proposal.changes.weight_decay, 0.0005)
+        mock_client.create_json_completion_with_metadata.assert_called_once()
 
-    def test_generate_aihubmix_proposal_ignores_disabled_run_search_policy(self) -> None:
+    def test_generate_aihubmix_proposal_respects_disabled_run_search_policy(self) -> None:
         db = Mock()
         db.get.return_value = SimpleNamespace(
             id="run_1",
@@ -416,10 +465,68 @@ class ProposalServiceTest(unittest.TestCase):
             ),
             patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
         ):
+            with self.assertRaisesRegex(ValueError, "No AI-editable fields are available for this run."):
+                generate_aihubmix_proposal(db, "run_1")
+
+        mock_client.create_json_completion_with_metadata.assert_not_called()
+
+    def test_generate_aihubmix_proposal_allows_epoch_changes_when_search_policy_enables_it(self) -> None:
+        db = Mock()
+        db.get.return_value = SimpleNamespace(
+            id="run_1",
+            name="epoch-search-enabled",
+            dataset="cifar10",
+            model_name="mobilenet_v3_small",
+            baseline_experiment_id="exp_keep",
+            best_experiment_id="exp_keep",
+            frontier_experiment_id="exp_keep",
+        )
+        experiment_history = [
+            {"id": "exp_keep", "status": "success", "decision": "keep"},
+        ]
+        mock_client = Mock()
+        mock_client.create_json_completion_with_metadata.return_value = (
+            {
+                "task_type": "classification",
+                "model_name": "mobilenet_v3_small",
+                "based_on_experiment_ids": ["exp_keep"],
+                "hypothesis": "Train longer to confirm whether the current direction keeps improving.",
+                "changes": {"epochs": 20},
+                "reason": "Use a larger training budget for the next attempt.",
+                "risk": "low",
+            },
+            {},
+        )
+
+        with (
+            patch("app.services.proposal_service.get_run_history_payload", return_value=experiment_history),
+            patch(
+                "app.services.proposal_service._load_latest_search_policy",
+                return_value=SearchPolicy(
+                    allow_basic_hparam_search=True,
+                    allowed_basic_hparam_fields=["epochs"],
+                    allow_strategy_search=False,
+                    allow_loss_search=False,
+                    allow_augmentation_search=False,
+                    allow_model_module_search=False,
+                ),
+            ),
+            patch(
+                "app.services.proposal_service._load_latest_parameter_space",
+                return_value=_build_parameter_space(),
+            ),
+            patch(
+                "app.services.proposal_service._load_followup_source_constraints",
+                return_value={"experiment_id": "exp_keep", "image_size": 96},
+            ),
+            patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
+            patch("app.services.proposal_service.append_run_log"),
+        ):
             proposal = generate_aihubmix_proposal(db, "run_1")
 
-        self.assertEqual(proposal.changes.weight_decay, 0.0005)
-        mock_client.create_json_completion_with_metadata.assert_called_once()
+        self.assertEqual(proposal.changes.epochs, 20)
+        prompt = mock_client.create_json_completion_with_metadata.call_args.kwargs["user_prompt"]
+        self.assertIn("You may change epochs when it is helpful", prompt)
 
 
 if __name__ == "__main__":

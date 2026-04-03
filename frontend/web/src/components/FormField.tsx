@@ -3,15 +3,19 @@ import type { ReactNode } from "react";
 interface FormFieldProps {
   label: string;
   hint?: string;
+  labelAccessory?: ReactNode;
   children: ReactNode;
 }
 
-export function FormField({ label, hint, children }: FormFieldProps) {
+export function FormField({ label, hint, labelAccessory, children }: FormFieldProps) {
   return (
-    <label className="form-field">
-      <span className="field-label">{label}</span>
+    <div className="form-field">
+      <span className="field-label-row">
+        <span className="field-label">{label}</span>
+        {labelAccessory}
+      </span>
       {children}
       {hint ? <span className="field-hint">{hint}</span> : null}
-    </label>
+    </div>
   );
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from typing import Any, Callable
 
 from sqlalchemy import select
@@ -15,9 +16,9 @@ from app.models.run import RunModel
 from app.schemas.ai import ProposalChanges, ProposalSchema
 from app.schemas.parameter_space import EditableParameterSpace, SearchPolicy
 from app.services.parameter_space import (
-    build_full_search_policy,
     explain_proposal_rejection,
     get_allowed_ai_search_fields,
+    is_epoch_search_enabled,
 )
 from app.services.run_logging import append_run_llm_event, append_run_log
 
@@ -49,16 +50,33 @@ def _contains_unsupported_text_hint(
 ) -> str | None:
     """Return one unsupported textual hint if the proposal text references unavailable options."""
     combined_text = f"{proposal.hypothesis} {proposal.reason}".lower()
-    unsupported_tokens = {
-        "medium": "augmentation_policy",
-        "strong": "augmentation_policy",
-        "autoaugment": "augmentation_policy",
-        "augmentation_level": "augmentation_policy",
+    unsupported_patterns = {
+        r"\baugmentation_level\b": ("augmentation_policy", "augmentation_level"),
+        r"\b(?:augmentation[_\s-]*policy|policy)\s*(?:=|:)?\s*[\"']?medium\b": (
+            "augmentation_policy",
+            "medium",
+        ),
+        r"\b(?:augmentation[_\s-]*policy|policy)\s*(?:=|:)?\s*[\"']?strong\b": (
+            "augmentation_policy",
+            "strong",
+        ),
+        r"\b(?:augmentation[_\s-]*policy|policy)\s*(?:=|:)?\s*[\"']?autoaugment\b": (
+            "augmentation_policy",
+            "autoaugment",
+        ),
+        r"\"augmentation_policy\"\s*:\s*\"(medium|strong|autoaugment)\"": (
+            "augmentation_policy",
+            None,
+        ),
     }
     augmentation_definition = allowed_field_definitions.get("augmentation_policy") or {}
     allowed_augmentation_choices = set(augmentation_definition.get("choices") or [])
-    for token, field_name in unsupported_tokens.items():
-        if token in combined_text and token not in allowed_augmentation_choices:
+    for pattern, (field_name, token_override) in unsupported_patterns.items():
+        match = re.search(pattern, combined_text)
+        if match is None:
+            continue
+        token = token_override or match.group(1)
+        if token not in allowed_augmentation_choices:
             return f"text mentions unsupported {field_name} option: {token}"
     return None
 
@@ -134,7 +152,10 @@ def get_run_history_payload(db: Session, run_id: str) -> list[dict[str, Any]]:
     return [_summarize_experiment_for_prompt(experiment, run) for experiment in experiments]
 
 
-def _load_latest_search_policy(db: Session, run_id: str) -> SearchPolicy:
+def _load_latest_search_policy(
+    db: Session,
+    run_id: str,
+) -> SearchPolicy:
     """Load the latest experiment search policy for a run."""
     latest_experiment = db.scalars(
         select(ExperimentModel).where(ExperimentModel.run_id == run_id).order_by(ExperimentModel.created_at.desc())
@@ -142,7 +163,10 @@ def _load_latest_search_policy(db: Session, run_id: str) -> SearchPolicy:
     if latest_experiment is None:
         return SearchPolicy()
     config_payload = latest_experiment.experiment_config or {}
-    return SearchPolicy.model_validate(config_payload.get("search_policy") or {})
+    raw_search_policy = config_payload.get("search_policy")
+    if raw_search_policy is None:
+        return SearchPolicy()
+    return SearchPolicy.model_validate(raw_search_policy)
 
 
 def _load_latest_parameter_space(db: Session, run_id: str) -> EditableParameterSpace | None:
@@ -178,23 +202,6 @@ def _load_followup_source_constraints(db: Session, run: RunModel) -> dict[str, A
     }
 
 
-def _explain_dynamic_proposal_rejection(
-    proposal: ProposalSchema,
-    *,
-    source_constraints: dict[str, Any],
-) -> str | None:
-    """Return one dynamic rejection reason that depends on current run state."""
-    proposed_image_size = proposal.changes.image_size
-    source_image_size = source_constraints.get("image_size")
-    if proposed_image_size is not None and isinstance(source_image_size, int):
-        if proposed_image_size >= source_image_size:
-            return (
-                "image_size must be smaller than the current source experiment "
-                f"{source_constraints.get('experiment_id') or 'unknown'} value {source_image_size}: {proposed_image_size}"
-            )
-    return None
-
-
 def sanitize_disallowed_proposal_fields(
     proposal: ProposalSchema,
     search_policy: SearchPolicy,
@@ -209,6 +216,16 @@ def sanitize_disallowed_proposal_fields(
         for key, value in changes_payload.items()
     }
     return proposal.model_copy(update={"changes": ProposalChanges.model_validate(sanitized_changes)})
+
+
+def _build_epoch_policy_instruction(search_policy: SearchPolicy) -> str:
+    """Return one prompt instruction that matches the current epoch-search policy."""
+    if is_epoch_search_enabled(search_policy):
+        return (
+            "You may change epochs when it is helpful, but treat epochs as training budget rather than a pure strategy field. "
+            "If you change epochs, make sure the hypothesis and reason describe that budget tradeoff clearly. "
+        )
+    return "Do not change epochs; epochs is fixed and the AI is not allowed to adjust it. "
 
 
 def generate_aihubmix_proposal(
@@ -240,7 +257,7 @@ def generate_aihubmix_proposal(
     }
     source_constraints = _load_followup_source_constraints(db, run)
     parameter_space = _load_latest_parameter_space(db, run_id)
-    search_policy = build_full_search_policy(parameter_space)
+    search_policy = _load_latest_search_policy(db, run_id)
     allowed_fields = sorted(get_allowed_ai_search_fields(search_policy, parameter_space=parameter_space))
     if not allowed_fields:
         raise ValueError("No AI-editable fields are available for this run.")
@@ -277,7 +294,9 @@ def generate_aihubmix_proposal(
         "based_on_experiment_ids must list the experiment ids you actually used as evidence and may contain multiple ids. "
         "At least one field in changes must be non-null; never return an empty proposal. "
         "You may change one or multiple fields, but every field and value must come strictly from the current parameter space. "
-        "hypothesis and reason may only discuss fields and values that truly exist in the current parameter space; do not invent unsupported options such as medium, strong, or autoaugment."
+        "hypothesis and reason may only discuss fields and values that truly exist in the current parameter space. "
+        "When discussing augmentation, name the concrete fields and legal values directly, such as augmentation_policy=none/basic, "
+        "mixup_alpha, cutmix_alpha, and random_erasing_prob. Do not invent extra augmentation preset names."
     )
     retry_feedback_prompt = (
         f"Previous full-proposal rejection:\n{json.dumps(retry_feedback, ensure_ascii=True)}\n"
@@ -295,13 +314,14 @@ def generate_aihubmix_proposal(
         "Generate the next proposal for the same run. "
         "task_type must remain classification. "
         "Do not change model_name. "
-        "Do not change epochs; epochs is fixed and the AI is not allowed to adjust it. "
+        f"{_build_epoch_policy_instruction(search_policy)}"
         "Only modify fields listed in Allowed AI change fields. "
         "Every value must strictly follow Allowed field definitions. "
         "Only propose structured parameter changes. "
         "If the current parameter space enables component-level search, prefer neck_name and head_name over old fine-grained recipe fields. "
         "Do not decide only from the last round; use the full run history and keep optimizing around the current best by default. "
-        "If you change image_size, it must stay a positive integer and be strictly smaller than the current source experiment image_size. "
+        "If you change image_size, it must stay a positive integer within the allowed parameter space. "
+        "Prefer a smaller value than the current source experiment image_size when that keeps the next step more efficient, but this is a search preference rather than a hard rule. "
         "You may choose the next search direction freely, but do not mechanically repeat nearly identical suggestions from the most recent rounds."
     )
     client = AIHubMixClient()
@@ -402,13 +422,6 @@ def generate_aihubmix_proposal(
         rejection_reason = explain_proposal_rejection(proposal, search_policy, parameter_space=parameter_space)
         if rejection_reason is not None:
             last_error = f"Proposal contains blocked parameter changes: {rejection_reason}"
-            continue
-        dynamic_rejection_reason = _explain_dynamic_proposal_rejection(
-            proposal,
-            source_constraints=source_constraints,
-        )
-        if dynamic_rejection_reason is not None:
-            last_error = f"Proposal violates run-time search rules: {dynamic_rejection_reason}"
             continue
         append_run_log(
             run_id,

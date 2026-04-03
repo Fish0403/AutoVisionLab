@@ -19,6 +19,7 @@ from app.llm.aihubmix_client import AIHubMixClient, AIHubMixRequestError
 from app.schemas.experiment import ExperimentCreateRequest
 from app.schemas.parameter_space import (
     ExperimentConfig,
+    SearchPolicy,
     apply_model_recipe_change_payload,
     apply_proposal_changes_to_model_recipe,
     apply_train_hyp_change_payload,
@@ -28,7 +29,7 @@ from app.schemas.parameter_space import (
 )
 from app.schemas.run import AutoTrainStartRequest, AutoTrainTaskResponse, RunCreateRequest, TaskHistoryItemResponse
 from app.services.dataset_service import build_dataset_summary_text, get_local_dataset_summary
-from app.services.parameter_space import build_full_search_policy
+from app.services.parameter_space import is_epoch_search_enabled
 from app.services.persistence import (
     clear_run_records,
     create_experiment,
@@ -253,12 +254,14 @@ def _normalize_auto_train_history_summary(task: dict) -> str | None:
     return None
 
 
-def _build_search_scope_summary(parameter_space: object) -> str:
-    """Build one compact search-scope label from the model parameter space."""
-    effective_policy = build_full_search_policy(parameter_space)
+def _build_search_scope_summary(search_policy: object) -> str:
+    """Build one compact search-scope label from the active search policy."""
+    effective_policy = SearchPolicy.model_validate(search_policy or {})
     categories: list[str] = []
     if effective_policy.allow_basic_hparam_search:
         categories.append("Basic")
+    if is_epoch_search_enabled(effective_policy):
+        categories.append("Training Budget")
     if effective_policy.allow_loss_search:
         categories.append("Loss")
     if effective_policy.allow_augmentation_search:
@@ -477,7 +480,9 @@ def _generate_auto_train_proposal(
                 validation_error = proposal_validator(proposal)
                 if validation_error:
                     retry_feedback = validation_error
+                    _update_task(task_id, proposal_warning=validation_error)
                     raise ValueError(validation_error)
+            _update_task(task_id, proposal_warning=None)
             return proposal
         except AutoTrainStoppedError:
             raise
@@ -485,6 +490,7 @@ def _generate_auto_train_proposal(
             if not _is_retryable_proposal_error(error):
                 raise
             retry_feedback = str(error)
+            _update_task(task_id, proposal_warning=str(error))
             retry_delay_seconds = _build_proposal_retry_delay_seconds(attempt_index)
             _append_task_log(
                 task_id,
@@ -885,7 +891,7 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
             "rounds": [],
             "current_proposal": None,
         }
-        _update_task(task_id, summary=summary)
+        _update_task(task_id, summary=summary, proposal_warning=None)
         _append_task_log(task_id, f"Baseline finished: {summary['baseline']['summary']}")
         if baseline_detail["status"] != "success":
             baseline_snapshot = summary["baseline"]
@@ -908,6 +914,7 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
             _update_task(task_id, current_round=round_index)
             _append_task_log(task_id, f"Round {round_index}: generating AI proposal")
             _set_activity_message(task_id, f"Generating proposal for round {round_index}")
+            _update_task(task_id, proposal_warning=None)
             proposal = _generate_auto_train_proposal(
                 task_id,
                 run_id,
@@ -1014,11 +1021,19 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
             current_experiment_id=None,
             stop_reason=stop_reason,
             summary=summary_payload,
+            proposal_warning=None,
             activity_message=stop_reason,
         )
         _append_task_log(task_id, "Auto train stopped by user request")
     except Exception as error:
-        _update_task(task_id, status="failed", error=str(error), current_experiment_id=None, activity_message=str(error))
+        _update_task(
+            task_id,
+            status="failed",
+            error=str(error),
+            current_experiment_id=None,
+            proposal_warning=None,
+            activity_message=str(error),
+        )
         _append_task_log(task_id, f"Auto train failed: {error}")
         error_detail = getattr(error, "response", None)
         if error_detail is not None and getattr(error_detail, "text", None):
@@ -1043,7 +1058,7 @@ def start_auto_train_task(request: AutoTrainStartRequest) -> AutoTrainTaskRespon
         "dataset": request.dataset,
         "model_name": request.model_name,
         "policy_preset": request.policy_preset,
-        "search_scope_summary": _build_search_scope_summary(request.parameter_space),
+        "search_scope_summary": _build_search_scope_summary(request.config.search_policy),
         "run_id": request.run_id,
         "source_task_type": request.source_task_type,
         "source_task_id": request.source_task_id,
@@ -1055,6 +1070,7 @@ def start_auto_train_task(request: AutoTrainStartRequest) -> AutoTrainTaskRespon
         "created_at": created_at,
         "updated_at": created_at,
         "activity_message": "Queued and waiting to validate the dataset",
+        "proposal_warning": None,
         "dataset_summary": dataset_summary,
         "training_image_size": training_image_size,
         "ai_model_name": ai_model_name,

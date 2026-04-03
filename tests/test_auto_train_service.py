@@ -28,6 +28,7 @@ from app.llm.aihubmix_client import AIHubMixRequestError
 from app.services.auto_train_service import (
     AUTO_TRAIN_TASKS,
     _build_auto_train_summary_prompt,
+    _build_search_scope_summary,
     _ensure_no_active_task,
     _build_followup_config,
     _generate_auto_train_proposal,
@@ -395,6 +396,21 @@ class AutoTrainServiceTest(unittest.TestCase):
         )
         self.assertIn("Proposal attempt failed (attempt 1)", AUTO_TRAIN_TASKS[task_id]["logs"][0])
         self.assertIn("image_size must stay within dataset bounds", AUTO_TRAIN_TASKS[task_id]["logs"][0])
+        self.assertIsNone(AUTO_TRAIN_TASKS[task_id]["proposal_warning"])
+
+    def test_build_search_scope_summary_marks_training_budget_when_epochs_are_searchable(self) -> None:
+        scope_summary = _build_search_scope_summary(
+            {
+                "allow_basic_hparam_search": True,
+                "allowed_basic_hparam_fields": ["learning_rate", "epochs"],
+                "allow_strategy_search": False,
+                "allow_loss_search": True,
+                "allow_augmentation_search": True,
+                "allow_model_module_search": True,
+            }
+        )
+
+        self.assertEqual(scope_summary, "Basic / Training Budget / Loss / Data Augmentation / Architecture")
 
     def test_normalize_auto_train_history_summary_prefers_task_error(self) -> None:
         summary = _normalize_auto_train_history_summary(
