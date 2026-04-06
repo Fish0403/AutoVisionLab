@@ -63,6 +63,21 @@ class RunMetricsResponse(BaseModel):
     points: list[PointMetric]
 
 
+class RunTrendSeries(BaseModel):
+    """One metric series inside a run-level trend payload."""
+
+    metric_name: str
+    points: list[PointMetric]
+
+
+class RunTrendResponse(BaseModel):
+    """Trend chart payload for one run across multiple metrics."""
+
+    run_id: str
+    available_metrics: list[str]
+    series: list[RunTrendSeries]
+
+
 class AutoTrainStartRequest(BaseModel):
     """Request payload for starting one background auto-train task."""
 

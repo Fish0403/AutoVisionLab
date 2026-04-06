@@ -23,7 +23,7 @@ from app.schemas.common import PointMetric
 from app.schemas.experiment import ExperimentCreateRequest, ExperimentDetailResponse, ExperimentSummary
 from app.schemas.parameter_space import EditableParameterSpace, ExperimentConfig
 from app.schemas.ranking_policy import RankingMetricMode, RankingPolicy
-from app.schemas.run import RunCreateRequest, RunDetailResponse, RunListItem, RunMetricsResponse, RunSummaryResponse
+from app.schemas.run import RunCreateRequest, RunDetailResponse, RunListItem, RunMetricsResponse, RunSummaryResponse, RunTrendResponse, RunTrendSeries
 
 
 def _get_artifact_root() -> Path:
@@ -524,6 +524,56 @@ def get_run_metrics(db: Session, run_id: str, metric_name: str) -> RunMetricsRes
         metric_name=metric_name,
         available_metrics=sorted(available_metrics),
         points=points,
+    )
+
+
+def get_run_trend(db: Session, run_id: str, metric_names: list[str] | None = None) -> RunTrendResponse | None:
+    """Aggregate multiple metric series for one run in a single snapshot."""
+    run = db.get(RunModel, run_id)
+    if run is None:
+        return None
+
+    experiments = db.scalars(
+        select(ExperimentModel).where(ExperimentModel.run_id == run_id).order_by(ExperimentModel.created_at.asc())
+    ).all()
+    resource_metric_names = {"training_seconds", "latency_ms", "parameter_count_million"}
+    available_metrics = {"train_loss", "val_loss", "top1_acc", "best_epoch", *resource_metric_names}
+    requested_metric_names = metric_names or ["top1_acc", "val_loss", "train_loss", "latency_ms", "best_epoch"]
+    points_by_metric_name: dict[str, list[PointMetric]] = {
+        metric_name: [] for metric_name in requested_metric_names
+    }
+
+    for index, experiment in enumerate(experiments, start=1):
+        result = db.scalar(select(ResultModel).where(ResultModel.experiment_id == experiment.id))
+        if result is None:
+            continue
+        available_metrics.update(result.metrics.keys())
+        available_metrics.update(
+            key for key, value in result.resource.items() if isinstance(value, (int, float))
+        )
+        for metric_name in requested_metric_names:
+            if metric_name in resource_metric_names:
+                metric_value = result.resource.get(metric_name)
+            else:
+                metric_value = result.metrics.get(metric_name)
+            if isinstance(metric_value, (int, float)):
+                points_by_metric_name[metric_name].append(
+                    PointMetric(
+                        experiment_id=experiment.id,
+                        experiment_index=index,
+                        metric_name=metric_name,
+                        metric_value=float(metric_value),
+                    )
+                )
+
+    return RunTrendResponse(
+        run_id=run_id,
+        available_metrics=sorted(available_metrics),
+        series=[
+            RunTrendSeries(metric_name=metric_name, points=points)
+            for metric_name, points in points_by_metric_name.items()
+            if points
+        ],
     )
 
 

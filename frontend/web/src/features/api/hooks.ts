@@ -11,6 +11,7 @@ import type {
   RunDetail,
   RunListItem,
   RunSummary,
+  RunTrendPayload,
   TaskHistoryItem
 } from "../../types/domain";
 
@@ -71,6 +72,17 @@ export function useRunMetrics(runId: string | null, metricName = "top1_acc") {
   return useQuery({
     queryKey: ["run-metrics", runId, metricName],
     queryFn: () => getJson<MetricsPayload>(`/runs/${runId}/metrics?metric_name=${metricName}`),
+    enabled: Boolean(runId),
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
+    refetchInterval: 2000
+  });
+}
+
+export function useRunTrend(runId: string | null) {
+  return useQuery({
+    queryKey: ["run-trend", runId],
+    queryFn: () => getJson<RunTrendPayload>(`/runs/${runId}/trend`),
     enabled: Boolean(runId),
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,

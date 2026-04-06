@@ -38,6 +38,7 @@ from app.services.persistence import (
     create_run,
     get_run_detail,
     get_run_summary,
+    get_run_trend,
     save_experiment_result,
     clear_all_records,
     clear_run_records,
@@ -275,7 +276,7 @@ class RunPromotionPolicyTest(unittest.TestCase):
         ids, best_experiment_id = self._create_run_with_two_results(
             baseline_top1_acc=0.8000,
             baseline_val_loss=0.5000,
-            candidate_top1_acc=0.8010,
+            candidate_top1_acc=0.8009,
             candidate_val_loss=0.4950,
         )
 
@@ -331,6 +332,63 @@ class RunPromotionPolicyTest(unittest.TestCase):
         )
 
         self.assertEqual(best_experiment_id, ids["candidate_id"])
+
+    def test_run_trend_returns_all_metric_series_in_one_snapshot(self) -> None:
+        parameter_space = get_parameter_space("mobilenet_v3_small")
+        assert parameter_space is not None
+        experiment_config = _build_experiment_config(parameter_space.version)
+
+        with SessionLocal() as db:
+            run = create_run(
+                db,
+                RunCreateRequest(
+                    name=f"trend-test-{uuid4().hex[:8]}",
+                    dataset="cifar10",
+                    model_name="mobilenet_v3_small",
+                    base_config=experiment_config,
+                    notes=None,
+                ),
+            )
+            for top1_acc, val_loss, train_loss, best_epoch in [
+                (0.8000, 0.5000, 0.6000, 1),
+                (0.8110, 0.4700, 0.5600, 2),
+            ]:
+                experiment = create_experiment(
+                    db,
+                    ExperimentCreateRequest(
+                        run_id=run.id,
+                        config=experiment_config,
+                        parameter_space=parameter_space,
+                        proposal=None,
+                    ),
+                )
+                assert experiment is not None
+                result_payload = _build_result(
+                    top1_acc=top1_acc,
+                    val_loss=val_loss,
+                    experiment_config=experiment_config,
+                    run_id=run.id,
+                    experiment_id=experiment.id,
+                ).model_dump()
+                result_payload["metrics"]["train_loss"] = train_loss
+                result_payload["metrics"]["best_epoch"] = best_epoch
+                result_payload["resource"]["latency_ms"] = 7.5 - best_epoch
+                save_experiment_result(db, experiment.id, ResultSchema.model_validate(result_payload))
+
+            trend = get_run_trend(db, run.id)
+            assert trend is not None
+
+        self.assertEqual(trend.run_id, run.id)
+        self.assertIn("top1_acc", trend.available_metrics)
+        self.assertIn("latency_ms", trend.available_metrics)
+        series_by_metric = {item.metric_name: item for item in trend.series}
+        self.assertEqual(len(series_by_metric["top1_acc"].points), 2)
+        self.assertEqual(len(series_by_metric["val_loss"].points), 2)
+        self.assertEqual(len(series_by_metric["train_loss"].points), 2)
+        self.assertEqual(len(series_by_metric["best_epoch"].points), 2)
+        self.assertEqual(len(series_by_metric["latency_ms"].points), 2)
+        self.assertEqual(series_by_metric["top1_acc"].points[1].experiment_index, 2)
+        self.assertEqual(series_by_metric["latency_ms"].points[1].metric_value, 5.5)
 
     def test_val_loss_gain_at_top1_parity_promotes(self) -> None:
         ids, best_experiment_id = self._create_run_with_two_results(
@@ -537,7 +595,7 @@ class RunPromotionPolicyTest(unittest.TestCase):
         self.assertEqual(run_policy.max_changed_fields_after_stagnation, 2)
         self.assertEqual(ranking_policy.primary_metric, "top1_acc")
         self.assertEqual(ranking_policy.tie_breaker_metric, "val_loss")
-        self.assertEqual(ranking_policy.min_primary_metric_improvement, 0.01)
+        self.assertEqual(ranking_policy.min_primary_metric_improvement, 0.001)
         self.assertEqual(ranking_policy.min_tie_breaker_metric_improvement, 0.01)
 
     def test_max_image_size_gate_blocks_promotion(self) -> None:

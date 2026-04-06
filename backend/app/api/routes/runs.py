@@ -18,6 +18,7 @@ from app.schemas.run import (
     RunListItem,
     RunMetricsResponse,
     RunSummaryResponse,
+    RunTrendResponse,
     TaskHistoryItemResponse,
     TaskTitleUpdateRequest,
 )
@@ -39,7 +40,16 @@ from app.services.model_compare_service import (
     stop_model_compare_task,
     update_model_compare_task_title,
 )
-from app.services.persistence import clear_all_records, clear_run_records, create_run, get_run_detail, get_run_metrics, get_run_summary, list_runs
+from app.services.persistence import (
+    clear_all_records,
+    clear_run_records,
+    create_run,
+    get_run_detail,
+    get_run_metrics,
+    get_run_summary,
+    get_run_trend,
+    list_runs,
+)
 from app.services.proposal_service import generate_aihubmix_proposal, test_aihubmix_connection
 
 
@@ -155,6 +165,15 @@ def get_metrics(run_id: str, metric_name: str = "top1_acc", db: Session = Depend
     if metrics is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return build_success_response(metrics, message="Run metrics loaded.")
+
+
+@router.get("/{run_id}/trend", response_model=ApiResponse[RunTrendResponse])
+def get_trend(run_id: str, db: Session = Depends(get_db_session)) -> ApiResponse[RunTrendResponse]:
+    """Return a multi-metric trend snapshot for one run."""
+    trend = get_run_trend(db=db, run_id=run_id)
+    if trend is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return build_success_response(trend, message="Run trend loaded.")
 
 
 @router.get("/{run_id}/summary", response_model=ApiResponse[RunSummaryResponse])

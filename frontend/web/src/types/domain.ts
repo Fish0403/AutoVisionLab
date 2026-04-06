@@ -64,6 +64,20 @@ export interface MetricsPayload {
   }>;
 }
 
+export interface RunTrendPayload {
+  run_id: string;
+  available_metrics: string[];
+  series: Array<{
+    metric_name: string;
+    points: Array<{
+      experiment_id: string;
+      experiment_index: number;
+      metric_name: string;
+      metric_value: number;
+    }>;
+  }>;
+}
+
 export interface ExperimentDetail {
   id: string;
   run_id: string;

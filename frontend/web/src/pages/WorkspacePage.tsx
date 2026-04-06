@@ -1,4 +1,4 @@
-import { useQueries, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Link, useOutletContext, useSearchParams } from "react-router-dom";
 
@@ -13,6 +13,7 @@ import {
   useParameterSpace,
   useRenameTaskTitle,
   useRunDetail,
+  useRunTrend,
   useStartAutoTrain,
   useStartModelCompare,
   useStopAutoTrain,
@@ -31,13 +32,12 @@ import {
   type SupportedModelName,
   type TrainingFormValues
 } from "../features/training/config";
-import { getJson } from "../lib/api";
 import { readLocalStorage, writeLocalStorage } from "../lib/storage";
 import type {
   AutoTrainTask,
-  MetricsPayload,
   ModelCompareCandidateResult,
   ModelCompareTask,
+  RunTrendPayload,
 } from "../types/domain";
 
 const SELECTED_TASK_ID_STORAGE_KEY = "autovisionlab:selected-task-id";
@@ -281,27 +281,14 @@ export function WorkspacePage() {
     null;
 
   const currentSearchRunId = displayAutoTask?.run_id ?? null;
-  const shouldPollSearchArtifacts = Boolean(currentSearchRunId);
   const runDetailQuery = useRunDetail(currentSearchRunId);
-  const searchMetricQueries = useQueries({
-    queries: SEARCH_TREND_METRICS.map((metric) => ({
-      queryKey: ["run-metrics", currentSearchRunId, metric.metricName],
-      queryFn: () => getJson<MetricsPayload>(`/runs/${currentSearchRunId}/metrics?metric_name=${metric.metricName}`),
-      enabled: Boolean(currentSearchRunId),
-      refetchIntervalInBackground: true,
-      refetchOnWindowFocus: true,
-      refetchInterval: shouldPollSearchArtifacts ? 2000 : false
-    }))
-  });
+  const runTrendQuery = useRunTrend(currentSearchRunId);
   const runDetail = runDetailQuery.data ?? null;
 
   const searchTrendSeries = useMemo(
     () =>
-      SEARCH_TREND_METRICS.map((metric, index) => ({
-        ...metric,
-        points: searchMetricQueries[index]?.data?.points ?? []
-      })).filter((series) => series.points.length > 0),
-    [searchMetricQueries]
+      buildTrendSeriesFromPayload(runTrendQuery.data),
+    [runTrendQuery.data]
   );
   const persistedSearchTrendSeries = useMemo(() => buildPersistedSearchTrendSeries(autoTrainSummary), [autoTrainSummary]);
   const displayedSearchTrendSeries = searchTrendSeries.length > 0 ? searchTrendSeries : persistedSearchTrendSeries;
@@ -1534,9 +1521,9 @@ function MetricTrendChart({
   useEffect(() => {
     setVisibleMetricNames((previous) => {
       const availableNameSet = new Set(availableMetricNames);
-      const retained = previous.filter((metricName) => availableNameSet.has(metricName));
-      if (retained.length > 0) {
-        return retained;
+      const hasVisibleAvailableMetric = previous.some((metricName) => availableNameSet.has(metricName));
+      if (hasVisibleAvailableMetric) {
+        return previous;
       }
       const defaultVisible = series.filter((item) => item.defaultVisible).map((item) => item.metricName);
       return defaultVisible.length > 0 ? defaultVisible : availableMetricNames.slice(0, 1);
@@ -2097,6 +2084,18 @@ function buildPersistedSearchTrendSeries(summary: AutoTrainSummarySnapshot | nul
         }
       ];
     })
+  })).filter((series) => series.points.length > 0);
+}
+
+function buildTrendSeriesFromPayload(payload: RunTrendPayload | undefined) {
+  if (!payload) {
+    return [];
+  }
+
+  const pointsByMetricName = new Map(payload.series.map((item) => [item.metric_name, item.points]));
+  return SEARCH_TREND_METRICS.map((metric) => ({
+    ...metric,
+    points: pointsByMetricName.get(metric.metricName) ?? []
   })).filter((series) => series.points.length > 0);
 }
 
