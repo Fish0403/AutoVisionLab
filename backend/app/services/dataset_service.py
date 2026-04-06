@@ -18,6 +18,13 @@ KNOWN_DATASET_IMAGE_SPECS: dict[str, tuple[int, int, list[int]]] = {
     "neu": (200, 200, [200, 224, 256]),
 }
 
+
+def _build_default_image_size_options(original_image_size: int | None) -> list[int]:
+    """Return default image-size suggestions for datasets without fixed presets."""
+    if original_image_size is None:
+        return []
+    return [original_image_size, original_image_size + 32, original_image_size + 64]
+
 def list_local_datasets() -> list[LocalDatasetSummary]:
     """List locally discovered datasets and their training readiness."""
     settings = get_settings()
@@ -42,6 +49,23 @@ def get_local_dataset_summary(dataset_name: str) -> LocalDatasetSummary | None:
     return None
 
 
+def get_lightweight_local_dataset_summary(dataset_name: str) -> LocalDatasetSummary:
+    """Return one lightweight dataset probe for fast task initialization."""
+    settings = get_settings()
+    data_root = Path(settings.data_root)
+    raw_root = data_root / "raw"
+    classification_root = data_root / "classification"
+
+    resolved_dataset_name = dataset_name
+    normalized_target_name = normalize_dataset_name(dataset_name)
+    for candidate_name in collect_dataset_names(raw_root=raw_root, classification_root=classification_root):
+        if normalize_dataset_name(candidate_name) == normalized_target_name:
+            resolved_dataset_name = candidate_name
+            break
+
+    return build_lightweight_dataset_summary(data_root=data_root, dataset_name=resolved_dataset_name)
+
+
 def build_dataset_summary_text(
     dataset_summary: LocalDatasetSummary | None,
     training_image_size: int | None = None,
@@ -62,6 +86,15 @@ def build_dataset_summary_text(
     elif training_image_size and training_image_size > 0:
         parts.append(f"train size {training_image_size}x{training_image_size}")
     return " · ".join(parts) if parts else None
+
+
+def build_lightweight_dataset_summary_text(dataset_summary: LocalDatasetSummary | None) -> str | None:
+    """Build one fast dataset summary line without scanning manifests."""
+    if dataset_summary is None:
+        return None
+    if dataset_summary.has_source_dir:
+        return "Source directory found."
+    return dataset_summary.message
 
 
 def collect_dataset_names(raw_root: Path, classification_root: Path) -> list[str]:
@@ -110,6 +143,8 @@ def build_local_dataset_summary(data_root: Path, dataset_name: str) -> LocalData
         image_width, image_height = detect_manifest_image_size(train_manifest, source_dir) or (None, None)
     original_image_size = max(image_width, image_height) if image_width and image_height else None
     image_size_options = list(known_image_size_options)
+    if not image_size_options:
+        image_size_options = _build_default_image_size_options(original_image_size)
 
     if is_ready_for_training:
         message = "Ready for training."
@@ -147,6 +182,29 @@ def build_local_dataset_summary(data_root: Path, dataset_name: str) -> LocalData
         train_class_distribution=train_class_distribution,
         val_class_distribution=val_class_distribution,
         test_class_distribution=test_class_distribution,
+        message=message,
+    )
+
+
+def build_lightweight_dataset_summary(data_root: Path, dataset_name: str) -> LocalDatasetSummary:
+    """Build one lightweight readiness snapshot without reading manifests."""
+    raw_dir, prepared_source_dir, source_dir, classification_dir = resolve_classification_dataset_layout(
+        data_root,
+        dataset_name,
+    )
+    has_source_dir = source_dir.exists() and source_dir.is_dir()
+
+    if has_source_dir:
+        message = "Source directory found."
+    else:
+        message = "Source directory was not found."
+
+    return LocalDatasetSummary(
+        name=dataset_name,
+        source_dir=str(source_dir) if source_dir.exists() else None,
+        classification_dir=str(classification_dir) if classification_dir.exists() else None,
+        has_source_dir=has_source_dir,
+        has_prepared_source_dir=prepared_source_dir.exists(),
         message=message,
     )
 

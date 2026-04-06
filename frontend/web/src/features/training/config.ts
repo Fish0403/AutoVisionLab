@@ -156,7 +156,7 @@ export function buildRankingPolicy() {
   return {
     primary_metric: "top1_acc",
     primary_metric_mode: "max",
-    min_primary_metric_improvement: 0.01,
+    min_primary_metric_improvement: 0.001,
     primary_metric_parity_epsilon: 0.0005,
     tie_breaker_metric: "latency_ms",
     tie_breaker_mode: "min",

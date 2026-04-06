@@ -14,7 +14,7 @@ class RankingPolicy(BaseModel):
 
     primary_metric: RankingMetric = "top1_acc"
     primary_metric_mode: RankingMetricMode = "max"
-    min_primary_metric_improvement: float = Field(default=0.01, ge=0)
+    min_primary_metric_improvement: float = Field(default=0.001, ge=0)
     primary_metric_parity_epsilon: float = Field(default=0.0005, ge=0)
     tie_breaker_metric: RankingMetric = "val_loss"
     tie_breaker_mode: RankingMetricMode = "min"

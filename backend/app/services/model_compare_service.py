@@ -24,7 +24,12 @@ from app.schemas.run import (
     TaskHistoryItemResponse,
 )
 from app.services.auto_train_service import delete_auto_train_task, get_active_auto_train_task
-from app.services.dataset_service import build_dataset_summary_text, get_local_dataset_summary
+from app.services.dataset_service import (
+    build_dataset_summary_text,
+    build_lightweight_dataset_summary_text,
+    get_lightweight_local_dataset_summary,
+    get_local_dataset_summary,
+)
 from app.services.parameter_space import get_parameter_space
 from app.services.persistence import clear_run_records, create_experiment, create_run, get_experiment_detail
 from app.services.task_store import delete_task_payload, get_active_task_payload, get_task_payload, list_task_payloads, upsert_task_payload
@@ -337,6 +342,10 @@ def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> 
         total_models=len(candidate_models),
         summary=summary.model_dump(),
         activity_message="Validating dataset manifests and shared baseline config",
+        dataset_summary=build_dataset_summary_text(
+            get_local_dataset_summary(request.dataset),
+            training_image_size=request.config.train_hyp.image_size,
+        ),
     )
     successful_candidate_count = 0
 
@@ -528,9 +537,8 @@ def start_model_compare_task(request: ModelCompareStartRequest) -> ModelCompareT
     created_at = _now_iso()
     ai_model_name = get_settings().aihubmix_model
     training_image_size = request.config.train_hyp.image_size
-    dataset_summary = build_dataset_summary_text(
-        get_local_dataset_summary(request.dataset),
-        training_image_size=training_image_size,
+    dataset_summary = build_lightweight_dataset_summary_text(
+        get_lightweight_local_dataset_summary(request.dataset),
     )
     task_payload = {
         "task_id": task_id,

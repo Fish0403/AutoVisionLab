@@ -490,6 +490,22 @@ def _merge_partial_payload(base_payload: dict[str, Any], partial_changes: dict[s
     return merged_payload
 
 
+def _normalize_model_recipe_components_payload(model_recipe_payload: dict[str, Any]) -> dict[str, Any]:
+    """Ensure model_recipe.components is complete before schema validation."""
+    normalized_payload = deepcopy(model_recipe_payload)
+    base_model = normalized_payload.get("base_model")
+    if not isinstance(base_model, str) or not base_model.strip():
+        return normalized_payload
+
+    default_components = build_default_model_recipe_components(base_model=base_model)
+    current_components = normalized_payload.get("components")
+    if isinstance(current_components, dict):
+        normalized_payload["components"] = _merge_partial_payload(default_components, current_components)
+    else:
+        normalized_payload["components"] = default_components
+    return normalized_payload
+
+
 def build_default_model_recipe(*, model_name: str, task_type: str, model_family: str) -> ModelRecipe:
     """Build one default model recipe, using a built-in template when available."""
     from app.trainers.templates import has_builtin_model_recipe, load_builtin_model_recipe_payload
@@ -614,7 +630,7 @@ def apply_proposal_changes_to_model_recipe(
             )
         elif field_name == "aux_logits":
             updated_payload.setdefault("modules", {})["aux_logits"] = value
-    return ModelRecipe.model_validate(updated_payload)
+    return ModelRecipe.model_validate(_normalize_model_recipe_components_payload(updated_payload))
 
 
 def build_model_recipe_change_payload(proposal_changes: dict[str, Any]) -> dict[str, Any]:
@@ -659,4 +675,5 @@ def apply_model_recipe_change_payload(
     recipe_changes: dict[str, Any],
 ) -> ModelRecipe:
     """Apply a partial structured model_recipe payload onto one base model recipe object."""
-    return ModelRecipe.model_validate(_merge_partial_payload(model_recipe_payload, recipe_changes))
+    merged_payload = _merge_partial_payload(model_recipe_payload, recipe_changes)
+    return ModelRecipe.model_validate(_normalize_model_recipe_components_payload(merged_payload))

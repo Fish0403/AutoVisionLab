@@ -19,7 +19,12 @@ sys.path.insert(0, str(VENV_SITE_PACKAGES))
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 from app.core.settings import Settings
-from app.services.dataset_service import build_dataset_summary_text, list_local_datasets
+from app.services.dataset_service import (
+    build_dataset_summary_text,
+    build_lightweight_dataset_summary_text,
+    build_lightweight_dataset_summary,
+    list_local_datasets,
+)
 from app.schemas.dataset import LocalDatasetSummary
 
 
@@ -108,6 +113,32 @@ class DatasetServiceTest(unittest.TestCase):
             self.assertIn(classification_dataset_name, dataset_map)
             self.assertTrue(dataset_map[classification_dataset_name].is_ready_for_training)
             self.assertEqual(dataset_map[classification_dataset_name].classification_dir, str(classification_dir))
+
+    def test_build_lightweight_dataset_summary_only_checks_source_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_root = Path(temp_dir)
+            dataset_name = f"dataset_{uuid4().hex}"
+            (data_root / "raw" / dataset_name).mkdir(parents=True, exist_ok=True)
+
+            summary = build_lightweight_dataset_summary(data_root=data_root, dataset_name=dataset_name)
+
+            self.assertTrue(summary.has_source_dir)
+            self.assertFalse(summary.train_manifest_exists)
+            self.assertFalse(summary.val_manifest_exists)
+            self.assertEqual(summary.train_sample_count, 0)
+            self.assertEqual(summary.class_names, [])
+            self.assertEqual(summary.message, "Source directory found.")
+
+    def test_build_lightweight_dataset_summary_text_uses_source_probe(self) -> None:
+        summary_text = build_lightweight_dataset_summary_text(
+            LocalDatasetSummary(
+                name="NEU",
+                has_source_dir=True,
+                message="Source directory found.",
+            )
+        )
+
+        self.assertEqual(summary_text, "Source directory found.")
 
 
 if __name__ == "__main__":

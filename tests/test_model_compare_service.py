@@ -141,6 +141,29 @@ class ModelCompareServiceTest(unittest.TestCase):
         self.assertEqual(task.summary.mode, "model_compare")
         self.assertEqual(task.summary.shared_baseline_config["dataset"], dataset_name)
 
+    def test_start_model_compare_task_uses_lightweight_dataset_probe(self) -> None:
+        dataset_name = f"dataset_{uuid4().hex}"
+        request = ModelCompareStartRequest(
+            dataset=dataset_name,
+            config=_build_base_config(dataset_name),
+            candidate_models=["mobilenet_v2"],
+        )
+
+        with (
+            patch("app.services.model_compare_service.get_active_auto_train_task", return_value=None),
+            patch("app.services.model_compare_service.get_lightweight_local_dataset_summary") as get_probe,
+            patch("app.services.model_compare_service.build_lightweight_dataset_summary_text", return_value="Source directory found."),
+            patch("app.services.model_compare_service.get_local_dataset_summary") as get_full_summary,
+            patch("app.services.model_compare_service.MODEL_COMPARE_EXECUTOR.submit"),
+            patch("app.services.model_compare_service.upsert_task_payload"),
+        ):
+            get_probe.return_value = object()
+            task = start_model_compare_task(request)
+
+        get_probe.assert_called_once_with(dataset_name)
+        get_full_summary.assert_not_called()
+        self.assertEqual(task.dataset_summary, "Source directory found.")
+
     def test_build_compare_summary_prompt_contains_candidate_metrics(self) -> None:
         dataset_name = f"dataset_{uuid4().hex}"
         summary = ModelCompareSummary(

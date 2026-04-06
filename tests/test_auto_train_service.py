@@ -39,6 +39,7 @@ from app.services.auto_train_service import (
     _try_attach_auto_train_ai_summary,
     _validate_followup_proposal,
     delete_auto_train_task,
+    start_auto_train_task,
     stop_auto_train_task,
 )
 from app.services.parameter_space import get_parameter_space
@@ -164,6 +165,30 @@ class AutoTrainServiceTest(unittest.TestCase):
         self.assertEqual(followup_config["train_hyp"]["lr0"], 0.001)
         self.assertTrue(followup_config["search_policy"]["allow_model_module_search"])
 
+    def test_start_auto_train_task_uses_lightweight_dataset_probe(self) -> None:
+        dataset_name = f"dataset_{uuid4().hex}"
+        request = AutoTrainStartRequest(
+            run_name=f"Run {dataset_name}",
+            dataset=dataset_name,
+            model_name="mobilenet_v3_small",
+            config=_build_auto_train_config(dataset_name),
+            parameter_space=get_parameter_space("mobilenet_v3_small"),
+        )
+
+        with (
+            patch("app.services.auto_train_service.get_lightweight_local_dataset_summary") as get_probe,
+            patch("app.services.auto_train_service.build_lightweight_dataset_summary_text", return_value="Source directory found."),
+            patch("app.services.auto_train_service.get_local_dataset_summary") as get_full_summary,
+            patch("app.services.auto_train_service.AUTO_TRAIN_EXECUTOR.submit"),
+            patch("app.services.auto_train_service.upsert_task_payload"),
+        ):
+            get_probe.return_value = SimpleNamespace(has_source_dir=True, message="Source directory found.")
+            task = start_auto_train_task(request)
+
+        get_probe.assert_called_once_with(dataset_name)
+        get_full_summary.assert_not_called()
+        self.assertEqual(task.dataset_summary, "Source directory found.")
+
     def test_build_followup_config_maps_aux_logits_to_model_recipe(self) -> None:
         latest_config = _build_auto_train_config_payload(
             dataset_name="cifar10",
@@ -245,6 +270,33 @@ class AutoTrainServiceTest(unittest.TestCase):
         self.assertEqual(followup_config["model_recipe"]["head_config"]["classifier_type"], "linear")
         self.assertEqual(followup_config["model_recipe"]["head_config"]["classifier_dropout"], 0.2)
         self.assertEqual(followup_config["train_hyp"]["augmentation"]["mixup"], 0.2)
+
+    def test_build_followup_config_fills_missing_component_slots_for_partial_head_changes(self) -> None:
+        dataset_name = f"dataset_{uuid4().hex}"
+        latest_config_payload = _build_auto_train_config_payload(
+            dataset_name=dataset_name,
+            model_family="resnet",
+            model_name="resnet18",
+            parameter_space_version="resnet18@v1",
+        )
+        latest_config_payload["model_recipe"]["components"] = None
+        latest_config = ExperimentConfig.model_validate(latest_config_payload)
+
+        followup_config = _build_followup_config(
+            latest_experiment={"config": latest_config.model_dump(mode="python")},
+            proposal_payload={
+                "changes": {"head_name": "dropout_linear"},
+                "recipe_changes": {
+                    "components": {
+                        "head": {"name": "dropout_linear"},
+                    },
+                },
+            },
+        )
+
+        self.assertEqual(followup_config["model_recipe"]["components"]["backbone"]["name"], "resnet18_native")
+        self.assertEqual(followup_config["model_recipe"]["components"]["neck"]["name"], "avg_pool")
+        self.assertEqual(followup_config["model_recipe"]["components"]["head"]["name"], "dropout_linear")
 
     def test_validate_followup_proposal_rejects_builder_incompatible_recipe_changes(self) -> None:
         dataset_name = f"dataset_{uuid4().hex}"

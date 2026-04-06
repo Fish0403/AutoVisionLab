@@ -28,7 +28,12 @@ from app.schemas.parameter_space import (
     build_train_hyp_change_payload,
 )
 from app.schemas.run import AutoTrainStartRequest, AutoTrainTaskResponse, RunCreateRequest, TaskHistoryItemResponse
-from app.services.dataset_service import build_dataset_summary_text, get_local_dataset_summary
+from app.services.dataset_service import (
+    build_dataset_summary_text,
+    build_lightweight_dataset_summary_text,
+    get_lightweight_local_dataset_summary,
+    get_local_dataset_summary,
+)
 from app.services.parameter_space import is_epoch_search_enabled
 from app.services.persistence import (
     clear_run_records,
@@ -817,6 +822,13 @@ def _run_auto_train_task(task_id: str, request: AutoTrainStartRequest) -> None:
             raise AutoTrainStoppedError("Auto train stopped before execution started")
         _update_task(task_id, status="running", activity_message="Validating dataset manifests and training config")
         started_at_monotonic = time.monotonic()
+        _update_task(
+            task_id,
+            dataset_summary=build_dataset_summary_text(
+                get_local_dataset_summary(request.dataset),
+                training_image_size=request.config.train_hyp.image_size,
+            ),
+        )
         db = SessionLocal()
         try:
             if request.run_id:
@@ -1047,9 +1059,8 @@ def start_auto_train_task(request: AutoTrainStartRequest) -> AutoTrainTaskRespon
     created_at = _now_iso()
     ai_model_name = get_settings().aihubmix_model
     training_image_size = request.config.train_hyp.image_size
-    dataset_summary = build_dataset_summary_text(
-        get_local_dataset_summary(request.dataset),
-        training_image_size=training_image_size,
+    dataset_summary = build_lightweight_dataset_summary_text(
+        get_lightweight_local_dataset_summary(request.dataset),
     )
     task_payload = {
         "task_id": task_id,
