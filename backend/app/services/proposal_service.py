@@ -130,10 +130,7 @@ def _summarize_experiment_for_prompt(experiment: ExperimentModel, run: RunModel)
             "based_on_experiment_ids": proposal_payload.get("based_on_experiment_ids"),
             "hypothesis": proposal_payload.get("hypothesis"),
             "changes": (proposal_payload.get("changes") or {}),
-            "train_hyp_changes": proposal_payload.get("train_hyp_changes"),
-            "recipe_changes": proposal_payload.get("recipe_changes"),
             "reason": proposal_payload.get("reason"),
-            "risk": proposal_payload.get("risk"),
         }
         if proposal_payload
         else None,
@@ -199,6 +196,11 @@ def _load_followup_source_constraints(db: Session, run: RunModel) -> dict[str, A
     return {
         "experiment_id": source_experiment.id,
         "image_size": source_image_size,
+        "config": {
+            "params": config_payload.get("params") or {},
+            "train_hyp": train_hyp_payload,
+            "model_recipe": config_payload.get("model_recipe") or {},
+        },
     }
 
 
@@ -284,10 +286,10 @@ def generate_aihubmix_proposal(
         '"cutmix_alpha":"number|null","random_erasing_prob":"number|null","loss_name":"string|null",'
         '"focal_gamma":"number|null","label_smoothing":"number|null","aux_logits":"boolean|null",'
         '"neck_name":"string|null","head_name":"string|null"},'
-        '"train_hyp_changes":"object|null","recipe_changes":"object|null",'
-        '"reason":"string","risk":"low|medium|high"}'
+        '"reason":"string"}'
         "hypothesis and reason must be concise English. "
-        "changes is the required compatibility-layer change map; if you can map changes clearly into recipe-oriented views, also return train_hyp_changes or recipe_changes. "
+        "Return only the changed fields inside changes; leave every unchanged field as null. "
+        "Do not return train_hyp_changes, recipe_changes, or any other extra top-level fields. "
         "You will receive the full experiment history for the same run, not only the latest round. "
         "You must use the full history, focusing on the current best result and metric trends across rounds. "
         "If past experiments were marked discard, crash, timeout, or failed, treat them as negative examples and avoid repeating ineffective directions. "
@@ -315,10 +317,11 @@ def generate_aihubmix_proposal(
         "task_type must remain classification. "
         "Do not change model_name. "
         f"{_build_epoch_policy_instruction(search_policy)}"
+        "The current source experiment config is the full config that the next run will branch from; use it as the baseline state and only return the delta in changes. "
         "Only modify fields listed in Allowed AI change fields. "
         "Every value must strictly follow Allowed field definitions. "
         "Only propose structured parameter changes. "
-        "If the current parameter space enables component-level search, prefer neck_name and head_name over old fine-grained recipe fields. "
+        "If the current parameter space enables component-level search, use neck_name and head_name in changes instead of emitting recipe-structured patches. "
         "Do not decide only from the last round; use the full run history and keep optimizing around the current best by default. "
         "If you change image_size, it must stay a positive integer within the allowed parameter space. "
         "Prefer a smaller value than the current source experiment image_size when that keeps the next step more efficient, but this is a search preference rather than a hard rule. "

@@ -967,8 +967,8 @@ function CompareProgressCard({
 function SearchProgressCard({ task, externalErrorMessage }: { task: AutoTrainTask | null; externalErrorMessage?: string | null }) {
   const summary = readAutoTrainSummary(task);
   const activeProposal = task && !isAutoTrainTerminalStatus(task.status) ? summary?.current_proposal ?? null : getActiveSearchProposal(summary);
-  const searchFocus = describeProposalChangeSummary(activeProposal);
   const suggestionText = getSearchSuggestionText(task, summary, activeProposal);
+  const validatedChangeSummary = describeValidatedProposalChanges(activeProposal);
   const datasetSummaryText = buildTaskDatasetSummary(task);
   const startupMessage = buildTaskStartupMessage(task);
   const primaryStatusText = datasetSummaryText ?? startupMessage;
@@ -988,20 +988,28 @@ function SearchProgressCard({ task, externalErrorMessage }: { task: AutoTrainTas
     return () => window.clearInterval(timerId);
   }, [task?.task_id, task?.status]);
 
-  const progressHeadline = searchFocus ? `Focus ${searchFocus}` : null;
+  const validatedChangeHeadline = validatedChangeSummary ? `Will apply ${validatedChangeSummary}` : null;
   const metaInlineText = buildSearchMetaInlineText(task, elapsedDisplay);
+  const runLabel = buildSearchRunLabel(task);
+  const gpuMemoryLabel = buildSearchGpuMemoryLabel(summary);
   const warningNotice = buildTaskWarningNotice(task);
   const failureNotice = buildTaskFailureNotice(task, externalErrorMessage);
-  const hasInsightRows = Boolean(primaryStatusText || progressHeadline || suggestionText);
+  const roundFailureNotice = buildLatestExperimentFailureNotice(task);
+  const hasInsightRows = Boolean(primaryStatusText || suggestionText || validatedChangeHeadline);
 
   return (
     <div>
       <div className="progress-activity-block">
         <div className="progress-activity-header">
           <h2>Status</h2>
+          {runLabel ? <div className="search-meta-inline">{runLabel}</div> : null}
         </div>
         <div className="progress-activity-divider" />
-        {metaInlineText ? <div className="search-meta-inline">{metaInlineText}</div> : null}
+        {metaInlineText || gpuMemoryLabel ? (
+          <div className="search-meta-inline">
+            {[metaInlineText, gpuMemoryLabel].filter(Boolean).join(" · ")}
+          </div>
+        ) : null}
       </div>
       {hasInsightRows ? (
         <div className="progress-insight-group">
@@ -1011,16 +1019,16 @@ function SearchProgressCard({ task, externalErrorMessage }: { task: AutoTrainTas
               <span>{primaryStatusText}</span>
             </div>
           ) : null}
-          {progressHeadline ? (
-            <div className="progress-inline-note">
-              <SearchFocusIcon />
-              <span>{progressHeadline}</span>
-            </div>
-          ) : null}
           {suggestionText ? (
             <div className="progress-suggestion-row">
               <SuggestionIcon />
               <p className="progress-suggestion-copy">{suggestionText}</p>
+            </div>
+          ) : null}
+          {validatedChangeHeadline ? (
+            <div className="progress-inline-note">
+              <SearchFocusIcon />
+              <span>{validatedChangeHeadline}</span>
             </div>
           ) : null}
         </div>
@@ -1035,6 +1043,12 @@ function SearchProgressCard({ task, externalErrorMessage }: { task: AutoTrainTas
         <p className="progress-footer-copy progress-footer-copy-error">
           <ErrorNoticeIcon />
           <span>{failureNotice}</span>
+        </p>
+      ) : null}
+      {!failureNotice && roundFailureNotice ? (
+        <p className="progress-footer-copy progress-footer-copy-error">
+          <ErrorNoticeIcon />
+          <span>{roundFailureNotice}</span>
         </p>
       ) : null}
       {!task ? <div className="progress-empty-space" /> : null}
@@ -2336,6 +2350,26 @@ function buildSearchMetaInlineText(task: AutoTrainTask | null, elapsedSeconds: n
   return parts.length ? parts.join(" · ") : null;
 }
 
+function buildSearchRunLabel(task: AutoTrainTask | null) {
+  const runId = task?.run_id?.trim();
+  if (!runId) {
+    return null;
+  }
+  return `Run ${runId}`;
+}
+
+function buildSearchGpuMemoryLabel(summary: AutoTrainSummarySnapshot | null) {
+  const latestSuccessfulResult =
+    [...(summary?.rounds ?? [])].reverse().find((round) => round.result?.status === "success")?.result ??
+    summary?.baseline ??
+    null;
+  const gpuMemoryMb = latestSuccessfulResult?.resource?.gpu_memory_mb;
+  if (typeof gpuMemoryMb !== "number" || gpuMemoryMb <= 0) {
+    return null;
+  }
+  return `Peak GPU ${formatGpuMemory(gpuMemoryMb)}`;
+}
+
 function getActiveSearchProposal(summary: AutoTrainSummarySnapshot | null) {
   if (summary?.current_proposal) {
     return summary.current_proposal;
@@ -2423,6 +2457,13 @@ function formatAiModelLabel(modelName: string | null | undefined) {
   }
   const pathSegments = normalizedModelName.split("/").filter(Boolean);
   return pathSegments[pathSegments.length - 1] ?? normalizedModelName;
+}
+
+function formatGpuMemory(memoryMb: number) {
+  if (memoryMb >= 1024) {
+    return `${Number((memoryMb / 1024).toFixed(1))} GB`;
+  }
+  return `${Math.round(memoryMb)} MB`;
 }
 
 function buildTaskProgressFooter(task: AutoTrainTask | ModelCompareTask | null) {
@@ -2522,6 +2563,37 @@ function buildTaskWarningNotice(task: AutoTrainTask | null) {
   return `Request failed. Retrying in ${delayText}${attemptText}.`;
 }
 
+function buildLatestExperimentFailureNotice(task: AutoTrainTask | null) {
+  if (!task || task.status === "failed") {
+    return null;
+  }
+  const latestFailureLog = [...task.logs].reverse().find((entry) => {
+    const normalizedEntry = entry.toLowerCase();
+    return (
+      normalizedEntry.includes("training failed:") ||
+      normalizedEntry.includes("retry budget exhausted without a valid result") ||
+      normalizedEntry.includes("proposal cannot build a valid follow-up config")
+    );
+  });
+  if (!latestFailureLog) {
+    return null;
+  }
+
+  const normalizedLog = latestFailureLog.trim();
+  const trainingFailureMatch = normalizedLog.match(/training failed:\s*(.+)$/i);
+  if (trainingFailureMatch?.[1]) {
+    return `Last round failed: ${trainingFailureMatch[1].trim()}`;
+  }
+  const invalidConfigMatch = normalizedLog.match(/Proposal cannot build a valid follow-up config:\s*(.+)$/i);
+  if (invalidConfigMatch?.[1]) {
+    return `Last proposal was rejected: ${invalidConfigMatch[1].trim()}`;
+  }
+  if (/retry budget exhausted without a valid result/i.test(normalizedLog)) {
+    return "Last round failed repeatedly and did not produce a valid result.";
+  }
+  return null;
+}
+
 const PROPOSAL_CHANGE_SHORT_VALUE_LABELS: Record<string, string> = {
   cross_entropy: "ce",
   cross_entropy_with_label_smoothing: "ce+ls",
@@ -2551,6 +2623,19 @@ function describeProposalChangeSummary(proposal: ProposalSnapshot | null) {
     return null;
   }
   return changedFields.join(" / ");
+}
+
+function describeValidatedProposalChanges(proposal: ProposalSnapshot | null) {
+  if (!proposal) {
+    return null;
+  }
+  const changedFields = Object.entries(proposal.changes ?? {})
+    .filter(([, value]) => value !== null && value !== undefined)
+    .map(([fieldName, value]) => `${fieldName} ${formatCompactProposalValue(value)}`);
+  if (!changedFields.length) {
+    return null;
+  }
+  return changedFields.join(" | ");
 }
 
 function describeCompactProposalChanges(proposal: ProposalSnapshot | null) {

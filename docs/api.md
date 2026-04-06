@@ -57,7 +57,6 @@
 | `run.status` | `draft`、`active`、`paused`、`completed`、`failed` |
 | `experiment.status` | `draft`、`queued`、`running`、`success`、`failed`、`discarded` |
 | `experiment.decision` | `keep`、`discard`、`crash`、`timeout` |
-| `proposal.risk` | `low`、`medium`、`high` |
 | `result.status` | `success`、`failed` |
 
 ## 结构化对象
@@ -166,7 +165,6 @@ AI 生成的结构化 proposal，主要字段：
 - `train_hyp_changes`
 - `recipe_changes`
 - `reason`
-- `risk`
 
 ### `ResultSchema`
 

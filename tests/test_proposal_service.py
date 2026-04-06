@@ -67,7 +67,6 @@ class ProposalServiceTest(unittest.TestCase):
                     "aux_logits": True,
                 },
                 "reason": "Test one recipe change plus one train hyp change.",
-                "risk": "medium",
             }
         )
 
@@ -98,7 +97,6 @@ class ProposalServiceTest(unittest.TestCase):
                     "classifier_dropout": 0.2,
                 },
                 "reason": "Test one wider backbone with a stronger head pooling variant.",
-                "risk": "medium",
             }
         )
 
@@ -128,7 +126,6 @@ class ProposalServiceTest(unittest.TestCase):
                     "neck_name": "gem_pool",
                 },
                 "reason": "测试组件级搜索字段能否回写成 recipe changes。",
-                "risk": "medium",
             }
         )
 
@@ -156,7 +153,6 @@ class ProposalServiceTest(unittest.TestCase):
                     "head_name": "linear",
                 },
                 "reason": "测试组件级 head 字段能否回写成兼容 recipe changes。",
-                "risk": "medium",
             }
         )
 
@@ -195,7 +191,6 @@ class ProposalServiceTest(unittest.TestCase):
                     "hypothesis": "先给一个空动作。",
                     "changes": {"epochs": 2},
                     "reason": "先试一个会被系统清理掉的字段。",
-                    "risk": "low",
                 },
                 {},
             ),
@@ -207,7 +202,6 @@ class ProposalServiceTest(unittest.TestCase):
                     "hypothesis": "改测权重衰减。",
                     "changes": {"weight_decay": 0.0005},
                     "reason": "优先避开最近连续失败的字段，改看正则强度是否更稳。",
-                    "risk": "low",
                 },
                 {},
             ),
@@ -276,7 +270,6 @@ class ProposalServiceTest(unittest.TestCase):
                 "hypothesis": "Adjust weight decay.",
                 "changes": {"weight_decay": 0.0005},
                 "reason": "Keep the next trial executable after a config-build rejection.",
-                "risk": "low",
             },
             {},
         )
@@ -307,8 +300,10 @@ class ProposalServiceTest(unittest.TestCase):
         self.assertIn("image_size must stay within dataset bounds", first_prompt)
         self.assertIn("Prefer a smaller value than the current source experiment image_size", first_prompt)
         self.assertIn("Do not change epochs; epochs is fixed and the AI is not allowed to adjust it.", first_prompt)
+        self.assertIn("The current source experiment config is the full config", first_prompt)
         self.assertIn("augmentation_policy=none/basic", system_prompt)
         self.assertIn("mixup_alpha", system_prompt)
+        self.assertIn("Do not return train_hyp_changes, recipe_changes", system_prompt)
 
     def test_generate_aihubmix_proposal_accepts_larger_image_size_when_allowed(self) -> None:
         db = Mock()
@@ -333,7 +328,6 @@ class ProposalServiceTest(unittest.TestCase):
                 "hypothesis": "Try a larger image size.",
                 "changes": {"image_size": 128},
                 "reason": "Probe a bigger crop that is still inside the allowed search space.",
-                "risk": "medium",
             },
             {},
         )
@@ -390,7 +384,6 @@ class ProposalServiceTest(unittest.TestCase):
                 "hypothesis": "A slightly lower learning rate with higher weight decay may improve stability.",
                 "changes": {"weight_decay": 0.0005},
                 "reason": "Keep the plan simple while using the current best result as the baseline.",
-                "risk": "low",
             },
             {},
         )
@@ -437,7 +430,6 @@ class ProposalServiceTest(unittest.TestCase):
                 "hypothesis": "改测权重衰减。",
                 "changes": {"weight_decay": 0.0005},
                 "reason": "当前 run 允许 AI 在模型 parameter space 内自主搜索。",
-                "risk": "low",
             },
             {},
         )
@@ -493,7 +485,6 @@ class ProposalServiceTest(unittest.TestCase):
                 "hypothesis": "Train longer to confirm whether the current direction keeps improving.",
                 "changes": {"epochs": 20},
                 "reason": "Use a larger training budget for the next attempt.",
-                "risk": "low",
             },
             {},
         )
@@ -527,6 +518,63 @@ class ProposalServiceTest(unittest.TestCase):
         self.assertEqual(proposal.changes.epochs, 20)
         prompt = mock_client.create_json_completion_with_metadata.call_args.kwargs["user_prompt"]
         self.assertIn("You may change epochs when it is helpful", prompt)
+
+    def test_generate_aihubmix_proposal_includes_full_source_config_summary(self) -> None:
+        db = Mock()
+        db.get.return_value = SimpleNamespace(
+            id="run_1",
+            name="source-config-summary",
+            dataset="cifar10",
+            model_name="mobilenet_v3_small",
+            baseline_experiment_id="exp_keep",
+            best_experiment_id="exp_keep",
+            frontier_experiment_id="exp_keep",
+        )
+        experiment_history = [
+            {"id": "exp_keep", "status": "success", "decision": "keep"},
+        ]
+        mock_client = Mock()
+        mock_client.create_json_completion_with_metadata.return_value = (
+            {
+                "task_type": "classification",
+                "model_name": "mobilenet_v3_small",
+                "based_on_experiment_ids": ["exp_keep"],
+                "hypothesis": "Adjust weight decay from the current baseline.",
+                "changes": {"weight_decay": 0.0005},
+                "reason": "Use the current full source config as the branching baseline.",
+            },
+            {},
+        )
+
+        with (
+            patch("app.services.proposal_service.get_run_history_payload", return_value=experiment_history),
+            patch("app.services.proposal_service._load_latest_search_policy", return_value=SearchPolicy()),
+            patch(
+                "app.services.proposal_service._load_latest_parameter_space",
+                return_value=_build_parameter_space(),
+            ),
+            patch(
+                "app.services.proposal_service._load_followup_source_constraints",
+                return_value={
+                    "experiment_id": "exp_keep",
+                    "image_size": 96,
+                    "config": {
+                        "params": {"image_size": 96, "weight_decay": 0.0001},
+                        "train_hyp": {"image_size": 96, "weight_decay": 0.0001},
+                        "model_recipe": {"components": {"neck": {"name": "avg_pool"}}},
+                    },
+                },
+            ),
+            patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
+            patch("app.services.proposal_service.append_run_log"),
+        ):
+            proposal = generate_aihubmix_proposal(db, "run_1")
+
+        self.assertEqual(proposal.changes.weight_decay, 0.0005)
+        prompt = mock_client.create_json_completion_with_metadata.call_args.kwargs["user_prompt"]
+        self.assertIn("\"config\": {", prompt)
+        self.assertIn("\"weight_decay\": 0.0001", prompt)
+        self.assertIn("\"neck\": {\"name\": \"avg_pool\"}", prompt)
 
 
 if __name__ == "__main__":

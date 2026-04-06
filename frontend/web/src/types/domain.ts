@@ -146,6 +146,7 @@ export interface AutoTrainTask {
       decision?: string | null;
       decision_reason?: string | null;
       metrics?: Record<string, number>;
+      resource?: Record<string, number>;
       summary?: string;
     };
     rounds?: Array<{
@@ -162,6 +163,7 @@ export interface AutoTrainTask {
         decision?: string | null;
         decision_reason?: string | null;
         metrics?: Record<string, number>;
+        resource?: Record<string, number>;
         summary?: string;
       };
     }>;

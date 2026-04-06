@@ -208,7 +208,7 @@ class AutoTrainServiceTest(unittest.TestCase):
         self.assertTrue(followup_config["model_recipe"]["modules"]["aux_logits"])
         self.assertTrue(followup_config["params"]["aux_logits"])
 
-    def test_build_followup_config_prefers_structured_change_views(self) -> None:
+    def test_build_followup_config_prefers_flat_changes_for_ai_proposals(self) -> None:
         latest_config = _build_auto_train_config_payload(
             dataset_name="cifar10",
             model_family="googlenet",
@@ -237,12 +237,12 @@ class AutoTrainServiceTest(unittest.TestCase):
             },
         )
 
-        self.assertEqual(followup_config["train_hyp"]["lr0"], 0.001)
-        self.assertEqual(followup_config["train_hyp"]["augmentation"]["mixup"], 0.4)
-        self.assertTrue(followup_config["model_recipe"]["modules"]["aux_logits"])
-        self.assertEqual(followup_config["params"]["learning_rate"], 0.001)
-        self.assertEqual(followup_config["params"]["augmentation_params"]["mixup_alpha"], 0.4)
-        self.assertTrue(followup_config["params"]["aux_logits"])
+        self.assertEqual(followup_config["train_hyp"]["lr0"], 0.009)
+        self.assertEqual(followup_config["train_hyp"]["augmentation"]["mixup"], 0.1)
+        self.assertFalse(followup_config["model_recipe"]["modules"]["aux_logits"])
+        self.assertEqual(followup_config["params"]["learning_rate"], 0.009)
+        self.assertEqual(followup_config["params"]["augmentation_params"]["mixup_alpha"], 0.1)
+        self.assertFalse(followup_config["params"]["aux_logits"])
 
     def test_build_followup_config_normalizes_head_name_recipe_compatibility(self) -> None:
         dataset_name = f"dataset_{uuid4().hex}"
@@ -296,6 +296,89 @@ class AutoTrainServiceTest(unittest.TestCase):
 
         self.assertEqual(followup_config["model_recipe"]["components"]["backbone"]["name"], "resnet18_native")
         self.assertEqual(followup_config["model_recipe"]["components"]["neck"]["name"], "avg_pool")
+        self.assertEqual(followup_config["model_recipe"]["components"]["head"]["name"], "dropout_linear")
+
+    def test_build_followup_config_normalizes_top_level_component_slot_payloads(self) -> None:
+        dataset_name = f"dataset_{uuid4().hex}"
+        latest_config = ExperimentConfig.model_validate(
+            _build_auto_train_config_payload(
+                dataset_name=dataset_name,
+                model_family="resnet",
+                model_name="resnet18",
+                parameter_space_version="resnet18@v1",
+            )
+        )
+
+        followup_config = _build_followup_config(
+            latest_experiment={"config": latest_config.model_dump(mode="python")},
+            proposal_payload={
+                "changes": {},
+                "recipe_changes": {
+                    "neck": {"name": "gem_pool"},
+                },
+            },
+        )
+
+        self.assertEqual(followup_config["model_recipe"]["components"]["backbone"]["name"], "resnet18_native")
+        self.assertEqual(followup_config["model_recipe"]["components"]["neck"]["name"], "gem_pool")
+        self.assertEqual(followup_config["model_recipe"]["components"]["head"]["name"], "native_classifier")
+
+    def test_build_followup_config_normalizes_legacy_component_name_fields(self) -> None:
+        dataset_name = f"dataset_{uuid4().hex}"
+        latest_config = ExperimentConfig.model_validate(
+            _build_auto_train_config_payload(
+                dataset_name=dataset_name,
+                model_family="resnet",
+                model_name="resnet18",
+                parameter_space_version="resnet18@v1",
+            )
+        )
+
+        followup_config = _build_followup_config(
+            latest_experiment={"config": latest_config.model_dump(mode="python")},
+            proposal_payload={
+                "changes": {},
+                "recipe_changes": {
+                    "neck_name": "gem_pool",
+                    "head_name": "dropout_linear",
+                },
+            },
+        )
+
+        self.assertEqual(followup_config["model_recipe"]["components"]["neck"]["name"], "gem_pool")
+        self.assertEqual(followup_config["model_recipe"]["components"]["head"]["name"], "dropout_linear")
+        self.assertEqual(followup_config["model_recipe"]["head_config"]["pooling_type"], "gem")
+        self.assertEqual(followup_config["model_recipe"]["head_config"]["classifier_type"], "linear")
+        self.assertEqual(followup_config["model_recipe"]["head_config"]["classifier_dropout"], 0.2)
+
+    def test_build_followup_config_prefers_flat_changes_over_ai_structured_patches(self) -> None:
+        dataset_name = f"dataset_{uuid4().hex}"
+        latest_config = ExperimentConfig.model_validate(
+            _build_auto_train_config_payload(
+                dataset_name=dataset_name,
+                model_family="resnet",
+                model_name="resnet18",
+                parameter_space_version="resnet18@v1",
+            )
+        )
+
+        followup_config = _build_followup_config(
+            latest_experiment={"config": latest_config.model_dump(mode="python")},
+            proposal_payload={
+                "changes": {
+                    "mixup_alpha": 0.2,
+                    "head_name": "dropout_linear",
+                },
+                "train_hyp_changes": {"augmentation": {"mixup": 0.7}},
+                "recipe_changes": {
+                    "components": {
+                        "head": {"name": "linear"},
+                    },
+                },
+            },
+        )
+
+        self.assertEqual(followup_config["train_hyp"]["augmentation"]["mixup"], 0.2)
         self.assertEqual(followup_config["model_recipe"]["components"]["head"]["name"], "dropout_linear")
 
     def test_validate_followup_proposal_rejects_builder_incompatible_recipe_changes(self) -> None:
@@ -532,7 +615,11 @@ class AutoTrainServiceTest(unittest.TestCase):
             "mode": "auto",
             "run_id": "run_1",
             "baseline": {"experiment_id": "exp_1", "summary": "top1_acc=0.81"},
-            "rounds": [],
+            "rounds": [
+                {"round_index": 1, "result": {"experiment_id": "exp_2"}},
+                {"round_index": 2, "result": {"experiment_id": "exp_3"}},
+                {"round_index": 3, "result": {"experiment_id": "exp_4"}},
+            ],
             "current_proposal": None,
         }
 
@@ -563,12 +650,40 @@ class AutoTrainServiceTest(unittest.TestCase):
         )
         self.assertIsNone(updated_summary.get("ai_summary_error"))
 
+    def test_try_attach_auto_train_ai_summary_skips_short_searches(self) -> None:
+        search_summary = {
+            "mode": "auto",
+            "run_id": "run_1",
+            "baseline": {"experiment_id": "exp_1", "summary": "top1_acc=0.81"},
+            "rounds": [
+                {"round_index": 1, "result": {"experiment_id": "exp_2"}},
+                {"round_index": 2, "result": {"experiment_id": "exp_3"}},
+            ],
+            "current_proposal": None,
+        }
+
+        with patch("app.services.auto_train_service._generate_auto_train_ai_summary") as mock_generate_summary:
+            updated_summary = _try_attach_auto_train_ai_summary(
+                "auto_test",
+                "run_1",
+                search_summary,
+                stop_reason="Stopped by user request.",
+            )
+
+        mock_generate_summary.assert_not_called()
+        self.assertIsNone(updated_summary["ai_summary"])
+        self.assertIsNone(updated_summary["ai_summary_error"])
+
     def test_try_attach_auto_train_ai_summary_records_error_when_provider_fails(self) -> None:
         search_summary = {
             "mode": "auto",
             "run_id": "run_1",
             "baseline": {"experiment_id": "exp_1", "summary": "top1_acc=0.81"},
-            "rounds": [],
+            "rounds": [
+                {"round_index": 1, "result": {"experiment_id": "exp_2"}},
+                {"round_index": 2, "result": {"experiment_id": "exp_3"}},
+                {"round_index": 3, "result": {"experiment_id": "exp_4"}},
+            ],
             "current_proposal": None,
         }
 

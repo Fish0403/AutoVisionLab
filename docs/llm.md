@@ -85,6 +85,8 @@
 - `model_name` 不可修改
 - `epochs` 是否可修改取决于当前 run 的 `search_policy`
 - `changes` 至少包含一个非空字段
+- 只在 `changes` 中返回本轮改动；未改动字段保持 `null`
+- 不返回 `train_hyp_changes`、`recipe_changes` 这类结构化 patch
 - `hypothesis` 和 `reason` 使用简洁英文
 - 只能使用当前参数空间和白名单字段
 - 结合整个 run 的历史，而不是只看最后一轮
@@ -104,6 +106,7 @@
 - `Experiment history`
 - `Allowed AI change fields`
 - `Allowed field definitions`
+- `Current source experiment constraints`
 
 其中 `Experiment history` 是按实验整理后的结构化摘要，包含：
 
@@ -114,6 +117,14 @@
 - `train_hyp`
 - `model_recipe`
 - 既往 `proposal`
+
+其中 `Current source experiment constraints` 会附带当前分支源 experiment 的完整 config 摘要：
+
+- `params`
+- `train_hyp`
+- `model_recipe`
+
+也就是说，模型看到的是“当前完整配置 + 历史轨迹”，但返回时只需要给出本轮 delta，也就是 `changes`。
 
 ### 示例输出
 
@@ -142,10 +153,7 @@
     "neck_name": "avg_pool",
     "head_name": "linear"
   },
-  "train_hyp_changes": null,
-  "recipe_changes": null,
-  "reason": "The current best result already sits in a stable range, so a more conservative tuning step is a reasonable next move.",
-  "risk": "low"
+  "reason": "The current best result already sits in a stable range, so a more conservative tuning step is a reasonable next move."
 }
 ```
 
@@ -171,6 +179,7 @@
 
 - 输出仍然保持单段文本，不扩展结构化字段
 - 详细 prompt 约束以代码实现为准
+- 当 `Auto Train` 的已完成轮数少于 `3` 时，后端不会请求这段 summary，避免在样本过少时生成噪声结论
 
 ## Compare Summary 通讯
 

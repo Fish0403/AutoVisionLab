@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from app.schemas.common import ArtifactPaths, MetricsSnapshot, ReflectionOutcome, ResourceUsage, ResultStatus, RiskLevel
+from app.schemas.common import ArtifactPaths, MetricsSnapshot, ReflectionOutcome, ResourceUsage, ResultStatus
 from app.schemas.parameter_space import (
     ExperimentParams,
     build_model_recipe_change_payload,
@@ -48,7 +48,6 @@ class ProposalSchema(BaseModel):
     train_hyp_changes: dict[str, Any] | None = None
     recipe_changes: dict[str, Any] | None = None
     reason: str
-    risk: RiskLevel
 
     @model_validator(mode="after")
     def populate_recipe_change_views(self) -> "ProposalSchema":

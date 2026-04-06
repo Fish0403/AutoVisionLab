@@ -56,6 +56,7 @@ AUTO_TRAIN_EXPERIMENT_RETRY_BASE_SECONDS = 5
 AUTO_TRAIN_EXPERIMENT_RETRY_CAP_SECONDS = 60
 AUTO_TRAIN_MAX_BASELINE_ATTEMPTS = 3
 AUTO_TRAIN_MAX_EXPERIMENT_ATTEMPTS_PER_ROUND = 3
+AUTO_TRAIN_MIN_ROUNDS_FOR_AI_SUMMARY = 3
 AUTO_TRAIN_PROPOSAL_RETRY_SCHEDULE_SECONDS = (30, 60, 180)
 
 
@@ -200,6 +201,7 @@ def _ensure_no_active_task() -> None:
 
 def _build_summary_snapshot(experiment_detail: dict) -> dict:
     metrics = (experiment_detail.get("result") or {}).get("metrics") or {}
+    resource = (experiment_detail.get("result") or {}).get("resource") or {}
     summary_parts = []
     for key in ("top1_acc", "val_loss", "train_loss", "best_epoch"):
         value = metrics.get(key)
@@ -219,6 +221,7 @@ def _build_summary_snapshot(experiment_detail: dict) -> dict:
         "decision": experiment_detail.get("decision"),
         "decision_reason": experiment_detail.get("decision_reason"),
         "metrics": metrics,
+        "resource": resource,
         "summary": summary_text,
     }
 
@@ -437,6 +440,11 @@ def _try_attach_auto_train_ai_summary(
 ) -> dict[str, object]:
     """Attach one AI-generated summary to the auto-train payload when possible."""
     updated_summary = deepcopy(search_summary)
+    completed_rounds = updated_summary.get("rounds")
+    if not isinstance(completed_rounds, list) or len(completed_rounds) < AUTO_TRAIN_MIN_ROUNDS_FOR_AI_SUMMARY:
+        updated_summary["ai_summary"] = None
+        updated_summary["ai_summary_error"] = None
+        return updated_summary
     try:
         ai_summary = _generate_auto_train_ai_summary(
             run_id,
@@ -537,45 +545,23 @@ def _wait_for_experiment_terminal(task_id: str, experiment_id: str, *, started_a
 
 def _resolve_structured_train_hyp_changes(proposal_payload: dict) -> dict:
     """Return the structured train_hyp change payload for one proposal."""
+    effective_changes = proposal_payload.get("changes") or {}
+    if isinstance(effective_changes, dict) and any(value is not None for value in effective_changes.values()):
+        return build_train_hyp_change_payload(effective_changes)
     if isinstance(proposal_payload.get("train_hyp_changes"), dict):
         return proposal_payload["train_hyp_changes"]
-    return build_train_hyp_change_payload(proposal_payload.get("changes") or {})
+    return {}
 
 
 def _resolve_structured_recipe_changes(proposal_payload: dict) -> dict:
     """Return the structured model_recipe change payload for one proposal."""
-    raw_recipe_changes = proposal_payload.get("recipe_changes")
-    if not isinstance(raw_recipe_changes, dict):
-        return build_model_recipe_change_payload(proposal_payload.get("changes") or {})
-
-    normalized_recipe_changes = deepcopy(raw_recipe_changes)
     change_payload = proposal_payload.get("changes") or {}
-    compatibility_change_payload = {
-        field_name: value
-        for field_name, value in change_payload.items()
-        if field_name in {"neck_name", "head_name", "pooling_type", "classifier_dropout"}
-    }
-    derived_recipe_changes = build_model_recipe_change_payload(compatibility_change_payload)
-    for field_name, value in derived_recipe_changes.items():
-        if isinstance(value, dict) and isinstance(normalized_recipe_changes.get(field_name), dict):
-            normalized_recipe_changes[field_name] = _merge_nested_change_payloads(
-                normalized_recipe_changes.get(field_name) or {},
-                value,
-            )
-        else:
-            normalized_recipe_changes[field_name] = value
-    return normalized_recipe_changes
-
-
-def _merge_nested_change_payloads(base_payload: dict, override_payload: dict) -> dict:
-    """Recursively merge one structured change payload, preferring override values."""
-    merged_payload = deepcopy(base_payload)
-    for field_name, value in override_payload.items():
-        if isinstance(value, dict) and isinstance(merged_payload.get(field_name), dict):
-            merged_payload[field_name] = _merge_nested_change_payloads(merged_payload.get(field_name) or {}, value)
-        else:
-            merged_payload[field_name] = value
-    return merged_payload
+    if isinstance(change_payload, dict) and any(value is not None for value in change_payload.values()):
+        return build_model_recipe_change_payload(change_payload)
+    raw_recipe_changes = proposal_payload.get("recipe_changes")
+    if isinstance(raw_recipe_changes, dict):
+        return raw_recipe_changes
+    return {}
 
 
 def _build_followup_config(latest_experiment: dict, proposal_payload: dict) -> dict:

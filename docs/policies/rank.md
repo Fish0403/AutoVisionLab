@@ -59,6 +59,7 @@
   - `max` 或 `min`
 - `min_primary_metric_improvement`
   - 主指标需要达到的最小改进量
+  - 当前默认值是 `0.001`，对 `top1_acc` 这类 `0~1` 指标表示至少提升 `0.1%`
 - `primary_metric_parity_epsilon`
   - 主指标视为持平的灰区阈值
 - `tie_breaker_metric`

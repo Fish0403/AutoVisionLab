@@ -498,6 +498,26 @@ def _normalize_model_recipe_components_payload(model_recipe_payload: dict[str, A
         return normalized_payload
 
     default_components = build_default_model_recipe_components(base_model=base_model)
+    legacy_neck_name = normalized_payload.pop("neck_name", None)
+    if isinstance(legacy_neck_name, str) and legacy_neck_name.strip():
+        normalized_payload.setdefault("components", {}).setdefault("neck", {})["name"] = legacy_neck_name
+        if legacy_neck_name == "gem_pool":
+            normalized_payload.setdefault("head_config", {})["pooling_type"] = "gem"
+        elif legacy_neck_name == "avg_pool":
+            normalized_payload.setdefault("head_config", {})["pooling_type"] = "avg"
+
+    legacy_head_name = normalized_payload.pop("head_name", None)
+    if isinstance(legacy_head_name, str) and legacy_head_name.strip():
+        normalized_payload.setdefault("components", {}).setdefault("head", {})["name"] = legacy_head_name
+        normalized_payload = _merge_partial_payload(
+            normalized_payload,
+            _build_head_component_compatibility_payload(legacy_head_name),
+        )
+    for slot_name in ("backbone", "neck", "head"):
+        slot_payload = normalized_payload.get(slot_name)
+        if isinstance(slot_payload, dict) and isinstance(slot_payload.get("name"), str):
+            normalized_payload.setdefault("components", {})[slot_name] = slot_payload
+            normalized_payload.pop(slot_name, None)
     current_components = normalized_payload.get("components")
     if isinstance(current_components, dict):
         normalized_payload["components"] = _merge_partial_payload(default_components, current_components)
