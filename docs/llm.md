@@ -90,7 +90,7 @@
 - `hypothesis` 和 `reason` 使用简洁英文
 - 只能使用当前参数空间和白名单字段
 - 结合整个 run 的历史，而不是只看最后一轮
-- 涉及增强时应直接使用当前有效字段和取值，例如 `augmentation_policy=none/basic`、`mixup_alpha`、`cutmix_alpha`、`random_erasing_prob`
+- 涉及增强时应直接使用当前有效且可叠加的字段和取值，例如 `mixup_alpha`、`cutmix_alpha`、`random_erasing_prob`
 
 补充说明：
 
@@ -100,15 +100,30 @@
 
 ### 传给模型的数据
 
-用户提示词里会包含四部分：
+当前 proposal prompt 由多个结构化 block 组成，按顺序依次拼接：
 
-- `Run summary`
-- `Experiment history`
-- `Allowed AI change fields`
-- `Allowed field definitions`
-- `Current source experiment constraints`
+- `system_prompt`
+- `output_schema_prompt`
+- `policy_prompt`
+- `base_prompt`
+- `source_prompt`
+- `stage_history_prompt`
+- `current_stage_compacted_prompt`
+- `past_stage_summaries_prompt`
+- `retry_prompt`
 
-其中 `Experiment history` 是按实验整理后的结构化摘要，包含：
+其中：
+
+- `system_prompt` 除稳定规则外，还会带最小 run 背景，并明确说明 `base/source/current/history` 之间的关系
+- `policy_prompt` 由当前 run 的 `search_policy`、`parameter_space` 和 `epochs` 规则拼成
+- `base_prompt` 提供 baseline 的完整关键配置和结果
+- `source_prompt` 提供当前 source 相对 base 的阶段变化和结果
+- `stage_history_prompt` 提供当前 source 阶段最近几轮未压缩尝试
+- `current_stage_compacted_prompt` 提供当前 source 阶段更早尝试的 bucket 压缩总结
+- `past_stage_summaries_prompt` 提供历史 best-to-best 阶段压缩总结
+- `retry_prompt` 只在 proposal 重试时追加，用来喂回拒绝原因
+
+`Experiment history` 是按实验整理后的结构化摘要，包含：
 
 - 实验状态和决策
 - 指标
@@ -118,13 +133,85 @@
 - `model_recipe`
 - 既往 `proposal`
 
-其中 `Current source experiment constraints` 会附带当前分支源 experiment 的完整 config 摘要：
+也就是说，模型看到的是“baseline 完整配置 + source/current/history 的 delta 或摘要”，返回时只需要给出本轮 delta，也就是 `changes`。
 
-- `params`
-- `train_hyp`
-- `model_recipe`
+### Prompt Block 语义
 
-也就是说，模型看到的是“当前完整配置 + 历史轨迹”，但返回时只需要给出本轮 delta，也就是 `changes`。
+当前 proposal prompt 的 block 语义固定如下：
+
+| Block | 作用 |
+| --- | --- |
+| `system_prompt` | 稳定规则层，说明输出要求，并补充最小 run 背景与 `base/source/current/history` 的关系 |
+| `output_schema_prompt` | 最终返回 JSON 的结构骨架 |
+| `policy_prompt` | 当前 proposal 的字段约束、parameter space 和 `epochs` 规则 |
+| `base_prompt` | 初始 baseline 的完整关键配置和结果 |
+| `source_prompt` | 当前 source 相对 base 的 delta 和结果；当 source 与 base 相同时省略 |
+| `stage_history_prompt` | 当前 source 之后最近几轮未压缩尝试，每条都相对 source 表达 |
+| `current_stage_compacted_prompt` | 当前阶段更早历史的 bucket 压缩摘要 |
+| `past_stage_summaries_prompt` | 更早历史阶段的 best-to-best 压缩摘要 |
+| `retry_prompt` | 上一次 proposal 被拒绝时的 rejection feedback |
+
+约束：
+
+- `base_prompt` 是唯一保留完整关键配置的实验块
+- 除 `base_prompt` 外，其余实验相关 block 应优先表达 delta、局部历史或压缩摘要
+- `source_prompt` 和 `stage_history_prompt` 都允许在没有内容时省略
+
+### Result Snapshot 口径
+
+proposal prompt 内的 `result_snapshot` 固定使用以下结构：
+
+| 字段 | 含义 |
+| --- | --- |
+| `status` | `success` / `failed` / `discarded` |
+| `metrics` | `top1_acc`、`val_loss`、`train_loss`、`best_epoch`、`latency_ms`、`parameter_count_million` |
+| `resource` | `training_seconds`、`gpu_memory_mb` |
+
+补充：
+
+- `latency_ms` 和 `parameter_count_million` 当前放在 `metrics` 视图中
+- `params` 不进入 `result_snapshot`，避免与配置层重复
+- `execution_error_summary` 只记录实验执行或训练失败
+- `retry_prompt` 只记录 proposal rejection，不记录训练报错
+
+### 压缩与缓存
+
+当前 proposal 生成链路已经使用 run 级内存缓存，但缓存的不是数据库 ORM 对象，而是运行时历史快照和压缩结果。
+
+压缩规则：
+
+- 当出现新的 `best` 时，旧 source 到新 best 之间的阶段会压成一条 `past_stage_summary`
+- 当当前 source 阶段累计尝试不超过 `20` 轮时，全部保留在 `stage_history_prompt`
+- 当当前 source 阶段累计尝试超过 `20` 轮时，只保留最近 `10` 条未压缩 history items
+- 更早部分按每 `10` 条一桶压成 `current_stage_compacted_prompt.buckets`
+
+缓存边界：
+
+- 数据事实源仍然是数据库里的 `RunModel` / `ExperimentModel`
+- `history_selector.py` 只负责切历史段
+- `history_compactor.py` 只负责压缩已选中的历史段
+- `prompt_builder.py` 只负责把 block 拼成最终 prompt
+- 缓存层只保存历史快照和压缩结果，避免下一轮 proposal 重复做相同工作
+
+缓存条目当前包含：
+
+- `run_id`
+- `history_signature`
+- `experiment_history_snapshot`
+- `run_payload`
+- `source_constraints`
+- `base_experiment_payload`
+- `source_experiment_payload`
+- `recent_history_queue`
+- `compacted_bucket_queue`
+- `past_stage_summaries`
+
+失效规则：
+
+- proposal 生成前先按 `run` 的历史签名检查缓存
+- 命中则直接复用
+- 签名变化则整 run 重建缓存 entry
+- 同一次 proposal 的 retry 不会重建缓存
 
 ### 示例输出
 
@@ -142,7 +229,6 @@
     "epochs": null,
     "weight_decay": 0.0001,
     "scheduler": "cosine",
-    "augmentation_policy": null,
     "mixup_alpha": null,
     "cutmix_alpha": null,
     "random_erasing_prob": null,
@@ -233,6 +319,8 @@
 与 LLM 交互相关的运行级日志会写到：
 
 - `artifacts/runs/<run_id>/llm.jsonl`
+- `artifacts/runs/<run_id>/prompt_context.json`
+- `artifacts/runs/<run_id>/proposal_prompts.md`
 
 普通文本运行日志会写到：
 
@@ -240,6 +328,9 @@
 
 说明：
 
+- `llm.jsonl` 记录结构化 LLM 事件
+- `prompt_context.json` 记录结构化 prompt block 事件
+- `proposal_prompts.md` 记录人类可读的 prompt 请求与响应
 - 本地仓库当前没有现成的 `artifacts` 日志文件
 - 下面的示例按代码实际写入格式整理
 
@@ -256,6 +347,38 @@
 
 ```json
 {"timestamp":"2026-04-02T08:00:05Z","event_type":"proposal_error","payload":{"attempt":1,"prompt_tokens_estimate":2140,"error":"chat completions failed with status=502 body=..."}}
+```
+
+### `prompt_context` 日志示例
+
+`prompt_context.json` 的结构大致如下：
+
+```json
+{
+  "run_id": "run_001",
+  "events": [
+    {
+      "timestamp": "2026-04-02T08:00:00Z",
+      "event_type": "proposal_prompt_context",
+      "payload": {
+        "attempt": 1,
+        "history_items": 4,
+        "prompt_chars": 8124,
+        "prompt_tokens_estimate": 2140,
+        "system_prompt_chars": 512,
+        "system_prompt_tokens_estimate": 132,
+        "blocks": [
+          {
+            "name": "system_prompt",
+            "role": "system",
+            "render_priority": 0,
+            "payload": "..."
+          }
+        ]
+      }
+    }
+  ]
+}
 ```
 
 ### `proposal` 文本日志示例

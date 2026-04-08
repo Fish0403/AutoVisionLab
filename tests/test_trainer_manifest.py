@@ -39,7 +39,6 @@ def _build_config_payload(model_name: str, model_family: str, parameter_space_ve
             "epochs": 10,
             "weight_decay": 0.0001,
             "scheduler": "cosine",
-            "augmentation_policy": "basic",
             "augmentation_params": {
                 "mixup_alpha": 0.2,
                 "cutmix_alpha": 0.0,

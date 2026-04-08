@@ -1,0 +1,138 @@
+<div align="center">
+
+# AutoVisionLab
+
+<p>AI-powered automation for computer vision model optimization and experiment analysis workflows.</p>
+
+<p><a href="README.md">中文</a> | English</p>
+
+<p>
+  <img src="https://img.shields.io/badge/Frontend-React-61DAFB?logo=react&logoColor=white" alt="React" />
+  <img src="https://img.shields.io/badge/Backend-FastAPI-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/Training-PyTorch-EE4C2C?logo=pytorch&logoColor=white" alt="PyTorch" />
+  <img src="https://img.shields.io/badge/Database-SQLite-003B57?logo=sqlite&logoColor=white" alt="SQLite" />
+</p>
+
+</div>
+
+Industrial vision model optimization still involves a lot of manual work: tuning parameters, running experiments, checking results, and iterating again. The real cost is often not the problem itself, but the repetition, scattered comparisons, and constant tool switching. AutoVisionLab focuses on that repetitive part of the workflow. It brings AI into the training and experimentation loop so results are collected, structured, and fed into a shared analysis flow.
+
+Engineers still define the goals, constraints, and acceptance criteria, while AI handles the repetitive but necessary analysis and iteration work. The system compares past runs, summarizes trends, suggests the next direction to explore, and keeps the whole process easier to trace, compare, and build on over time.
+
+## Core Capabilities
+
+- Compare: Used for multi-model baseline comparison and focused review of key metric differences
+- Search: Continues searching for better configurations based on experiment history, while tracking each iteration and the current best path
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/compare.png" alt="Compare mode" />
+    </td>
+    <td width="50%" align="center">
+      <img src="docs/screenshots/search.png" alt="Search mode" />
+    </td>
+  </tr>
+</table>
+
+## Example Outcomes
+
+Take the local NEU search run (`run_3bf12efc`) as an example: it starts from the base experiment and reaches a stronger best configuration through a sequence of explicit deltas.
+
+### Cumulative Deltas vs Base
+
+| Stage | Experiment | Top-1 Acc | Delta vs Base | What Changed |
+| --- | --- | ---: | --- | --- |
+| Base | `exp_ec639557` | 0.9611 | - | `adamw`, `lr=0.003`, `avg_pool`, `linear`, no mixup/cutmix/random erasing |
+| Best path 1 | `exp_50f10900` | 0.9694 | +0.0083 | Switched to `focal_loss` with `focal_gamma=2.0` |
+| Best path 2 | `exp_782f439d` | 0.9722 | +0.0111 | Lowered `learning_rate` to `0.002` |
+| Best path 3 | `exp_d206fd8b` | 0.9750 | +0.0139 | Changed neck to `gem_pool` |
+| Best path 4 | `exp_b56de8ec` | 0.9806 | +0.0195 | Added `dropout_linear` head |
+| Current best | `exp_72c2a950` | 0.9861 | +0.0250 | Increased `label_smoothing` to `0.15` |
+
+This path gained most of its improvement from focal loss, a lower learning rate, lightweight architecture changes, and a final label smoothing increase; later mixup, cutmix, weight decay, focal gamma, batch size, and image size branches did not beat the current best.
+
+<p align="center">
+  <img src="docs/screenshots/example.png" alt="Search effect showcase" width="80%" />
+</p>
+
+## Quick Start
+
+0. Prepare the dataset.
+
+   Classification datasets are organized in two layers:
+
+   - `data/raw/<dataset_name>/` stores images grouped by class name
+   - `data/classification/<dataset_name>/` stores split manifests generated from `raw/`
+
+   The trainer reads split manifests such as `train.txt`, `val.txt`, and optional `test.txt`.
+
+   Example with the bundled `NEU` dataset:
+
+   1. Download `NEU-CLS` from the official page: [NEU surface defect database](http://faculty.neu.edu.cn/songkechen/zh_CN/zdylm/263270/list/)
+   2. Extract `NEU-CLS` under `data/raw/NEU-CLS/`
+   3. Use `data/prepare_neucls_split.py` to generate `train.txt`, `val.txt`, and `test.txt`
+
+      ```bash
+      python3 data/prepare_neucls_split.py --source-root data/raw/NEU-CLS --dataset-name NEU --val-ratio 0.2 --test-ratio 0.1 --seed 42 --force
+      ```
+
+   Demo Mode is available for quick local testing. When enabled, it uses a smaller deterministic subset if the dataset is larger than the demo limit.
+
+1. Create and activate a Python virtual environment.
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install --upgrade pip
+   ```
+
+2. Install the backend dependencies.
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Install the frontend dependencies.
+
+   ```bash
+   cd frontend/web
+   npm install
+   ```
+
+4. Configure the environment.
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   Fill in the API key, model, and base URL in `.env` before starting the backend.
+
+5. Start the backend and frontend.
+
+   ```bash
+   ./scripts/run_backend.sh
+   ./scripts/run_frontend.sh
+   ```
+
+Default endpoints:
+
+- Backend: `http://127.0.0.1:8000`
+- Frontend: `http://127.0.0.1:5173`
+
+## Documentation
+
+- [docs/overview.md](docs/overview.md)
+- [docs/artifacts.md](docs/artifacts.md)
+- [docs/llm.md](docs/llm.md)
+- [docs/api.md](docs/api.md)
+- [docs/schemas/model_recipe.md](docs/schemas/model_recipe.md)
+- [docs/schemas/train_hyp.md](docs/schemas/train_hyp.md)
+- [docs/schemas/dataset_recipe.md](docs/schemas/dataset_recipe.md)
+
+## License
+
+This project is licensed under the [Apache License 2.0](LICENSE).
+
+If you find this project useful, feel free to star the repository ⭐
+[![Star on GitHub](https://img.shields.io/badge/Star_on_GitHub-AutoVisionLab-181717?style=for-the-badge&logo=github)](https://github.com/Fish0403/AutoVisionLab)

@@ -33,7 +33,7 @@ class ClassificationAugmentationsTest(unittest.TestCase):
         self.assertEqual(std, (0.1103, 0.1103, 0.1103))
 
     def test_build_train_transform_uses_dataset_specific_normalization(self) -> None:
-        augmentation = TrainHypAugmentation(policy="basic", mixup=0.0, cutmix=0.0, random_erasing=0.0)
+        augmentation = TrainHypAugmentation(mixup=0.0, cutmix=0.0, random_erasing=0.0)
 
         transform = build_train_transform(224, augmentation, dataset_name="NEU")
 

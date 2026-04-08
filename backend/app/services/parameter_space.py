@@ -46,7 +46,7 @@ BASIC_HPARAM_SEARCH_FIELDS = {
 }
 STRATEGY_SEARCH_FIELDS: set[str] = set()
 LOSS_SEARCH_FIELDS = {"loss_name", "focal_gamma"}
-AUGMENTATION_SEARCH_FIELDS = {"augmentation_policy", "mixup_alpha", "cutmix_alpha", "random_erasing_prob"}
+AUGMENTATION_SEARCH_FIELDS = {"mixup_alpha", "cutmix_alpha", "random_erasing_prob"}
 MODEL_MODULE_SEARCH_FIELDS = {
     "aux_logits",
     "neck_name",

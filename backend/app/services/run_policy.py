@@ -101,7 +101,6 @@ def _extract_experiment_search_values(experiment: dict[str, Any]) -> dict[str, A
         "scheduler": train_hyp_payload.get("scheduler"),
         "label_smoothing": train_hyp_payload.get("label_smoothing"),
         "image_size": train_hyp_payload.get("image_size"),
-        "augmentation_policy": augmentation_payload.get("policy"),
         "mixup_alpha": augmentation_payload.get("mixup"),
         "cutmix_alpha": augmentation_payload.get("cutmix"),
         "random_erasing_prob": augmentation_payload.get("random_erasing"),

@@ -5,22 +5,35 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections import deque
 from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.context.history_context import build_proposal_history_context
+from app.context import build_proposal_prompt_bundle
+from app.context.proposal_policy import build_policy_prompt_payload
 from app.llm.aihubmix_client import AIHubMixClient
 from app.models.experiment import ExperimentModel
 from app.models.run import RunModel
+from app.prompts.context_blocks import build_epoch_policy_instruction, build_retry_note
 from app.schemas.ai import ProposalChanges, ProposalSchema
+from app.schemas.prompt_context import PromptBlock
 from app.schemas.parameter_space import EditableParameterSpace, SearchPolicy
 from app.services.parameter_space import (
     explain_proposal_rejection,
     get_allowed_ai_search_fields,
     is_epoch_search_enabled,
 )
-from app.services.run_logging import append_run_llm_event, append_run_log
+from app.services.log_events import format_run_log_message
+from app.services.proposal_context_cache import RunProposalContextCacheEntry, get_or_build_run_proposal_context_cache_entry
+from app.services.run_logging import (
+    append_run_llm_event,
+    append_run_log,
+    append_run_prompt_context_event,
+    append_run_prompt_markdown_event,
+)
 
 
 def _get_effective_change_map(proposal: ProposalSchema) -> dict[str, Any]:
@@ -51,49 +64,44 @@ def _contains_unsupported_text_hint(
     """Return one unsupported textual hint if the proposal text references unavailable options."""
     combined_text = f"{proposal.hypothesis} {proposal.reason}".lower()
     unsupported_patterns = {
-        r"\baugmentation_level\b": ("augmentation_policy", "augmentation_level"),
-        r"\b(?:augmentation[_\s-]*policy|policy)\s*(?:=|:)?\s*[\"']?medium\b": (
-            "augmentation_policy",
-            "medium",
-        ),
-        r"\b(?:augmentation[_\s-]*policy|policy)\s*(?:=|:)?\s*[\"']?strong\b": (
-            "augmentation_policy",
-            "strong",
-        ),
-        r"\b(?:augmentation[_\s-]*policy|policy)\s*(?:=|:)?\s*[\"']?autoaugment\b": (
-            "augmentation_policy",
-            "autoaugment",
-        ),
-        r"\"augmentation_policy\"\s*:\s*\"(medium|strong|autoaugment)\"": (
-            "augmentation_policy",
-            None,
-        ),
+        r"\baugmentation_level\b": "augmentation_level",
+        r"\b(?:augmentation[_\s-]*policy|policy)\s*(?:=|:)?\s*[\"']?medium\b": "medium",
+        r"\b(?:augmentation[_\s-]*policy|policy)\s*(?:=|:)?\s*[\"']?strong\b": "strong",
+        r"\b(?:augmentation[_\s-]*policy|policy)\s*(?:=|:)?\s*[\"']?autoaugment\b": "autoaugment",
     }
-    augmentation_definition = allowed_field_definitions.get("augmentation_policy") or {}
-    allowed_augmentation_choices = set(augmentation_definition.get("choices") or [])
-    for pattern, (field_name, token_override) in unsupported_patterns.items():
+    for pattern, token_override in unsupported_patterns.items():
         match = re.search(pattern, combined_text)
         if match is None:
             continue
         token = token_override or match.group(1)
-        if token not in allowed_augmentation_choices:
-            return f"text mentions unsupported {field_name} option: {token}"
+        return f"text mentions unsupported augmentation strategy: {token}"
     return None
 
 
-def _build_retry_note(
-    *,
-    last_error: str | None,
-) -> str:
-    """Build targeted retry guidance after one invalid proposal."""
-    retry_lines = [
-        "",
-        "The previous proposal was invalid. Fix the issues below before returning a new complete JSON object.",
-    ]
-    if last_error:
-        retry_lines.append(f"Previous rejection reason: {last_error}.")
-    retry_lines.append("Choose a more executable direction based on the full history and do not repeat the invalid plan.")
-    return "\n".join(retry_lines)
+def _serialize_prompt_blocks(blocks: list[PromptBlock]) -> list[dict[str, Any]]:
+    """Return prompt blocks in a log-friendly format."""
+    serialized_blocks: list[dict[str, Any]] = []
+    for block in blocks:
+        payload = block.payload.model_dump(mode="python") if hasattr(block.payload, "model_dump") else block.payload
+        serialized_blocks.append(
+            {
+                "name": block.name,
+                "role": block.role,
+                "render_priority": block.render_priority,
+                "payload": payload,
+            }
+        )
+    return serialized_blocks
+
+
+def _build_run_history_signature(run: RunModel) -> tuple[str | None, str | None, str]:
+    """Return one cache signature for run-scoped proposal history."""
+    updated_at = run.updated_at.isoformat() if getattr(run, "updated_at", None) else ""
+    return (
+        run.baseline_experiment_id,
+        run.best_experiment_id,
+        updated_at,
+    )
 
 
 def _summarize_experiment_for_prompt(experiment: ExperimentModel, run: RunModel) -> dict[str, Any]:
@@ -112,7 +120,7 @@ def _summarize_experiment_for_prompt(experiment: ExperimentModel, run: RunModel)
         "status": experiment.status,
         "decision": experiment.decision,
         "decision_reason": experiment.decision_reason,
-        "is_best": experiment.id == run.best_experiment_id,
+        "is_best_so_far": bool(experiment.is_best_so_far),
         "created_at": experiment.created_at.isoformat() if experiment.created_at else None,
         "metrics": {
             "top1_acc": metrics_payload.get("top1_acc"),
@@ -122,6 +130,29 @@ def _summarize_experiment_for_prompt(experiment: ExperimentModel, run: RunModel)
         },
         "resource": {
             "training_seconds": resource_payload.get("training_seconds"),
+            "gpu_memory_mb": resource_payload.get("gpu_memory_mb"),
+            "latency_ms": resource_payload.get("latency_ms"),
+            "parameter_count_million": resource_payload.get("parameter_count_million"),
+        },
+        "result": {
+            "status": result_payload.get("status") or experiment.status,
+            "metrics": {
+                "top1_acc": metrics_payload.get("top1_acc"),
+                "val_loss": metrics_payload.get("val_loss"),
+                "train_loss": metrics_payload.get("train_loss"),
+                "best_epoch": metrics_payload.get("best_epoch"),
+            },
+            "resource": {
+                "training_seconds": resource_payload.get("training_seconds"),
+                "gpu_memory_mb": resource_payload.get("gpu_memory_mb"),
+                "latency_ms": resource_payload.get("latency_ms"),
+                "parameter_count_million": resource_payload.get("parameter_count_million"),
+            },
+        },
+        "config": {
+            "params": params_payload,
+            "train_hyp": train_hyp_payload,
+            "model_recipe": model_recipe_payload,
         },
         "params": params_payload,
         "train_hyp": train_hyp_payload,
@@ -196,11 +227,6 @@ def _load_followup_source_constraints(db: Session, run: RunModel) -> dict[str, A
     return {
         "experiment_id": source_experiment.id,
         "image_size": source_image_size,
-        "config": {
-            "params": config_payload.get("params") or {},
-            "train_hyp": train_hyp_payload,
-            "model_recipe": config_payload.get("model_recipe") or {},
-        },
     }
 
 
@@ -220,16 +246,6 @@ def sanitize_disallowed_proposal_fields(
     return proposal.model_copy(update={"changes": ProposalChanges.model_validate(sanitized_changes)})
 
 
-def _build_epoch_policy_instruction(search_policy: SearchPolicy) -> str:
-    """Return one prompt instruction that matches the current epoch-search policy."""
-    if is_epoch_search_enabled(search_policy):
-        return (
-            "You may change epochs when it is helpful, but treat epochs as training budget rather than a pure strategy field. "
-            "If you change epochs, make sure the hypothesis and reason describe that budget tradeoff clearly. "
-        )
-    return "Do not change epochs; epochs is fixed and the AI is not allowed to adjust it. "
-
-
 def generate_aihubmix_proposal(
     db: Session,
     run_id: str,
@@ -245,114 +261,115 @@ def generate_aihubmix_proposal(
     if run is None:
         raise ValueError("Run not found")
 
-    experiment_history = get_run_history_payload(db, run_id)
-    if not experiment_history:
-        raise ValueError("No experiment is available for this run")
+    history_signature = _build_run_history_signature(run)
 
-    prompt_run_payload = {
-        "id": run.id,
-        "name": run.name,
-        "dataset": run.dataset,
-        "model_name": run.model_name,
-        "best_experiment_id": run.best_experiment_id,
-        "experiment_count": len(experiment_history),
-    }
-    source_constraints = _load_followup_source_constraints(db, run)
+    def _build_context_cache_entry() -> RunProposalContextCacheEntry:
+        experiment_history = get_run_history_payload(db, run_id)
+        if not experiment_history:
+            raise ValueError("No experiment is available for this run")
+        prompt_run_payload = {
+            "id": run.id,
+            "name": run.name,
+            "dataset": run.dataset,
+            "model_name": run.model_name,
+            "best_experiment_id": run.best_experiment_id,
+            "experiment_count": len(experiment_history),
+        }
+        history_context = build_proposal_history_context(
+            run_payload=prompt_run_payload,
+            experiment_history=experiment_history,
+        )
+        compacted_bucket_queue = []
+        if history_context.current_stage_compacted_summary is not None:
+            compacted_bucket_queue = list(history_context.current_stage_compacted_summary.buckets)
+        return RunProposalContextCacheEntry(
+            run_id=run_id,
+            history_signature=history_signature,
+            run_payload=prompt_run_payload,
+            experiment_history_snapshot=experiment_history,
+            source_constraints=_load_followup_source_constraints(db, run),
+            base_experiment_payload=history_context.base_experiment_payload,
+            source_experiment_payload=history_context.source_experiment_payload,
+            recent_history_queue=deque(history_context.recent_stage_history),
+            compacted_bucket_queue=deque(compacted_bucket_queue),
+            past_stage_summaries=list(history_context.past_stage_summaries),
+        )
+
+    context_cache_lookup = get_or_build_run_proposal_context_cache_entry(
+        run_id=run_id,
+        history_signature=history_signature,
+        builder=_build_context_cache_entry,
+    )
+    context_cache_entry = context_cache_lookup.entry
+    cache_summary = context_cache_entry.summarize_cache_state()
+    append_run_log(
+        run_id,
+        format_run_log_message(
+            level="INFO",
+            section="proposal-cache",
+            message=f"cache {context_cache_lookup.cache_status}",
+            history_items=cache_summary["history_items"],
+            recent_history_items=cache_summary["recent_history_items"],
+            compacted_bucket_count=cache_summary["compacted_bucket_count"],
+            compacted_history_items=cache_summary["compacted_history_items"],
+            past_stage_summary_count=cache_summary["past_stage_summary_count"],
+            source_experiment_id=cache_summary["source_experiment_id"],
+        ),
+    )
+    source_constraints = context_cache_entry.source_constraints
     parameter_space = _load_latest_parameter_space(db, run_id)
     search_policy = _load_latest_search_policy(db, run_id)
     allowed_fields = sorted(get_allowed_ai_search_fields(search_policy, parameter_space=parameter_space))
     if not allowed_fields:
         raise ValueError("No AI-editable fields are available for this run.")
-    image_size_definition: dict[str, Any] | None = None
     allowed_field_definitions: dict[str, Any] = {}
     if parameter_space is not None:
-        image_size_param_definition = parameter_space.editable_params.get("image_size")
-        if image_size_param_definition is not None:
-            image_size_definition = image_size_param_definition.model_dump()
         allowed_field_definitions = {
             field_name: definition.model_dump()
             for field_name, definition in parameter_space.editable_params.items()
             if field_name in allowed_fields
         }
-
-    system_prompt = (
-        "Generate the next structured proposal for an image classification training run. "
-        "Return JSON only with no extra text. "
-        "You must strictly follow this schema:"
-        '{"task_type":"classification","model_name":"string","based_on_experiment_ids":["string"],'
-        '"hypothesis":"string","changes":{"optimizer":"string|null","learning_rate":"number|null",'
-        '"batch_size":"number|null","image_size":"number|null","epochs":"number|null","weight_decay":"number|null",'
-        '"scheduler":"string|null","augmentation_policy":"string|null","mixup_alpha":"number|null",'
-        '"cutmix_alpha":"number|null","random_erasing_prob":"number|null","loss_name":"string|null",'
-        '"focal_gamma":"number|null","label_smoothing":"number|null","aux_logits":"boolean|null",'
-        '"neck_name":"string|null","head_name":"string|null"},'
-        '"reason":"string"}'
-        "hypothesis and reason must be concise English. "
-        "Return only the changed fields inside changes; leave every unchanged field as null. "
-        "Do not return train_hyp_changes, recipe_changes, or any other extra top-level fields. "
-        "You will receive the full experiment history for the same run, not only the latest round. "
-        "You must use the full history, focusing on the current best result and metric trends across rounds. "
-        "If past experiments were marked discard, crash, timeout, or failed, treat them as negative examples and avoid repeating ineffective directions. "
-        "based_on_experiment_ids must list the experiment ids you actually used as evidence and may contain multiple ids. "
-        "At least one field in changes must be non-null; never return an empty proposal. "
-        "You may change one or multiple fields, but every field and value must come strictly from the current parameter space. "
-        "hypothesis and reason may only discuss fields and values that truly exist in the current parameter space. "
-        "When discussing augmentation, name the concrete fields and legal values directly, such as augmentation_policy=none/basic, "
-        "mixup_alpha, cutmix_alpha, and random_erasing_prob. Do not invent extra augmentation preset names."
-    )
-    retry_feedback_prompt = (
-        f"Previous full-proposal rejection:\n{json.dumps(retry_feedback, ensure_ascii=True)}\n"
-        if retry_feedback
-        else ""
-    )
-    base_user_prompt = (
-        f"Run summary:\n{json.dumps(prompt_run_payload, ensure_ascii=True)}\n"
-        f"Experiment history:\n{json.dumps(experiment_history, ensure_ascii=True)}\n"
-        f"Allowed AI change fields:\n{json.dumps(allowed_fields, ensure_ascii=True)}\n"
-        f"Allowed field definitions:\n{json.dumps(allowed_field_definitions, ensure_ascii=True)}\n"
-        f"image_size parameter definition:\n{json.dumps(image_size_definition, ensure_ascii=True)}\n"
-        f"Current source experiment constraints:\n{json.dumps(source_constraints, ensure_ascii=True)}\n"
-        f"{retry_feedback_prompt}"
-        "Generate the next proposal for the same run. "
-        "task_type must remain classification. "
-        "Do not change model_name. "
-        f"{_build_epoch_policy_instruction(search_policy)}"
-        "The current source experiment config is the full config that the next run will branch from; use it as the baseline state and only return the delta in changes. "
-        "Only modify fields listed in Allowed AI change fields. "
-        "Every value must strictly follow Allowed field definitions. "
-        "Only propose structured parameter changes. "
-        "If the current parameter space enables component-level search, use neck_name and head_name in changes instead of emitting recipe-structured patches. "
-        "Do not decide only from the last round; use the full run history and keep optimizing around the current best by default. "
-        "If you change image_size, it must stay a positive integer within the allowed parameter space. "
-        "Prefer a smaller value than the current source experiment image_size when that keeps the next step more efficient, but this is a search preference rather than a hard rule. "
-        "You may choose the next search direction freely, but do not mechanically repeat nearly identical suggestions from the most recent rounds."
+    policy_payload = build_policy_prompt_payload(
+        allowed_field_definitions=allowed_field_definitions,
+        epoch_policy_instruction=build_epoch_policy_instruction(is_epoch_search_enabled(search_policy)),
+        require_non_basic_change=require_non_basic_change,
+        max_changed_fields=max_changed_fields,
     )
     client = AIHubMixClient()
     last_error: str | None = None
     for attempt_index in range(4):
-        retry_note = ""
+        effective_retry_feedback = retry_feedback
         if attempt_index > 0:
-            retry_note = _build_retry_note(
-                last_error=last_error,
+            retry_note = build_retry_note(last_error)
+            effective_retry_feedback = (
+                f"{retry_feedback}\n\n{retry_note}" if retry_feedback else retry_note
             )
-        effective_user_prompt = base_user_prompt + retry_note
-        prompt_chars = len(system_prompt) + len(effective_user_prompt)
-        prompt_tokens_estimate = _estimate_text_tokens(system_prompt + effective_user_prompt)
+        prompt_bundle = build_proposal_prompt_bundle(
+            run_payload=context_cache_entry.run_payload,
+            experiment_history=context_cache_entry.experiment_history_snapshot,
+            policy_payload=policy_payload,
+            source_constraints=source_constraints,
+            history_context=context_cache_entry.to_history_context(),
+            retry_feedback=effective_retry_feedback,
+        )
         prompt_metadata = {
             "attempt": attempt_index + 1,
-            "history_items": len(experiment_history),
-            "prompt_chars": prompt_chars,
-            "prompt_tokens_estimate": prompt_tokens_estimate,
+            "history_items": len(context_cache_entry.experiment_history_snapshot),
+            "prompt_chars": prompt_bundle.prompt_chars,
+            "prompt_tokens_estimate": prompt_bundle.prompt_tokens_estimate,
         }
         if on_prompt_metadata is not None:
             on_prompt_metadata(prompt_metadata)
         append_run_log(
             run_id,
-            (
-                f"[proposal-meta] attempt={attempt_index + 1} | "
-                f"history_items={len(experiment_history)} | "
-                f"prompt_chars={prompt_chars} | "
-                f"prompt_tokens_estimate={prompt_tokens_estimate}"
+            format_run_log_message(
+                level="INFO",
+                section="proposal-meta",
+                message="prompt prepared",
+                attempt=attempt_index + 1,
+                history_items=len(context_cache_entry.experiment_history_snapshot),
+                prompt_chars=prompt_bundle.prompt_chars,
+                prompt_tokens_estimate=prompt_bundle.prompt_tokens_estimate,
             ),
         )
         append_run_llm_event(
@@ -360,25 +377,53 @@ def generate_aihubmix_proposal(
             "proposal_request",
             {
                 "attempt": attempt_index + 1,
-                "history_items": len(experiment_history),
-                "prompt_chars": prompt_chars,
-                "prompt_tokens_estimate": prompt_tokens_estimate,
-                "system_prompt": system_prompt,
-                "user_prompt": effective_user_prompt,
+                "history_items": len(context_cache_entry.experiment_history_snapshot),
+                "prompt_chars": prompt_bundle.prompt_chars,
+                "prompt_tokens_estimate": prompt_bundle.prompt_tokens_estimate,
+                "system_prompt": prompt_bundle.system_prompt,
+                "user_prompt": prompt_bundle.user_prompt,
+            },
+        )
+        append_run_prompt_markdown_event(
+            run_id,
+            "proposal_request",
+            {
+                "attempt": attempt_index + 1,
+                "history_items": len(context_cache_entry.experiment_history_snapshot),
+                "prompt_chars": prompt_bundle.prompt_chars,
+                "prompt_tokens_estimate": prompt_bundle.prompt_tokens_estimate,
+                "system_prompt": prompt_bundle.system_prompt,
+                "user_prompt": prompt_bundle.user_prompt,
+            },
+        )
+        append_run_prompt_context_event(
+            run_id,
+            "proposal_prompt_context",
+            {
+                "attempt": attempt_index + 1,
+                "history_items": len(context_cache_entry.experiment_history_snapshot),
+                "prompt_chars": prompt_bundle.prompt_chars,
+                "prompt_tokens_estimate": prompt_bundle.prompt_tokens_estimate,
+                "system_prompt_chars": len(prompt_bundle.system_prompt),
+                "system_prompt_tokens_estimate": _estimate_text_tokens(prompt_bundle.system_prompt),
+                "blocks": _serialize_prompt_blocks(prompt_bundle.blocks),
             },
         )
         try:
             proposal_payload, provider_metadata = client.create_json_completion_with_metadata(
-                system_prompt=system_prompt,
-                user_prompt=effective_user_prompt,
+                system_prompt=prompt_bundle.system_prompt,
+                user_prompt=prompt_bundle.user_prompt,
             )
         except Exception as error:
             append_run_log(
                 run_id,
-                (
-                    f"[proposal-meta] attempt={attempt_index + 1} failed | "
-                    f"prompt_tokens_estimate={prompt_tokens_estimate} | "
-                    f"error={error}"
+                format_run_log_message(
+                    level="ERROR",
+                    section="proposal-meta",
+                    message="proposal request failed",
+                    attempt=attempt_index + 1,
+                    prompt_tokens_estimate=prompt_bundle.prompt_tokens_estimate,
+                    error=str(error),
                 ),
             )
             append_run_llm_event(
@@ -386,7 +431,16 @@ def generate_aihubmix_proposal(
                 "proposal_error",
                 {
                     "attempt": attempt_index + 1,
-                    "prompt_tokens_estimate": prompt_tokens_estimate,
+                    "prompt_tokens_estimate": prompt_bundle.prompt_tokens_estimate,
+                    "error": str(error),
+                },
+            )
+            append_run_prompt_markdown_event(
+                run_id,
+                "proposal_error",
+                {
+                    "attempt": attempt_index + 1,
+                    "prompt_tokens_estimate": prompt_bundle.prompt_tokens_estimate,
                     "error": str(error),
                 },
             )
@@ -394,6 +448,18 @@ def generate_aihubmix_proposal(
         if on_provider_metadata is not None:
             on_provider_metadata(provider_metadata)
         append_run_llm_event(
+            run_id,
+            "proposal_response",
+            {
+                "attempt": attempt_index + 1,
+                "usage": provider_metadata.get("usage"),
+                "response_model": provider_metadata.get("response_model"),
+                "response_chars": provider_metadata.get("response_chars"),
+                "raw_content": provider_metadata.get("raw_content"),
+                "parsed_payload": proposal_payload,
+            },
+        )
+        append_run_prompt_markdown_event(
             run_id,
             "proposal_response",
             {
@@ -428,14 +494,17 @@ def generate_aihubmix_proposal(
             continue
         append_run_log(
             run_id,
-            (
-                f"[proposal] based_on={','.join(proposal.based_on_experiment_ids)} | "
-                f"changed_fields={json.dumps(sorted(_get_effective_change_map(proposal).keys()), ensure_ascii=False)} | "
-                f"prompt_tokens_estimate={prompt_tokens_estimate} | "
-                f"provider_usage={json.dumps(provider_metadata.get('usage'), ensure_ascii=False)} | "
-                f"hypothesis={proposal.hypothesis} | "
-                f"changes={json.dumps(proposal.changes.model_dump(exclude_none=True), ensure_ascii=False)} | "
-                f"reason={proposal.reason}"
+            format_run_log_message(
+                level="INFO",
+                section="proposal",
+                message="proposal accepted",
+                based_on=proposal.based_on_experiment_ids,
+                changed_fields=sorted(_get_effective_change_map(proposal).keys()),
+                prompt_tokens_estimate=prompt_bundle.prompt_tokens_estimate,
+                provider_usage=provider_metadata.get("usage"),
+                hypothesis=proposal.hypothesis,
+                changes=proposal.changes.model_dump(exclude_none=True),
+                reason=proposal.reason,
             ),
         )
         return proposal

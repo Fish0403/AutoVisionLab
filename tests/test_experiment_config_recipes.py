@@ -40,7 +40,6 @@ def _build_config_payload(
             "epochs": 10,
             "weight_decay": 0.0001,
             "scheduler": "cosine",
-            "augmentation_policy": "basic",
             "augmentation_params": {
                 "mixup_alpha": 0.2,
                 "cutmix_alpha": 0.0,
@@ -160,7 +159,6 @@ class ExperimentConfigRecipeTest(unittest.TestCase):
             "batch_size": 32,
             "image_size": 96,
             "augmentation": {
-                "policy": "basic",
                 "mixup": 0.3,
                 "cutmix": 0.1,
                 "random_erasing": 0.2,

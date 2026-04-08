@@ -35,8 +35,11 @@ def build_train_transform(
     dataset_name: str | None = None,
 ) -> transforms.Compose:
     """Build the train transform pipeline from structured params."""
-    steps: list[object] = [transforms.Resize((image_size, image_size))]
-    steps.extend(_build_policy_transforms(image_size, augmentation.policy))
+    steps: list[object] = [
+        transforms.Resize((image_size, image_size)),
+        transforms.RandomCrop(image_size, padding=4),
+        transforms.RandomHorizontalFlip(),
+    ]
     steps.append(transforms.ToTensor())
     if augmentation.random_erasing > 0:
         steps.append(
@@ -86,21 +89,6 @@ def apply_batch_augmentations(
     if use_cutmix:
         return _apply_cutmix(images, labels, cutmix_alpha)
     return _apply_mixup(images, labels, mixup_alpha)
-
-
-def _build_policy_transforms(
-    image_size: int,
-    augmentation_policy: str,
-) -> list[object]:
-    if augmentation_policy == "none":
-        return []
-    if augmentation_policy == "basic":
-        return [
-            transforms.RandomCrop(image_size, padding=4),
-            transforms.RandomHorizontalFlip(),
-        ]
-    raise ValueError(f"Unsupported augmentation_policy: {augmentation_policy}")
-
 
 def _apply_mixup(
     images: torch.Tensor,

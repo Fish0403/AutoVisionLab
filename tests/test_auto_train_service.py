@@ -65,7 +65,6 @@ def _build_auto_train_config_payload(
             "epochs": 10,
             "weight_decay": 0.0001,
             "scheduler": "cosine",
-            "augmentation_policy": "basic",
             "augmentation_params": {
                 "mixup_alpha": 0.1,
                 "cutmix_alpha": 0.0,
