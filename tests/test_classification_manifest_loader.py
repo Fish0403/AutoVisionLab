@@ -38,7 +38,6 @@ def _build_config(dataset_name: str) -> ExperimentConfig:
             "epochs": 1,
             "weight_decay": 0.0,
             "scheduler": "none",
-            "augmentation_policy": "none",
             "augmentation_params": {
                 "mixup_alpha": 0.0,
                 "cutmix_alpha": 0.0,

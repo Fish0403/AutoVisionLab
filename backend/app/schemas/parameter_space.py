@@ -77,7 +77,6 @@ def _normalize_null_label_smoothing(payload: Any) -> Any:
         normalized_payload["label_smoothing"] = 0.0
     return normalized_payload
 
-
 class ExperimentParams(BaseModel):
     """Structured training parameters allowed in the MVP."""
 
@@ -88,7 +87,6 @@ class ExperimentParams(BaseModel):
     epochs: int = Field(gt=0)
     weight_decay: float = Field(ge=0)
     scheduler: str
-    augmentation_policy: Literal["none", "basic"] = "basic"
     augmentation_params: AugmentationParams = Field(default_factory=AugmentationParams)
     loss_name: Literal["cross_entropy", "cross_entropy_with_label_smoothing", "focal_loss"] = (
         "cross_entropy_with_label_smoothing"
@@ -190,7 +188,6 @@ class ModelRecipe(BaseModel):
 class TrainHypAugmentation(BaseModel):
     """Structured augmentation block for one train hyp recipe."""
 
-    policy: str = "basic"
     mixup: float = Field(default=0.0, ge=0)
     cutmix: float = Field(default=0.0, ge=0)
     random_erasing: float = Field(default=0.0, ge=0, le=1)
@@ -254,7 +251,6 @@ class TrainHyp(BaseModel):
             epochs=self.epochs,
             weight_decay=self.weight_decay,
             scheduler=self.scheduler,
-            augmentation_policy=self.augmentation.policy,
             augmentation_params=AugmentationParams(
                 mixup_alpha=self.augmentation.mixup,
                 cutmix_alpha=self.augmentation.cutmix,
@@ -417,8 +413,6 @@ def apply_proposal_changes_to_train_hyp(train_hyp_payload: dict[str, Any], propo
             updated_payload["weight_decay"] = value
         elif field_name == "scheduler":
             updated_payload["scheduler"] = value
-        elif field_name == "augmentation_policy":
-            updated_payload.setdefault("augmentation", {})["policy"] = value
         elif field_name == "mixup_alpha":
             updated_payload.setdefault("augmentation", {})["mixup"] = value
         elif field_name == "cutmix_alpha":
@@ -457,8 +451,6 @@ def build_train_hyp_change_payload(proposal_changes: dict[str, Any]) -> dict[str
             train_hyp_changes["weight_decay"] = value
         elif field_name == "scheduler":
             train_hyp_changes["scheduler"] = value
-        elif field_name == "augmentation_policy":
-            augmentation_changes["policy"] = value
         elif field_name == "mixup_alpha":
             augmentation_changes["mixup"] = value
         elif field_name == "cutmix_alpha":

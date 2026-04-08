@@ -67,7 +67,6 @@ def _build_experiment_config(
             "epochs": 1,
             "weight_decay": 0.0001,
             "scheduler": "cosine",
-            "augmentation_policy": "basic",
             "augmentation_params": {
                 "mixup_alpha": 0.0,
                 "cutmix_alpha": 0.0,

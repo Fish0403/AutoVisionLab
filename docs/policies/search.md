@@ -27,7 +27,6 @@
   - `label_smoothing`
   - `image_size`
 - `augmentation`
-  - `augmentation_policy`
   - `mixup_alpha`
   - `cutmix_alpha`
   - `random_erasing_prob`
@@ -49,7 +48,6 @@
   - `scheduler` -> `scheduler`
   - `label_smoothing` -> `label_smoothing`
   - `image_size` -> `image_size`
-  - `augmentation.policy` -> `augmentation_policy`
   - `augmentation.mixup` -> `mixup_alpha`
   - `augmentation.cutmix` -> `cutmix_alpha`
   - `augmentation.random_erasing` -> `random_erasing_prob`
@@ -68,6 +66,11 @@
   - 当前有效的模块搜索字段主要是 `aux_logits`
 
 具体允许值和有效字段集合以当前模型的 `editable parameter_space` 为准。
+
+补充：
+
+- 基础图像增强管线不再通过单独的 `policy` 字段切换
+- AI 在增强方向上只通过 `mixup_alpha`、`cutmix_alpha`、`random_erasing_prob` 这些可组合字段表达变化
 
 ## `epochs` 口径
 

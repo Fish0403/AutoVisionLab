@@ -35,7 +35,6 @@
 ## 子结构
 
 - `augmentation`
-  - `policy`
   - `mixup`
   - `cutmix`
   - `random_erasing`
@@ -56,7 +55,6 @@
 - `epochs` -> `epochs`
 - `weight_decay` -> `weight_decay`
 - `scheduler` -> `scheduler`
-- `augmentation.policy` -> `augmentation_policy`
 - `augmentation.mixup` -> `augmentation_params.mixup_alpha`
 - `augmentation.cutmix` -> `augmentation_params.cutmix_alpha`
 - `augmentation.random_erasing` -> `augmentation_params.random_erasing_prob`
@@ -83,8 +81,6 @@
 
 - `scheduler`
   - `none`、`step`、`cosine`
-- `augmentation.policy`
-  - `none`、`basic`
 - `loss.name`
   - `cross_entropy`、`cross_entropy_with_label_smoothing`、`focal_loss`
 - `image_size`

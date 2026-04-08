@@ -45,6 +45,7 @@ AutoVisionLab 是一个面向工业视觉实验的结构化工作台。当前实
 - [README.md](../README.md)
 - [docs/artifacts.md](artifacts.md)
 - [docs/api.md](api.md)
+- [docs/llm.md](llm.md)
 - [docs/schemas/model_recipe.md](schemas/model_recipe.md)
 - [docs/schemas/train_hyp.md](schemas/train_hyp.md)
 - [docs/schemas/dataset_recipe.md](schemas/dataset_recipe.md)

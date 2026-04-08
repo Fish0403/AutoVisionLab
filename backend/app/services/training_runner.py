@@ -10,8 +10,9 @@ from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.models.experiment import ExperimentModel
-from app.services.run_logging import append_run_log
+from app.services.log_events import format_run_log_message
 from app.services.persistence import discard_experiment, get_experiment_config, save_experiment_result, update_experiment_status
+from app.services.run_logging import append_run_log
 from app.trainers.classification.base_trainer import TrainingInterruptedError
 from app.workers.experiment_worker import execute_experiment
 
@@ -66,20 +67,45 @@ def _run_experiment_job(experiment_id: str) -> None:
             should_stop=stop_event.is_set,
         )
         if stop_event.is_set():
-            append_run_log(run_id, f"[{experiment_id}] stop requested; experiment discarded")
+            append_run_log(
+                run_id,
+                format_run_log_message(
+                    level="WARNING",
+                    section="training",
+                    message="stop requested; experiment discarded",
+                    experiment_id=experiment_id,
+                ),
+            )
             discard_experiment(db, experiment_id)
             return
         save_experiment_result(db, experiment_id=experiment_id, result=result)
     except TrainingInterruptedError:
         experiment = db.get(ExperimentModel, experiment_id)
         if experiment is not None:
-            append_run_log(experiment.run_id, f"[{experiment_id}] training interrupted and discarded")
+            append_run_log(
+                experiment.run_id,
+                format_run_log_message(
+                    level="WARNING",
+                    section="training",
+                    message="training interrupted and discarded",
+                    experiment_id=experiment_id,
+                ),
+            )
         discard_experiment(db, experiment_id)
     except Exception as error:
         update_experiment_status(db, experiment_id, "failed")
         experiment = db.get(ExperimentModel, experiment_id)
         if experiment is not None:
-            append_run_log(experiment.run_id, f"[{experiment_id}] training failed: {error}")
+            append_run_log(
+                experiment.run_id,
+                format_run_log_message(
+                    level="ERROR",
+                    section="training",
+                    message="training failed",
+                    experiment_id=experiment_id,
+                    error=str(error),
+                ),
+            )
             experiment.decision = "crash"
             experiment.decision_reason = build_failure_reason(error)
             db.commit()
@@ -112,7 +138,15 @@ def start_experiment_training(experiment_id: str):
         db.commit()
         db.refresh(experiment)
         STOP_EVENTS[experiment_id] = Event()
-        append_run_log(experiment.run_id, f"[{experiment_id}] training started")
+        append_run_log(
+            experiment.run_id,
+            format_run_log_message(
+                level="INFO",
+                section="training",
+                message="training started",
+                experiment_id=experiment_id,
+            ),
+        )
         TRAINING_EXECUTOR.submit(_run_experiment_job, experiment_id)
         return experiment
     finally:

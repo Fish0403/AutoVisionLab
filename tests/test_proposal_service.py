@@ -2,21 +2,28 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 import sys
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+TEST_ARTIFACT_ROOT = REPO_ROOT / "artifacts" / "test_proposal_service"
 VENV_SITE_PACKAGES = next((REPO_ROOT / ".venv" / "lib").glob("python*/site-packages"))
+
+os.environ["AVL_ARTIFACT_ROOT"] = str(TEST_ARTIFACT_ROOT)
 
 sys.path.insert(0, str(VENV_SITE_PACKAGES))
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 from app.schemas.ai import ProposalSchema
 from app.schemas.parameter_space import EditableParameterSpace, SearchPolicy
+from app.services.proposal_context_cache import clear_run_proposal_context_cache
 from app.services.proposal_service import generate_aihubmix_proposal
 
 
@@ -53,6 +60,16 @@ def _build_parameter_space() -> EditableParameterSpace:
 
 class ProposalServiceTest(unittest.TestCase):
     """Verify retry behavior for invalid AI proposals."""
+
+    def setUp(self) -> None:
+        clear_run_proposal_context_cache()
+        if TEST_ARTIFACT_ROOT.exists():
+            shutil.rmtree(TEST_ARTIFACT_ROOT)
+
+    def tearDown(self) -> None:
+        clear_run_proposal_context_cache()
+        if TEST_ARTIFACT_ROOT.exists():
+            shutil.rmtree(TEST_ARTIFACT_ROOT)
 
     def test_proposal_schema_backfills_recipe_change_views(self) -> None:
         proposal = ProposalSchema.model_validate(
@@ -245,7 +262,7 @@ class ProposalServiceTest(unittest.TestCase):
         self.assertEqual(mock_client.create_json_completion_with_metadata.call_count, 2)
         second_prompt = mock_client.create_json_completion_with_metadata.call_args_list[1].kwargs["user_prompt"]
         self.assertIn("Proposal does not contain any effective parameter changes", second_prompt)
-        self.assertIn("Choose a more executable direction based on the full history", second_prompt)
+        self.assertIn("请基于完整历史选择一个更可执行的方向", second_prompt)
 
     def test_generate_aihubmix_proposal_includes_outer_retry_feedback_in_prompt(self) -> None:
         db = Mock()
@@ -296,14 +313,19 @@ class ProposalServiceTest(unittest.TestCase):
 
         first_prompt = mock_client.create_json_completion_with_metadata.call_args.kwargs["user_prompt"]
         system_prompt = mock_client.create_json_completion_with_metadata.call_args.kwargs["system_prompt"]
-        self.assertIn("Previous full-proposal rejection", first_prompt)
+        self.assertIn("上一条完整 Proposal 的拒绝反馈", first_prompt)
         self.assertIn("image_size must stay within dataset bounds", first_prompt)
-        self.assertIn("Prefer a smaller value than the current source experiment image_size", first_prompt)
-        self.assertIn("Do not change epochs; epochs is fixed and the AI is not allowed to adjust it.", first_prompt)
-        self.assertIn("The current source experiment config is the full config", first_prompt)
-        self.assertIn("augmentation_policy=none/basic", system_prompt)
+        self.assertIn("通常优先选择不大于当前 source experiment image_size 的值", first_prompt)
+        self.assertIn("不要修改 epochs；它当前是固定值，AI 不允许调整。", first_prompt)
+        self.assertIn("当前 source experiment 的 config 就是下一轮 follow-up 的完整起点", first_prompt)
+        self.assertNotIn("allowed_change_fields", first_prompt)
+        self.assertNotIn("image_size_definition", first_prompt)
         self.assertIn("mixup_alpha", system_prompt)
-        self.assertIn("Do not return train_hyp_changes, recipe_changes", system_prompt)
+        self.assertIn("cutmix_alpha", system_prompt)
+        self.assertIn("random_erasing_prob", system_prompt)
+        self.assertNotIn('"augmentation_policy"', first_prompt)
+        self.assertNotIn("augmentation_policy", system_prompt)
+        self.assertIn("不要返回 train_hyp_changes、recipe_changes", system_prompt)
 
     def test_generate_aihubmix_proposal_accepts_larger_image_size_when_allowed(self) -> None:
         db = Mock()
@@ -517,13 +539,120 @@ class ProposalServiceTest(unittest.TestCase):
 
         self.assertEqual(proposal.changes.epochs, 20)
         prompt = mock_client.create_json_completion_with_metadata.call_args.kwargs["user_prompt"]
-        self.assertIn("You may change epochs when it is helpful", prompt)
+        self.assertIn("你可以在有帮助时调整 epochs", prompt)
 
-    def test_generate_aihubmix_proposal_includes_full_source_config_summary(self) -> None:
+    def test_generate_aihubmix_proposal_reuses_run_context_cache_between_calls(self) -> None:
+        db = Mock()
+        run = SimpleNamespace(
+            id="run_cache",
+            name="cache-hit",
+            dataset="cifar10",
+            model_name="mobilenet_v3_small",
+            baseline_experiment_id="exp_keep",
+            best_experiment_id="exp_keep",
+            frontier_experiment_id="exp_keep",
+            updated_at=datetime(2026, 4, 8, 12, 0, 0),
+        )
+        db.get.return_value = run
+        experiment_history = [
+            {"id": "exp_keep", "status": "success", "decision": "keep"},
+        ]
+        mock_client = Mock()
+        mock_client.create_json_completion_with_metadata.return_value = (
+            {
+                "task_type": "classification",
+                "model_name": "mobilenet_v3_small",
+                "based_on_experiment_ids": ["exp_keep"],
+                "hypothesis": "Adjust weight decay.",
+                "changes": {"weight_decay": 0.0005},
+                "reason": "Keep the next trial executable.",
+            },
+            {},
+        )
+        history_loader = Mock(return_value=experiment_history)
+        source_constraints_loader = Mock(return_value={"experiment_id": "exp_keep", "image_size": 96})
+        append_run_log_mock = Mock()
+
+        with (
+            patch("app.services.proposal_service.get_run_history_payload", history_loader),
+            patch("app.services.proposal_service._load_latest_search_policy", return_value=SearchPolicy()),
+            patch(
+                "app.services.proposal_service._load_latest_parameter_space",
+                return_value=_build_parameter_space(),
+            ),
+            patch("app.services.proposal_service._load_followup_source_constraints", source_constraints_loader),
+            patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
+            patch("app.services.proposal_service.append_run_log", append_run_log_mock),
+        ):
+            first_proposal = generate_aihubmix_proposal(db, "run_cache")
+            second_proposal = generate_aihubmix_proposal(db, "run_cache")
+
+        self.assertEqual(first_proposal.changes.weight_decay, 0.0005)
+        self.assertEqual(second_proposal.changes.weight_decay, 0.0005)
+        self.assertEqual(history_loader.call_count, 1)
+        self.assertEqual(source_constraints_loader.call_count, 1)
+        self.assertEqual(mock_client.create_json_completion_with_metadata.call_count, 2)
+        logged_messages = [call.args[1] for call in append_run_log_mock.call_args_list if len(call.args) >= 2]
+        self.assertTrue(any(message.startswith("INFO |proposal-cache| cache miss;") for message in logged_messages))
+        self.assertTrue(any(message.startswith("INFO |proposal-cache| cache hit;") for message in logged_messages))
+
+    def test_generate_aihubmix_proposal_refreshes_run_context_cache_when_run_updates(self) -> None:
+        db = Mock()
+        run = SimpleNamespace(
+            id="run_cache_refresh",
+            name="cache-refresh",
+            dataset="cifar10",
+            model_name="mobilenet_v3_small",
+            baseline_experiment_id="exp_keep",
+            best_experiment_id="exp_keep",
+            frontier_experiment_id="exp_keep",
+            updated_at=datetime(2026, 4, 8, 12, 0, 0),
+        )
+        db.get.return_value = run
+        experiment_history = [
+            {"id": "exp_keep", "status": "success", "decision": "keep"},
+        ]
+        mock_client = Mock()
+        mock_client.create_json_completion_with_metadata.return_value = (
+            {
+                "task_type": "classification",
+                "model_name": "mobilenet_v3_small",
+                "based_on_experiment_ids": ["exp_keep"],
+                "hypothesis": "Adjust weight decay.",
+                "changes": {"weight_decay": 0.0005},
+                "reason": "Keep the next trial executable.",
+            },
+            {},
+        )
+        history_loader = Mock(return_value=experiment_history)
+        source_constraints_loader = Mock(return_value={"experiment_id": "exp_keep", "image_size": 96})
+        append_run_log_mock = Mock()
+
+        with (
+            patch("app.services.proposal_service.get_run_history_payload", history_loader),
+            patch("app.services.proposal_service._load_latest_search_policy", return_value=SearchPolicy()),
+            patch(
+                "app.services.proposal_service._load_latest_parameter_space",
+                return_value=_build_parameter_space(),
+            ),
+            patch("app.services.proposal_service._load_followup_source_constraints", source_constraints_loader),
+            patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
+            patch("app.services.proposal_service.append_run_log", append_run_log_mock),
+        ):
+            generate_aihubmix_proposal(db, "run_cache_refresh")
+            run.updated_at = run.updated_at + timedelta(seconds=1)
+            generate_aihubmix_proposal(db, "run_cache_refresh")
+
+        self.assertEqual(history_loader.call_count, 2)
+        self.assertEqual(source_constraints_loader.call_count, 2)
+        logged_messages = [call.args[1] for call in append_run_log_mock.call_args_list if len(call.args) >= 2]
+        self.assertTrue(any(message.startswith("INFO |proposal-cache| cache rebuild;") for message in logged_messages))
+
+    def test_generate_aihubmix_proposal_omits_duplicate_source_config_summary(self) -> None:
         db = Mock()
         db.get.return_value = SimpleNamespace(
             id="run_1",
-            name="source-config-summary",
+            name="source-constraints-summary",
             dataset="cifar10",
             model_name="mobilenet_v3_small",
             baseline_experiment_id="exp_keep",
@@ -541,7 +670,7 @@ class ProposalServiceTest(unittest.TestCase):
                 "based_on_experiment_ids": ["exp_keep"],
                 "hypothesis": "Adjust weight decay from the current baseline.",
                 "changes": {"weight_decay": 0.0005},
-                "reason": "Use the current full source config as the branching baseline.",
+                "reason": "Use the current source constraints as the branching baseline.",
             },
             {},
         )
@@ -558,11 +687,6 @@ class ProposalServiceTest(unittest.TestCase):
                 return_value={
                     "experiment_id": "exp_keep",
                     "image_size": 96,
-                    "config": {
-                        "params": {"image_size": 96, "weight_decay": 0.0001},
-                        "train_hyp": {"image_size": 96, "weight_decay": 0.0001},
-                        "model_recipe": {"components": {"neck": {"name": "avg_pool"}}},
-                    },
                 },
             ),
             patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
@@ -572,9 +696,9 @@ class ProposalServiceTest(unittest.TestCase):
 
         self.assertEqual(proposal.changes.weight_decay, 0.0005)
         prompt = mock_client.create_json_completion_with_metadata.call_args.kwargs["user_prompt"]
-        self.assertIn("\"config\": {", prompt)
-        self.assertIn("\"weight_decay\": 0.0001", prompt)
-        self.assertIn("\"neck\": {\"name\": \"avg_pool\"}", prompt)
+        self.assertNotIn("\"config\": {", prompt)
+        system_prompt = mock_client.create_json_completion_with_metadata.call_args.kwargs["system_prompt"]
+        self.assertIn("如果没有单独的 source block，表示当前 source 与 base 相同。", system_prompt)
 
 
 if __name__ == "__main__":

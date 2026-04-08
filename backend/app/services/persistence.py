@@ -12,6 +12,7 @@ from app.models.experiment import ExperimentModel
 from app.models.result import ResultModel
 from app.models.run import RunModel
 from app.models.task import BackgroundTaskModel
+from app.services.log_events import format_run_log_message
 from app.services.parameter_space import get_parameter_space
 from app.services.run_logging import (
     append_run_log,
@@ -309,11 +310,16 @@ def create_experiment(db: Session, request: ExperimentCreateRequest) -> Experime
     db.refresh(experiment)
     append_run_log(
         request.run_id,
-        f"[{experiment.id}] experiment created"
-        + (
-            f" | based_on={','.join(request.proposal.based_on_experiment_ids)}"
-            if request.proposal and request.proposal.based_on_experiment_ids
-            else ""
+        format_run_log_message(
+            level="INFO",
+            section="experiment",
+            message="experiment created",
+            experiment_id=experiment.id,
+            based_on=(
+                request.proposal.based_on_experiment_ids
+                if request.proposal and request.proposal.based_on_experiment_ids
+                else []
+            ),
         ),
     )
     _refresh_run_summary(db, request.run_id)
@@ -452,12 +458,15 @@ def save_experiment_result(db: Session, experiment_id: str, result: ResultSchema
     metrics = result_payload.get("metrics") or {}
     append_run_log(
         experiment.run_id,
-        (
-            f"[{experiment.id}] result saved | "
-            f"top1_acc={metrics.get('top1_acc')} | "
-            f"val_loss={metrics.get('val_loss')} | "
-            f"train_loss={metrics.get('train_loss')} | "
-            f"best_epoch={metrics.get('best_epoch')}"
+        format_run_log_message(
+            level="INFO",
+            section="result",
+            message="result saved",
+            experiment_id=experiment.id,
+            top1_acc=metrics.get("top1_acc"),
+            val_loss=metrics.get("val_loss"),
+            train_loss=metrics.get("train_loss"),
+            best_epoch=metrics.get("best_epoch"),
         ),
     )
     return _to_experiment_detail(experiment)

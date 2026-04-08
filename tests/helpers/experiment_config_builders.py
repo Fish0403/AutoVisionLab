@@ -27,7 +27,6 @@ def build_train_hyp_from_params(*, task_type: str, params: ExperimentParams) -> 
         label_smoothing=params.label_smoothing,
         fl_gamma=params.loss_params.focal_gamma if params.loss_name == "focal_loss" else 0.0,
         augmentation=TrainHypAugmentation(
-            policy=params.augmentation_policy,
             mixup=params.augmentation_params.mixup_alpha,
             cutmix=params.augmentation_params.cutmix_alpha,
             random_erasing=params.augmentation_params.random_erasing_prob,

@@ -57,7 +57,6 @@ def _build_experiment_config(parameter_space_version: str) -> dict[str, object]:
             "epochs": 1,
             "weight_decay": 0.0001,
             "scheduler": "cosine",
-            "augmentation_policy": "basic",
             "augmentation_params": {
                 "mixup_alpha": 0.0,
                 "cutmix_alpha": 0.0,
