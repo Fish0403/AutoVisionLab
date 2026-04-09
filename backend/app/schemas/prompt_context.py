@@ -135,17 +135,6 @@ class RetryPromptPayload(BaseModel):
     retry_guidance: str | None = None
 
 
-class ProposalPromptContext(BaseModel):
-    """Complete proposal prompt context before rendering."""
-
-    base_prompt: BasePromptPayload
-    source_prompt: SourcePromptPayload
-    stage_history_prompt: list[HistoryItemSummary] = Field(default_factory=list)
-    current_stage_compacted_prompt: CurrentStageCompactedSummary | None = None
-    past_stage_summaries_prompt: list[PastStageSummary] = Field(default_factory=list)
-    retry_prompt: RetryPromptPayload | None = None
-
-
 class ProposalHistoryContext(BaseModel):
     """Selected and compacted history state used to build proposal prompts."""
 

@@ -12,7 +12,9 @@ def build_search_summary_system_prompt() -> str:
     return (
         "你负责总结一个图像分类搜索任务当前为止的结果。"
         "只返回 JSON，且只能包含一个键：summary_text。"
-        "summary_text 必须使用简洁、客观、自然的中文。"
+        "summary_text 请写成一整段，不要分行，不要项目符号，不要标题。"
+        "summary_text 请使用简洁、客观、自然的中文。"
+        "所有精度类指标请统一写成百分比格式，例如 96.21%，不要写成 0.9621。"
         "不要提到自己是 AI。不要输出列表、标题、额外字段或解释。"
         "这是一段结果摘要，不是下一步 proposal，不要给具体参数建议或执行建议。"
         "请基于提供的 stop reason、base、source、current stage 和 past stages 生成总结。"

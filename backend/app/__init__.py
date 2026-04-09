@@ -1,2 +1,0 @@
-"""AutoVisionLab backend package."""
-

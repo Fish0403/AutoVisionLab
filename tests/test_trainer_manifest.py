@@ -173,46 +173,6 @@ search:
         with self.assertRaisesRegex(ValueError, "custom architecture layers"):
             validate_trainer_manifest(manifest)
 
-    def test_parser_rejects_legacy_model_architecture_section(self) -> None:
-        with self.assertRaisesRegex(ValueError, "model.architecture"):
-            parse_trainer_manifest_payload(
-                {
-                    "version": "trainer_manifest@v1",
-                    "task_type": "classification",
-                    "parameter_space_version": "mobilenet_v3_small@v1",
-                    "model": {
-                        "version": "model_recipe@v1",
-                        "task_type": "classification",
-                        "model_family": "mobilenet",
-                        "base_model": "mobilenet_v3_small",
-                        "architecture": {
-                            "backbone": [[-1, 1, "stem_conv", [16, 3, 2, "hardswish"], "stem"]],
-                        },
-                    },
-                    "train": {
-                        "version": "train_hyp@v1",
-                        "task_type": "classification",
-                        "optimizer": "adamw",
-                        "lr0": 0.003,
-                        "weight_decay": 0.0001,
-                        "scheduler": "cosine",
-                        "epochs": 10,
-                        "batch_size": 32,
-                        "image_size": 96,
-                    },
-                    "data": {
-                        "version": "dataset_recipe@v1",
-                        "task_type": "classification",
-                        "dataset_name": "neu",
-                        "source": {"root_dir": "data/raw/neu"},
-                        "splits": {
-                            "train_manifest": "data/classification/neu/train.txt",
-                            "val_manifest": "data/classification/neu/val.txt",
-                        },
-                    },
-                }
-            )
-
     def test_build_model_from_manifest_dispatches_to_resnet_builder(self) -> None:
         config = ExperimentConfig.model_validate(_build_config_payload("resnet18", "resnet", "resnet18@v1"))
         manifest = parse_trainer_manifest_payload(

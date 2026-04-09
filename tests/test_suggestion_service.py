@@ -15,7 +15,7 @@ VENV_SITE_PACKAGES = next((REPO_ROOT / ".venv" / "lib").glob("python*/site-packa
 sys.path.insert(0, str(VENV_SITE_PACKAGES))
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
-from app.services import suggestion_service
+import app.services.suggestion_service as suggestion_service
 
 
 class SuggestionServiceTest(unittest.TestCase):

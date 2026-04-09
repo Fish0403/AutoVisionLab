@@ -26,12 +26,12 @@ from app.trainers.classification.data_loading import (
     build_class_index,
     resolve_classification_dataset_files,
 )
-from app.trainers.classification.components import (
+from app.trainers.classification.components.augmentations import (
     apply_batch_augmentations,
     build_eval_transform,
-    build_loss,
     build_train_transform,
 )
+from app.trainers.classification.components.losses import build_loss
 from app.trainers.classification.model_adapters import (
     ClassificationModelAdapter,
     get_classification_model_adapter,

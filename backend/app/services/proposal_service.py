@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.context.history_context import build_proposal_history_context
-from app.context import build_proposal_prompt_bundle
+from app.context.prompt_builder import build_proposal_prompt_bundle
 from app.context.proposal_policy import build_policy_prompt_payload
 from app.llm.aihubmix_client import AIHubMixClient
 from app.models.experiment import ExperimentModel

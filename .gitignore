@@ -37,6 +37,8 @@ dist/
 build/
 tmp/
 *.tsbuildinfo
+frontend/web/vite.config.js
+frontend/web/vite.config.d.ts
 
 # Local data
 *.db

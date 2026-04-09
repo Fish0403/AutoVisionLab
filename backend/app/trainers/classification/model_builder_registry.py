@@ -20,7 +20,7 @@ from torchvision.models import (
 )
 
 from app.schemas.parameter_space import ModelRecipe, hydrate_model_recipe
-from app.trainers.classification.model_components import build_classification_neck
+from app.trainers.classification.model_components.necks import build_classification_neck
 
 
 ValidateRecipeFn = Callable[[ModelRecipe], None]

@@ -4,13 +4,9 @@ import { deleteJson, getJson, postJson } from "../../lib/api";
 import type {
   AutoTrainTask,
   DatasetSummary,
-  ExperimentDetail,
-  MetricsPayload,
   ModelCompareTask,
   ParameterSpace,
   RunDetail,
-  RunListItem,
-  RunSummary,
   RunTrendPayload,
   TaskHistoryItem
 } from "../../types/domain";
@@ -22,22 +18,6 @@ export function useDatasets() {
     staleTime: 5 * 60 * 1000,
     gcTime: 30 * 60 * 1000,
     refetchOnMount: false,
-  });
-}
-
-export function useHealth() {
-  return useQuery({
-    queryKey: ["health"],
-    queryFn: () => getJson<{ status: string }>("/health"),
-    retry: false,
-    refetchInterval: 10000
-  });
-}
-
-export function useRuns() {
-  return useQuery({
-    queryKey: ["runs"],
-    queryFn: () => getJson<RunListItem[]>("/runs")
   });
 }
 
@@ -60,25 +40,6 @@ export function useRunDetail(runId: string | null) {
   });
 }
 
-export function useRunSummary(runId: string | null) {
-  return useQuery({
-    queryKey: ["run-summary", runId],
-    queryFn: () => getJson<RunSummary>(`/runs/${runId}/summary`),
-    enabled: Boolean(runId)
-  });
-}
-
-export function useRunMetrics(runId: string | null, metricName = "top1_acc") {
-  return useQuery({
-    queryKey: ["run-metrics", runId, metricName],
-    queryFn: () => getJson<MetricsPayload>(`/runs/${runId}/metrics?metric_name=${metricName}`),
-    enabled: Boolean(runId),
-    refetchIntervalInBackground: true,
-    refetchOnWindowFocus: true,
-    refetchInterval: 2000
-  });
-}
-
 export function useRunTrend(runId: string | null) {
   return useQuery({
     queryKey: ["run-trend", runId],
@@ -87,14 +48,6 @@ export function useRunTrend(runId: string | null) {
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,
     refetchInterval: 2000
-  });
-}
-
-export function useExperimentDetail(experimentId: string | null) {
-  return useQuery({
-    queryKey: ["experiment-detail", experimentId],
-    queryFn: () => getJson<ExperimentDetail>(`/experiments/${experimentId}`),
-    enabled: Boolean(experimentId)
   });
 }
 

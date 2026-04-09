@@ -4,7 +4,10 @@ from sqlalchemy import inspect, text
 
 from app.db.base import Base
 from app.db.session import get_engine
-from app.models import BackgroundTaskModel, ExperimentModel, ResultModel, RunModel
+from app.models.experiment import ExperimentModel
+from app.models.result import ResultModel
+from app.models.run import RunModel
+from app.models.task import BackgroundTaskModel
 
 
 def _ensure_column(table_name: str, column_name: str, ddl: str) -> None:

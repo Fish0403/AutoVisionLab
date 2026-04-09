@@ -601,7 +601,8 @@ class AutoTrainServiceTest(unittest.TestCase):
         )
 
         self.assertIn("summary_text", system_prompt)
-        self.assertIn("summary_text 必须使用简洁、客观、自然的中文", system_prompt)
+        self.assertIn("summary_text 请写成一整段", system_prompt)
+        self.assertIn("所有精度类指标请统一写成百分比格式", system_prompt)
         self.assertIn("这是一段结果摘要，不是下一步 proposal", system_prompt)
         self.assertIn("best 更新次数或阶段数", system_prompt)
         self.assertIn("暂未形成明确结论", system_prompt)
