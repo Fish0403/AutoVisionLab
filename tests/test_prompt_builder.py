@@ -13,6 +13,7 @@ VENV_SITE_PACKAGES = next((REPO_ROOT / ".venv" / "lib").glob("python*/site-packa
 sys.path.insert(0, str(VENV_SITE_PACKAGES))
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
+from app.context.history_context import build_proposal_history_context
 from app.context.prompt_builder import build_proposal_prompt_bundle
 
 
@@ -101,6 +102,35 @@ class PromptBuilderTest(unittest.TestCase):
         self.assertNotIn("当前阶段历史", bundle.user_prompt)
         self.assertIn("当前 run 背景：dataset=NEU, model=mobilenet_v3_small。", bundle.system_prompt)
         self.assertIn("如果没有单独的 source block，表示当前 source 与 base 相同。", bundle.system_prompt)
+
+    def test_build_proposal_prompt_bundle_accepts_prebuilt_history_context_without_full_history(self) -> None:
+        run_payload = {
+            "id": "run_prebuilt_context",
+            "name": "demo-prebuilt-context",
+            "dataset": "NEU",
+            "model_name": "mobilenet_v3_small",
+            "best_experiment_id": "exp_best",
+        }
+        experiment_history = [
+            _build_experiment("exp_base", learning_rate=0.003, image_size=224, status="success", decision="keep", is_best_so_far=True),
+            _build_experiment("exp_best", learning_rate=0.001, image_size=224, status="success", decision="keep", is_best_so_far=True, top1_acc=0.95),
+            _build_experiment("exp_try", learning_rate=0.0005, image_size=256, status="failed", decision="crash"),
+        ]
+        history_context = build_proposal_history_context(
+            run_payload=run_payload,
+            experiment_history=experiment_history,
+        )
+
+        bundle = build_proposal_prompt_bundle(
+            run_payload=run_payload,
+            experiment_history=None,
+            policy_payload={"allowed_fields": ["learning_rate", "image_size"]},
+            source_constraints={"image_size": 224},
+            history_context=history_context,
+        )
+
+        self.assertIn("source_prompt", [block.name for block in bundle.blocks])
+        self.assertIn("stage_history_prompt", [block.name for block in bundle.blocks])
 
     def test_build_proposal_prompt_bundle_reads_flat_history_payload_from_runtime(self) -> None:
         run_payload = {
