@@ -176,7 +176,7 @@ proposal prompt 内的 `result_snapshot` 固定使用以下结构：
 
 ### 压缩与缓存
 
-当前 proposal 生成链路已经使用 run 级内存缓存，但缓存的不是数据库 ORM 对象，而是运行时历史快照和压缩结果。
+当前 proposal 生成链路已经使用 run 级内存 state，但缓存的不是数据库 ORM 对象，也不再长期保留完整 `experiment_history_snapshot`，而是按 `run_id` 维护可重建的 proposal context 增量状态。
 
 压缩规则：
 
@@ -184,6 +184,7 @@ proposal prompt 内的 `result_snapshot` 固定使用以下结构：
 - 当当前 source 阶段累计尝试不超过 `20` 轮时，全部保留在 `stage_history_prompt`
 - 当当前 source 阶段累计尝试超过 `20` 轮时，只保留最近 `10` 条未压缩 history items
 - 更早部分按每 `10` 条一桶压成 `current_stage_compacted_prompt.buckets`
+- 当新的 `best` 出现并结束当前阶段时，当前阶段里的最近窗口和 bucket 压缩结果会一起折叠进最终的 `past_stage_summary`，随后清空当前阶段状态
 
 缓存边界：
 
@@ -191,26 +192,30 @@ proposal prompt 内的 `result_snapshot` 固定使用以下结构：
 - `history_selector.py` 只负责切历史段
 - `history_compactor.py` 只负责压缩已选中的历史段
 - `prompt_builder.py` 只负责把 block 拼成最终 prompt
-- 缓存层只保存历史快照和压缩结果，避免下一轮 proposal 重复做相同工作
+- 缓存层只保存 proposal prompt 真正需要的锚点和压缩结果，避免下一轮 proposal 重复做相同工作
 
 缓存条目当前包含：
 
 - `run_id`
 - `history_signature`
-- `experiment_history_snapshot`
 - `run_payload`
-- `source_constraints`
 - `base_experiment_payload`
 - `source_experiment_payload`
+- `last_processed_experiment_id`
+- `last_processed_experiment_created_at`
+- `history_item_count`
 - `recent_history_queue`
 - `compacted_bucket_queue`
+- `compacted_bucket_pending_queue`
 - `past_stage_summaries`
+- 当前阶段聚合统计，例如有效方向、无效方向、失败模式和 covered experiment ids
 
 失效规则：
 
-- proposal 生成前先按 `run` 的历史签名检查缓存
-- 命中则直接复用
-- 签名变化则整 run 重建缓存 entry
+- proposal 生成前先按 `run` 的历史签名检查内存 state
+- 命中且签名未变则直接复用
+- 命中但签名变化时，优先基于 `last_processed_experiment_*` 增量补账
+- 仅在 state 缺失、增量补账无法定位 marker，或进程重启后内存 state 丢失时，才从数据库完整 history 重建该 run 的 state
 - 同一次 proposal 的 retry 不会重建缓存
 
 ### 示例输出
@@ -247,15 +252,15 @@ proposal prompt 内的 `result_snapshot` 固定使用以下结构：
 
 ### 目标
 
-当 `Auto Train` 因用户停止或任务结束进入收尾阶段时，系统会为 workspace results panel 生成一段简短英文摘要。
+当 `Auto Train` 因用户停止或任务结束进入收尾阶段时，系统会为 workspace results panel 生成一段简短中文摘要。
 
 系统提示词要求模型：
 
 - 只返回一个键 `summary_text`
-- 内容客观、英文、简短
+- 内容客观、中文、简短
 - 不要说自己是 AI
 - 不要给下一步建议
-- 固定覆盖四个方面：
+- 优先覆盖四个方面：
   - 停止原因和本次搜索范围
   - 最终领先 experiment 及核心指标
   - 本轮搜索里效果最好或最稳定的策略
@@ -264,7 +269,9 @@ proposal prompt 内的 `result_snapshot` 固定使用以下结构：
 说明：
 
 - 输出仍然保持单段文本，不扩展结构化字段
-- 详细 prompt 约束以代码实现为准
+- prompt 仍然复用 proposal 的阶段语义，例如 `base`、`source`、`current stage` 和 `past stages`
+- 但不会直接复用 proposal 的完整 block 列表；search summary 会单独组织适合总结任务的 block
+- 状态值、decision 和内部枚举可以继续保留英文，不要求在输入侧翻译
 - 当 `Auto Train` 的已完成轮数少于 `3` 时，后端不会请求这段 summary，避免在样本过少时生成噪声结论
 
 ## Compare Summary 通讯
@@ -276,7 +283,7 @@ proposal prompt 内的 `result_snapshot` 固定使用以下结构：
 系统提示词要求模型：
 
 - 只返回一个键 `summary_text`
-- 内容简短、客观、英文
+- 内容简短、客观、中文
 - 不要说自己是 AI
 - 不要给下一步建议
 - 如果有成功候选，要提到领先模型、accuracy 和 latency
@@ -302,7 +309,7 @@ proposal prompt 内的 `result_snapshot` 固定使用以下结构：
 
 ```json
 {
-  "summary_text": "MobileNetV3 Small is the leading successful model in this comparison, with the best observed accuracy among completed runs and competitive latency. Other candidates either trailed in accuracy or failed during evaluation."
+  "summary_text": "当前领先模型是 MobileNetV3 Small，在成功候选里表现出最好的准确率，同时保持了较有竞争力的延迟。其余候选要么准确率落后，要么在评估过程中失败。"
 }
 ```
 
@@ -310,7 +317,7 @@ proposal prompt 内的 `result_snapshot` 固定使用以下结构：
 
 ```json
 {
-  "summary_text": "All comparison candidates failed, so no successful leaderboard result is available for this workspace."
+  "summary_text": "本次 compare 的所有候选都失败了，因此当前没有可用的成功结果可供排序。"
 }
 ```
 

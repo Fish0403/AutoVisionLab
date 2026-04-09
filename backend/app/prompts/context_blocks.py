@@ -44,7 +44,7 @@ def build_proposal_system_prompt(*, dataset_name: str | None = None, model_name:
         "请为一个图像分类训练 run 生成下一条结构化 proposal。"
         f"{background_text}"
         "只返回 JSON，不要附加任何额外文本。"
-        "hypothesis 和 reason 必须使用简洁英文。"
+        "hypothesis 和 reason 请使用你最自然、最清晰的语言表达。"
         "不要生成自由形式代码。"
         "不要返回 train_hyp_changes、recipe_changes 或任何额外的顶层字段。"
         "不要提议不在 allowed AI change fields 内的字段。"

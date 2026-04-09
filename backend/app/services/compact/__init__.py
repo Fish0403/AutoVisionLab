@@ -1,2 +1,0 @@
-"""Compact prompt helpers."""
-

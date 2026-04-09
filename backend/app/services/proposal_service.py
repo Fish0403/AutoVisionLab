@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import math
 import re
-from collections import deque
+from datetime import datetime
 from typing import Any, Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.context.history_context import build_proposal_history_context
-from app.context import build_proposal_prompt_bundle
+from app.context.prompt_builder import build_proposal_prompt_bundle
 from app.context.proposal_policy import build_policy_prompt_payload
 from app.llm.aihubmix_client import AIHubMixClient
 from app.models.experiment import ExperimentModel
@@ -27,7 +26,11 @@ from app.services.parameter_space import (
     is_epoch_search_enabled,
 )
 from app.services.log_events import format_run_log_message
-from app.services.proposal_context_cache import RunProposalContextCacheEntry, get_or_build_run_proposal_context_cache_entry
+from app.services.proposal_context_cache import (
+    RunProposalContextCacheEntry,
+    get_run_proposal_context_cache_entry,
+    set_run_proposal_context_cache_entry,
+)
 from app.services.run_logging import (
     append_run_llm_event,
     append_run_log,
@@ -180,6 +183,151 @@ def get_run_history_payload(db: Session, run_id: str) -> list[dict[str, Any]]:
     return [_summarize_experiment_for_prompt(experiment, run) for experiment in experiments]
 
 
+def _parse_payload_created_at(experiment_payload: dict[str, Any]) -> datetime | None:
+    created_at = experiment_payload.get("created_at")
+    if isinstance(created_at, datetime):
+        return created_at
+    if isinstance(created_at, str):
+        return datetime.fromisoformat(created_at)
+    return None
+
+
+def _build_prompt_run_payload(run: RunModel, *, experiment_count: int) -> dict[str, Any]:
+    """Build the run payload passed into prompt assembly."""
+    return {
+        "id": run.id,
+        "name": run.name,
+        "dataset": run.dataset,
+        "model_name": run.model_name,
+        "best_experiment_id": run.best_experiment_id,
+        "experiment_count": experiment_count,
+    }
+
+
+def _build_run_context_cache_entry_from_history(
+    *,
+    run: RunModel,
+    history_signature: tuple[str | None, str | None, str],
+    experiment_history: list[dict[str, Any]],
+) -> RunProposalContextCacheEntry:
+    """Build one run context state by replaying the persisted experiment history."""
+    if not experiment_history:
+        raise ValueError("No experiment is available for this run")
+    prompt_run_payload = _build_prompt_run_payload(run, experiment_count=len(experiment_history))
+    history_context = build_proposal_history_context(
+        run_payload=prompt_run_payload,
+        experiment_history=experiment_history,
+    )
+    source_experiment_id = str(history_context.source_experiment_payload.get("id"))
+    source_index = next(
+        index
+        for index, experiment_payload in enumerate(experiment_history)
+        if str(experiment_payload.get("id")) == source_experiment_id
+    )
+    latest_experiment_payload = experiment_history[-1]
+    entry = RunProposalContextCacheEntry(
+        run_id=run.id,
+        history_signature=history_signature,
+        run_payload=prompt_run_payload,
+        history_item_count=source_index + 1,
+        base_experiment_payload=history_context.base_experiment_payload,
+        source_experiment_payload=history_context.source_experiment_payload,
+        last_processed_experiment_id=str(latest_experiment_payload.get("id")),
+        last_processed_experiment_created_at=_parse_payload_created_at(latest_experiment_payload),
+        past_stage_summaries=list(history_context.past_stage_summaries),
+    )
+    for experiment_payload in experiment_history[source_index + 1 :]:
+        entry.append_experiment_payload(experiment_payload)
+    return entry
+
+
+def _load_incremental_run_history_payload(
+    db: Session,
+    run: RunModel,
+    *,
+    last_processed_experiment_id: str,
+    last_processed_experiment_created_at: datetime | None,
+) -> list[dict[str, Any]] | None:
+    """Return only experiments created after the cached run state marker."""
+    if last_processed_experiment_created_at is None:
+        return None
+    experiments = db.scalars(
+        select(ExperimentModel)
+        .where(
+            ExperimentModel.run_id == run.id,
+            ExperimentModel.created_at >= last_processed_experiment_created_at,
+        )
+        .order_by(ExperimentModel.created_at.asc())
+    ).all()
+    experiment_payloads = [_summarize_experiment_for_prompt(experiment, run) for experiment in experiments]
+    marker_index = next(
+        (
+            index
+            for index, experiment_payload in enumerate(experiment_payloads)
+            if str(experiment_payload.get("id")) == last_processed_experiment_id
+        ),
+        None,
+    )
+    if marker_index is None:
+        return None
+    return experiment_payloads[marker_index + 1 :]
+
+
+def _load_or_refresh_run_context_cache_entry(
+    db: Session,
+    run: RunModel,
+) -> tuple[RunProposalContextCacheEntry, str]:
+    """Return one run state from cache, or rebuild/advance it when needed."""
+    history_signature = _build_run_history_signature(run)
+    cached_entry = get_run_proposal_context_cache_entry(run.id)
+    if cached_entry is None:
+        experiment_history = get_run_history_payload(db, run.id)
+        rebuilt_entry = _build_run_context_cache_entry_from_history(
+            run=run,
+            history_signature=history_signature,
+            experiment_history=experiment_history,
+        )
+        set_run_proposal_context_cache_entry(rebuilt_entry)
+        return rebuilt_entry, "miss"
+    cached_entry.refresh_run_payload(best_experiment_id=run.best_experiment_id)
+    if cached_entry.history_signature == history_signature:
+        return cached_entry, "hit"
+    incremental_history = _load_incremental_run_history_payload(
+        db,
+        run,
+        last_processed_experiment_id=cached_entry.last_processed_experiment_id,
+        last_processed_experiment_created_at=cached_entry.last_processed_experiment_created_at,
+    )
+    if incremental_history is None:
+        experiment_history = get_run_history_payload(db, run.id)
+        rebuilt_entry = _build_run_context_cache_entry_from_history(
+            run=run,
+            history_signature=history_signature,
+            experiment_history=experiment_history,
+        )
+        set_run_proposal_context_cache_entry(rebuilt_entry)
+        return rebuilt_entry, "rebuild"
+    if incremental_history:
+        for experiment_payload in incremental_history:
+            cached_entry.append_experiment_payload(experiment_payload)
+        if run.best_experiment_id is not None and str(cached_entry.source_experiment_payload.get("id")) != str(run.best_experiment_id):
+            experiment_history = get_run_history_payload(db, run.id)
+            rebuilt_entry = _build_run_context_cache_entry_from_history(
+                run=run,
+                history_signature=history_signature,
+                experiment_history=experiment_history,
+            )
+            set_run_proposal_context_cache_entry(rebuilt_entry)
+            return rebuilt_entry, "rebuild"
+        cached_entry.refresh_run_payload(best_experiment_id=run.best_experiment_id)
+        cached_entry.history_signature = history_signature
+        set_run_proposal_context_cache_entry(cached_entry)
+        return cached_entry, "advance"
+    cached_entry.history_signature = history_signature
+    set_run_proposal_context_cache_entry(cached_entry)
+    return cached_entry, "refresh"
+
+
 def _load_latest_search_policy(
     db: Session,
     run_id: str,
@@ -205,29 +353,6 @@ def _load_latest_parameter_space(db: Session, run_id: str) -> EditableParameterS
     if latest_experiment is None:
         return None
     return EditableParameterSpace.model_validate(latest_experiment.editable_parameter_space or {})
-
-
-def _load_followup_source_constraints(db: Session, run: RunModel) -> dict[str, Any]:
-    """Return the current source experiment metadata used to branch the next proposal."""
-    source_experiment: ExperimentModel | None = None
-    if run.best_experiment_id:
-        source_experiment = db.get(ExperimentModel, run.best_experiment_id)
-    if source_experiment is None:
-        source_experiment = db.scalars(
-            select(ExperimentModel).where(ExperimentModel.run_id == run.id).order_by(ExperimentModel.created_at.desc())
-        ).first()
-    if source_experiment is None:
-        return {
-            "experiment_id": None,
-            "image_size": None,
-        }
-    config_payload = source_experiment.experiment_config or {}
-    train_hyp_payload = config_payload.get("train_hyp") or {}
-    source_image_size = train_hyp_payload.get("image_size")
-    return {
-        "experiment_id": source_experiment.id,
-        "image_size": source_image_size,
-    }
 
 
 def sanitize_disallowed_proposal_fields(
@@ -261,53 +386,14 @@ def generate_aihubmix_proposal(
     if run is None:
         raise ValueError("Run not found")
 
-    history_signature = _build_run_history_signature(run)
-
-    def _build_context_cache_entry() -> RunProposalContextCacheEntry:
-        experiment_history = get_run_history_payload(db, run_id)
-        if not experiment_history:
-            raise ValueError("No experiment is available for this run")
-        prompt_run_payload = {
-            "id": run.id,
-            "name": run.name,
-            "dataset": run.dataset,
-            "model_name": run.model_name,
-            "best_experiment_id": run.best_experiment_id,
-            "experiment_count": len(experiment_history),
-        }
-        history_context = build_proposal_history_context(
-            run_payload=prompt_run_payload,
-            experiment_history=experiment_history,
-        )
-        compacted_bucket_queue = []
-        if history_context.current_stage_compacted_summary is not None:
-            compacted_bucket_queue = list(history_context.current_stage_compacted_summary.buckets)
-        return RunProposalContextCacheEntry(
-            run_id=run_id,
-            history_signature=history_signature,
-            run_payload=prompt_run_payload,
-            experiment_history_snapshot=experiment_history,
-            source_constraints=_load_followup_source_constraints(db, run),
-            base_experiment_payload=history_context.base_experiment_payload,
-            source_experiment_payload=history_context.source_experiment_payload,
-            recent_history_queue=deque(history_context.recent_stage_history),
-            compacted_bucket_queue=deque(compacted_bucket_queue),
-            past_stage_summaries=list(history_context.past_stage_summaries),
-        )
-
-    context_cache_lookup = get_or_build_run_proposal_context_cache_entry(
-        run_id=run_id,
-        history_signature=history_signature,
-        builder=_build_context_cache_entry,
-    )
-    context_cache_entry = context_cache_lookup.entry
+    context_cache_entry, cache_status = _load_or_refresh_run_context_cache_entry(db, run)
     cache_summary = context_cache_entry.summarize_cache_state()
     append_run_log(
         run_id,
         format_run_log_message(
             level="INFO",
             section="proposal-cache",
-            message=f"cache {context_cache_lookup.cache_status}",
+            message=f"cache {cache_status}",
             history_items=cache_summary["history_items"],
             recent_history_items=cache_summary["recent_history_items"],
             compacted_bucket_count=cache_summary["compacted_bucket_count"],
@@ -316,7 +402,7 @@ def generate_aihubmix_proposal(
             source_experiment_id=cache_summary["source_experiment_id"],
         ),
     )
-    source_constraints = context_cache_entry.source_constraints
+    source_constraints = context_cache_entry.build_source_constraints()
     parameter_space = _load_latest_parameter_space(db, run_id)
     search_policy = _load_latest_search_policy(db, run_id)
     allowed_fields = sorted(get_allowed_ai_search_fields(search_policy, parameter_space=parameter_space))
@@ -346,7 +432,6 @@ def generate_aihubmix_proposal(
             )
         prompt_bundle = build_proposal_prompt_bundle(
             run_payload=context_cache_entry.run_payload,
-            experiment_history=context_cache_entry.experiment_history_snapshot,
             policy_payload=policy_payload,
             source_constraints=source_constraints,
             history_context=context_cache_entry.to_history_context(),
@@ -354,7 +439,7 @@ def generate_aihubmix_proposal(
         )
         prompt_metadata = {
             "attempt": attempt_index + 1,
-            "history_items": len(context_cache_entry.experiment_history_snapshot),
+            "history_items": context_cache_entry.history_item_count,
             "prompt_chars": prompt_bundle.prompt_chars,
             "prompt_tokens_estimate": prompt_bundle.prompt_tokens_estimate,
         }
@@ -367,7 +452,7 @@ def generate_aihubmix_proposal(
                 section="proposal-meta",
                 message="prompt prepared",
                 attempt=attempt_index + 1,
-                history_items=len(context_cache_entry.experiment_history_snapshot),
+                history_items=context_cache_entry.history_item_count,
                 prompt_chars=prompt_bundle.prompt_chars,
                 prompt_tokens_estimate=prompt_bundle.prompt_tokens_estimate,
             ),
@@ -377,7 +462,7 @@ def generate_aihubmix_proposal(
             "proposal_request",
             {
                 "attempt": attempt_index + 1,
-                "history_items": len(context_cache_entry.experiment_history_snapshot),
+                "history_items": context_cache_entry.history_item_count,
                 "prompt_chars": prompt_bundle.prompt_chars,
                 "prompt_tokens_estimate": prompt_bundle.prompt_tokens_estimate,
                 "system_prompt": prompt_bundle.system_prompt,
@@ -389,7 +474,7 @@ def generate_aihubmix_proposal(
             "proposal_request",
             {
                 "attempt": attempt_index + 1,
-                "history_items": len(context_cache_entry.experiment_history_snapshot),
+                "history_items": context_cache_entry.history_item_count,
                 "prompt_chars": prompt_bundle.prompt_chars,
                 "prompt_tokens_estimate": prompt_bundle.prompt_tokens_estimate,
                 "system_prompt": prompt_bundle.system_prompt,
@@ -401,7 +486,7 @@ def generate_aihubmix_proposal(
             "proposal_prompt_context",
             {
                 "attempt": attempt_index + 1,
-                "history_items": len(context_cache_entry.experiment_history_snapshot),
+                "history_items": context_cache_entry.history_item_count,
                 "prompt_chars": prompt_bundle.prompt_chars,
                 "prompt_tokens_estimate": prompt_bundle.prompt_tokens_estimate,
                 "system_prompt_chars": len(prompt_bundle.system_prompt),

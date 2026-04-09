@@ -9,7 +9,6 @@ from app.core.settings import get_settings
 from app.db.session import SessionLocal
 from app.db.init_db import init_database
 from app.schemas.api import ApiResponse
-from app.services.persistence import purge_invalid_experiment_configs
 from app.services.task_store import cleanup_stale_task_payloads
 from app.services.training_runner import cleanup_stale_running_experiments
 
@@ -38,7 +37,6 @@ def initialize_database() -> None:
     cleanup_stale_task_payloads()
     db = SessionLocal()
     try:
-        purge_invalid_experiment_configs(db)
         cleanup_stale_running_experiments(db)
     finally:
         db.close()

@@ -329,18 +329,6 @@ def require_non_basic_change_after_warmup_rounds(
     return current_round > effective_policy.auto_train_non_basic_change_after_round
 
 
-def extract_ranking_metrics(experiment: ExperimentModel) -> tuple[float | None, float | None]:
-    """Return the key scalar metrics used by the promotion policy."""
-    result = experiment.result or {}
-    metrics = result.get("metrics") or {}
-    top1_acc = metrics.get("top1_acc")
-    val_loss = metrics.get("val_loss")
-    return (
-        float(top1_acc) if isinstance(top1_acc, (int, float)) else None,
-        float(val_loss) if isinstance(val_loss, (int, float)) else None,
-    )
-
-
 def format_metric_value(value: float | None) -> str:
     """Format one scalar metric for decision logs."""
     if value is None:

@@ -89,33 +89,6 @@ def is_epoch_search_enabled(search_policy: SearchPolicy | None) -> bool:
     return policy.allow_basic_hparam_search and "epochs" in set(policy.allowed_basic_hparam_fields)
 
 
-def build_full_search_policy(parameter_space: EditableParameterSpace | None) -> SearchPolicy:
-    """Return one permissive search policy derived from the model parameter space."""
-    editable_fields = set(parameter_space.editable_params.keys()) if parameter_space is not None else set()
-    allowed_basic_fields = [
-        field_name
-        for field_name in (
-            "optimizer",
-            "learning_rate",
-            "batch_size",
-            "weight_decay",
-            "scheduler",
-            "label_smoothing",
-            "image_size",
-        )
-        if field_name in editable_fields
-    ]
-    return SearchPolicy(
-        allow_basic_hparam_search=bool(allowed_basic_fields),
-        allowed_basic_hparam_fields=allowed_basic_fields,
-        allow_strategy_search=False,
-        allow_loss_search=bool(LOSS_SEARCH_FIELDS & editable_fields),
-        allow_augmentation_search=bool(AUGMENTATION_SEARCH_FIELDS & editable_fields),
-        allow_model_module_search=bool(MODEL_MODULE_SEARCH_FIELDS & editable_fields),
-        require_manual_approval_for_high_impact_changes=True,
-    )
-
-
 def _is_value_allowed_by_definition(value: object, definition: object) -> bool:
     if isinstance(definition, EnumParamDefinition):
         return value in definition.choices

@@ -188,18 +188,6 @@ def _to_experiment_summary(experiment: ExperimentModel) -> ExperimentSummary:
     )
 
 
-def _get_experiment_metric_value(experiment: ExperimentModel, metric_name: str) -> float | None:
-    """Return one comparable metric from experiment result payloads."""
-    result_payload = experiment.result or {}
-    metrics_payload = result_payload.get("metrics") or {}
-    resource_payload = result_payload.get("resource") or {}
-    if metric_name in {"training_seconds", "latency_ms", "parameter_count_million"}:
-        metric_value = resource_payload.get(metric_name)
-    else:
-        metric_value = metrics_payload.get(metric_name)
-    return float(metric_value) if isinstance(metric_value, (int, float)) else None
-
-
 def _compute_metric_improvement(
     candidate_value: float,
     incumbent_value: float,
@@ -375,51 +363,6 @@ def get_experiment_detail(db: Session, experiment_id: str) -> ExperimentDetailRe
     if experiment is None:
         return None
     return _to_experiment_detail(experiment)
-
-
-def purge_invalid_experiment_configs(db: Session) -> dict[str, int]:
-    """Delete experiments whose persisted config no longer matches the structured schema."""
-    experiments = db.scalars(select(ExperimentModel).order_by(ExperimentModel.created_at.asc())).all()
-    invalid_experiments: list[ExperimentModel] = []
-    affected_run_ids: set[str] = set()
-    for experiment in experiments:
-        try:
-            ExperimentConfig.model_validate(experiment.experiment_config)
-        except Exception:
-            invalid_experiments.append(experiment)
-            affected_run_ids.add(experiment.run_id)
-
-    if not invalid_experiments:
-        return {
-            "deleted_experiments": 0,
-            "deleted_results": 0,
-            "deleted_artifact_files": 0,
-        }
-
-    experiment_ids = [experiment.id for experiment in invalid_experiments]
-    result_models = db.scalars(select(ResultModel).where(ResultModel.experiment_id.in_(experiment_ids))).all()
-    deleted_artifact_files = _delete_recorded_artifact_paths(result_models)
-    deleted_artifact_files += _delete_experiment_artifacts(experiment_ids)
-    deleted_results = (
-        db.query(ResultModel)
-        .filter(ResultModel.experiment_id.in_(experiment_ids))
-        .delete(synchronize_session=False)
-    )
-    deleted_experiments = (
-        db.query(ExperimentModel)
-        .filter(ExperimentModel.id.in_(experiment_ids))
-        .delete(synchronize_session=False)
-    )
-    db.commit()
-
-    for run_id in sorted(affected_run_ids):
-        _refresh_run_summary(db, run_id)
-
-    return {
-        "deleted_experiments": deleted_experiments,
-        "deleted_results": deleted_results,
-        "deleted_artifact_files": deleted_artifact_files,
-    }
 
 
 def save_experiment_result(db: Session, experiment_id: str, result: ResultSchema) -> ExperimentDetailResponse | None:

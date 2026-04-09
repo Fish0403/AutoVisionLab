@@ -24,7 +24,11 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 from app.schemas.ai import ProposalSchema
 from app.schemas.parameter_space import EditableParameterSpace, SearchPolicy
 from app.services.proposal_context_cache import clear_run_proposal_context_cache
-from app.services.proposal_service import generate_aihubmix_proposal
+from app.services.proposal_service import (
+    _build_run_context_cache_entry_from_history,
+    _load_or_refresh_run_context_cache_entry,
+    generate_aihubmix_proposal,
+)
 
 
 def _build_parameter_space() -> EditableParameterSpace:
@@ -246,10 +250,6 @@ class ProposalServiceTest(unittest.TestCase):
                 "app.services.proposal_service._load_latest_parameter_space",
                 return_value=_build_parameter_space(),
             ),
-            patch(
-                "app.services.proposal_service._load_followup_source_constraints",
-                return_value={"experiment_id": "exp_keep", "image_size": 96},
-            ),
             patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
             patch("app.services.proposal_service.append_run_log"),
         ):
@@ -264,6 +264,71 @@ class ProposalServiceTest(unittest.TestCase):
         self.assertIn("Proposal does not contain any effective parameter changes", second_prompt)
         self.assertIn("请基于完整历史选择一个更可执行的方向", second_prompt)
 
+    def test_build_run_context_cache_entry_finalizes_stage_when_new_best_appears(self) -> None:
+        run = SimpleNamespace(
+            id="run_stage_finalize",
+            name="stage-finalize",
+            dataset="cifar10",
+            model_name="mobilenet_v3_small",
+            baseline_experiment_id="exp_base",
+            best_experiment_id="exp_best_2",
+        )
+        experiment_history = [
+            {
+                "id": "exp_base",
+                "status": "success",
+                "decision": "keep",
+                "is_best_so_far": True,
+                "created_at": "2026-04-08T12:00:00",
+                "params": {"learning_rate": 0.003, "image_size": 224},
+                "train_hyp": {"lr0": 0.003, "image_size": 224},
+                "result": {"status": "success", "metrics": {"top1_acc": 0.91}, "resource": {}},
+            },
+            {
+                "id": "exp_try_1",
+                "status": "success",
+                "decision": "discard",
+                "created_at": "2026-04-08T12:01:00",
+                "params": {"learning_rate": 0.0025, "image_size": 224},
+                "train_hyp": {"lr0": 0.0025, "image_size": 224},
+                "result": {"status": "success", "metrics": {"top1_acc": 0.90}, "resource": {}},
+            },
+            {
+                "id": "exp_try_2",
+                "status": "failed",
+                "decision": "crash",
+                "created_at": "2026-04-08T12:02:00",
+                "params": {"learning_rate": 0.002, "image_size": 256},
+                "train_hyp": {"lr0": 0.002, "image_size": 256},
+                "result": {"status": "failed", "metrics": {"top1_acc": 0.89}, "resource": {}},
+                "error_summary": "cuda out of memory",
+            },
+            {
+                "id": "exp_best_2",
+                "status": "success",
+                "decision": "keep",
+                "is_best_so_far": True,
+                "created_at": "2026-04-08T12:03:00",
+                "params": {"learning_rate": 0.0015, "image_size": 224},
+                "train_hyp": {"lr0": 0.0015, "image_size": 224},
+                "result": {"status": "success", "metrics": {"top1_acc": 0.94}, "resource": {}},
+            },
+        ]
+
+        entry = _build_run_context_cache_entry_from_history(
+            run=run,
+            history_signature=("exp_base", "exp_best_2", "2026-04-08T12:03:00"),
+            experiment_history=experiment_history,
+        )
+
+        self.assertEqual(entry.base_experiment_payload["id"], "exp_base")
+        self.assertEqual(entry.source_experiment_payload["id"], "exp_best_2")
+        self.assertEqual(len(entry.past_stage_summaries), 1)
+        self.assertEqual(entry.past_stage_summaries[0].covered_experiment_ids, ["exp_try_1", "exp_try_2"])
+        self.assertIn("cuda out of memory (x1)", entry.past_stage_summaries[0].failure_patterns)
+        self.assertEqual(len(entry.recent_history_queue), 0)
+        self.assertEqual(len(entry.compacted_bucket_queue), 0)
+
     def test_generate_aihubmix_proposal_includes_outer_retry_feedback_in_prompt(self) -> None:
         db = Mock()
         db.get.return_value = SimpleNamespace(
@@ -276,7 +341,7 @@ class ProposalServiceTest(unittest.TestCase):
             frontier_experiment_id="exp_keep",
         )
         experiment_history = [
-            {"id": "exp_keep", "status": "success", "decision": "keep"},
+            {"id": "exp_keep", "status": "success", "decision": "keep", "created_at": "2026-04-08T12:00:00"},
         ]
         mock_client = Mock()
         mock_client.create_json_completion_with_metadata.return_value = (
@@ -297,10 +362,6 @@ class ProposalServiceTest(unittest.TestCase):
             patch(
                 "app.services.proposal_service._load_latest_parameter_space",
                 return_value=_build_parameter_space(),
-            ),
-            patch(
-                "app.services.proposal_service._load_followup_source_constraints",
-                return_value={"experiment_id": "exp_keep", "image_size": 96},
             ),
             patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
             patch("app.services.proposal_service.append_run_log"),
@@ -339,7 +400,7 @@ class ProposalServiceTest(unittest.TestCase):
             frontier_experiment_id="exp_keep",
         )
         experiment_history = [
-            {"id": "exp_keep", "status": "success", "decision": "keep"},
+            {"id": "exp_keep", "status": "success", "decision": "keep", "created_at": "2026-04-08T12:00:00"},
         ]
         mock_client = Mock()
         mock_client.create_json_completion_with_metadata.return_value = (
@@ -370,10 +431,6 @@ class ProposalServiceTest(unittest.TestCase):
             patch(
                 "app.services.proposal_service._load_latest_parameter_space",
                 return_value=_build_parameter_space(),
-            ),
-            patch(
-                "app.services.proposal_service._load_followup_source_constraints",
-                return_value={"experiment_id": "exp_keep", "image_size": 96},
             ),
             patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
             patch("app.services.proposal_service.append_run_log"),
@@ -416,10 +473,6 @@ class ProposalServiceTest(unittest.TestCase):
             patch(
                 "app.services.proposal_service._load_latest_parameter_space",
                 return_value=_build_parameter_space(),
-            ),
-            patch(
-                "app.services.proposal_service._load_followup_source_constraints",
-                return_value={"experiment_id": "exp_keep", "image_size": 96},
             ),
             patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
             patch("app.services.proposal_service.append_run_log"),
@@ -473,10 +526,6 @@ class ProposalServiceTest(unittest.TestCase):
                 "app.services.proposal_service._load_latest_parameter_space",
                 return_value=_build_parameter_space(),
             ),
-            patch(
-                "app.services.proposal_service._load_followup_source_constraints",
-                return_value={"experiment_id": "exp_keep", "image_size": 96},
-            ),
             patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
         ):
             with self.assertRaisesRegex(ValueError, "No AI-editable fields are available for this run."):
@@ -528,10 +577,6 @@ class ProposalServiceTest(unittest.TestCase):
                 "app.services.proposal_service._load_latest_parameter_space",
                 return_value=_build_parameter_space(),
             ),
-            patch(
-                "app.services.proposal_service._load_followup_source_constraints",
-                return_value={"experiment_id": "exp_keep", "image_size": 96},
-            ),
             patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
             patch("app.services.proposal_service.append_run_log"),
         ):
@@ -554,8 +599,21 @@ class ProposalServiceTest(unittest.TestCase):
             updated_at=datetime(2026, 4, 8, 12, 0, 0),
         )
         db.get.return_value = run
+        db.scalars.return_value.all.return_value = [
+            SimpleNamespace(
+                id="exp_keep",
+                status="success",
+                decision="keep",
+                decision_reason=None,
+                is_best_so_far=True,
+                created_at=datetime(2026, 4, 8, 12, 0, 0),
+                result={"status": "success", "metrics": {"top1_acc": 0.91}, "resource": {}},
+                proposal=None,
+                experiment_config={"params": {"learning_rate": 0.003, "image_size": 224}, "train_hyp": {"image_size": 224}},
+            )
+        ]
         experiment_history = [
-            {"id": "exp_keep", "status": "success", "decision": "keep"},
+            {"id": "exp_keep", "status": "success", "decision": "keep", "created_at": "2026-04-08T12:00:00"},
         ]
         mock_client = Mock()
         mock_client.create_json_completion_with_metadata.return_value = (
@@ -570,7 +628,6 @@ class ProposalServiceTest(unittest.TestCase):
             {},
         )
         history_loader = Mock(return_value=experiment_history)
-        source_constraints_loader = Mock(return_value={"experiment_id": "exp_keep", "image_size": 96})
         append_run_log_mock = Mock()
 
         with (
@@ -580,7 +637,6 @@ class ProposalServiceTest(unittest.TestCase):
                 "app.services.proposal_service._load_latest_parameter_space",
                 return_value=_build_parameter_space(),
             ),
-            patch("app.services.proposal_service._load_followup_source_constraints", source_constraints_loader),
             patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
             patch("app.services.proposal_service.append_run_log", append_run_log_mock),
         ):
@@ -590,7 +646,6 @@ class ProposalServiceTest(unittest.TestCase):
         self.assertEqual(first_proposal.changes.weight_decay, 0.0005)
         self.assertEqual(second_proposal.changes.weight_decay, 0.0005)
         self.assertEqual(history_loader.call_count, 1)
-        self.assertEqual(source_constraints_loader.call_count, 1)
         self.assertEqual(mock_client.create_json_completion_with_metadata.call_count, 2)
         logged_messages = [call.args[1] for call in append_run_log_mock.call_args_list if len(call.args) >= 2]
         self.assertTrue(any(message.startswith("INFO |proposal-cache| cache miss;") for message in logged_messages))
@@ -609,8 +664,21 @@ class ProposalServiceTest(unittest.TestCase):
             updated_at=datetime(2026, 4, 8, 12, 0, 0),
         )
         db.get.return_value = run
+        db.scalars.return_value.all.return_value = [
+            SimpleNamespace(
+                id="exp_keep",
+                status="success",
+                decision="keep",
+                decision_reason=None,
+                is_best_so_far=True,
+                created_at=datetime(2026, 4, 8, 12, 0, 0),
+                result={"status": "success", "metrics": {"top1_acc": 0.91}, "resource": {}},
+                proposal=None,
+                experiment_config={"params": {"learning_rate": 0.003, "image_size": 224}, "train_hyp": {"image_size": 224}},
+            )
+        ]
         experiment_history = [
-            {"id": "exp_keep", "status": "success", "decision": "keep"},
+            {"id": "exp_keep", "status": "success", "decision": "keep", "created_at": "2026-04-08T12:00:00"},
         ]
         mock_client = Mock()
         mock_client.create_json_completion_with_metadata.return_value = (
@@ -625,7 +693,6 @@ class ProposalServiceTest(unittest.TestCase):
             {},
         )
         history_loader = Mock(return_value=experiment_history)
-        source_constraints_loader = Mock(return_value={"experiment_id": "exp_keep", "image_size": 96})
         append_run_log_mock = Mock()
 
         with (
@@ -635,7 +702,6 @@ class ProposalServiceTest(unittest.TestCase):
                 "app.services.proposal_service._load_latest_parameter_space",
                 return_value=_build_parameter_space(),
             ),
-            patch("app.services.proposal_service._load_followup_source_constraints", source_constraints_loader),
             patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
             patch("app.services.proposal_service.append_run_log", append_run_log_mock),
         ):
@@ -643,10 +709,87 @@ class ProposalServiceTest(unittest.TestCase):
             run.updated_at = run.updated_at + timedelta(seconds=1)
             generate_aihubmix_proposal(db, "run_cache_refresh")
 
-        self.assertEqual(history_loader.call_count, 2)
-        self.assertEqual(source_constraints_loader.call_count, 2)
+        self.assertEqual(history_loader.call_count, 1)
         logged_messages = [call.args[1] for call in append_run_log_mock.call_args_list if len(call.args) >= 2]
-        self.assertTrue(any(message.startswith("INFO |proposal-cache| cache rebuild;") for message in logged_messages))
+        self.assertTrue(any(message.startswith("INFO |proposal-cache| cache refresh;") for message in logged_messages))
+
+    def test_load_or_refresh_run_context_cache_entry_advances_existing_state_with_new_best(self) -> None:
+        run = SimpleNamespace(
+            id="run_cache_advance",
+            name="cache-advance",
+            dataset="cifar10",
+            model_name="mobilenet_v3_small",
+            baseline_experiment_id="exp_base",
+            best_experiment_id="exp_base",
+            updated_at=datetime(2026, 4, 8, 12, 0, 0),
+        )
+        initial_history = [
+            {
+                "id": "exp_base",
+                "status": "success",
+                "decision": "keep",
+                "is_best_so_far": True,
+                "created_at": "2026-04-08T12:00:00",
+                "params": {"learning_rate": 0.003, "image_size": 224},
+                "train_hyp": {"lr0": 0.003, "image_size": 224},
+                "result": {"status": "success", "metrics": {"top1_acc": 0.91}, "resource": {}},
+            },
+            {
+                "id": "exp_try",
+                "status": "failed",
+                "decision": "crash",
+                "created_at": "2026-04-08T12:01:00",
+                "params": {"learning_rate": 0.002, "image_size": 256},
+                "train_hyp": {"lr0": 0.002, "image_size": 256},
+                "result": {"status": "failed", "metrics": {"top1_acc": 0.89}, "resource": {}},
+                "error_summary": "cuda out of memory",
+            },
+        ]
+        db = Mock()
+        db.scalars.return_value.all.return_value = [
+            SimpleNamespace(
+                id="exp_try",
+                status="failed",
+                decision="crash",
+                decision_reason=None,
+                is_best_so_far=False,
+                created_at=datetime(2026, 4, 8, 12, 1, 0),
+                result={"status": "failed", "metrics": {"top1_acc": 0.89}, "resource": {}},
+                proposal=None,
+                experiment_config={"params": {"learning_rate": 0.002, "image_size": 256}, "train_hyp": {"image_size": 256}},
+            ),
+            SimpleNamespace(
+                id="exp_best_2",
+                status="success",
+                decision="keep",
+                decision_reason=None,
+                is_best_so_far=True,
+                created_at=datetime(2026, 4, 8, 12, 2, 0),
+                result={"status": "success", "metrics": {"top1_acc": 0.94}, "resource": {}},
+                proposal=None,
+                experiment_config={"params": {"learning_rate": 0.0015, "image_size": 224}, "train_hyp": {"image_size": 224}},
+            ),
+        ]
+
+        with patch("app.services.proposal_service.get_run_history_payload", return_value=initial_history):
+            initial_entry, initial_status = _load_or_refresh_run_context_cache_entry(db, run)
+
+        self.assertEqual(initial_status, "miss")
+        self.assertEqual(initial_entry.source_experiment_payload["id"], "exp_base")
+        self.assertEqual(initial_entry.history_item_count, 2)
+        self.assertEqual(len(initial_entry.recent_history_queue), 1)
+
+        run.best_experiment_id = "exp_best_2"
+        run.updated_at = run.updated_at + timedelta(seconds=1)
+        advanced_entry, advanced_status = _load_or_refresh_run_context_cache_entry(db, run)
+
+        self.assertEqual(advanced_status, "advance")
+        self.assertEqual(advanced_entry.source_experiment_payload["id"], "exp_best_2")
+        self.assertEqual(advanced_entry.history_item_count, 3)
+        self.assertEqual(len(advanced_entry.past_stage_summaries), 1)
+        self.assertEqual(advanced_entry.past_stage_summaries[0].covered_experiment_ids, ["exp_try"])
+        self.assertIn("cuda out of memory (x1)", advanced_entry.past_stage_summaries[0].failure_patterns)
+        self.assertEqual(len(advanced_entry.recent_history_queue), 0)
 
     def test_generate_aihubmix_proposal_omits_duplicate_source_config_summary(self) -> None:
         db = Mock()
@@ -681,13 +824,6 @@ class ProposalServiceTest(unittest.TestCase):
             patch(
                 "app.services.proposal_service._load_latest_parameter_space",
                 return_value=_build_parameter_space(),
-            ),
-            patch(
-                "app.services.proposal_service._load_followup_source_constraints",
-                return_value={
-                    "experiment_id": "exp_keep",
-                    "image_size": 96,
-                },
             ),
             patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
             patch("app.services.proposal_service.append_run_log"),

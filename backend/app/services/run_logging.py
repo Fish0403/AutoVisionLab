@@ -5,9 +5,14 @@ from __future__ import annotations
 from datetime import datetime
 import json
 from pathlib import Path
+from tempfile import NamedTemporaryFile
+from threading import Lock
 from typing import Any
 
 from app.core.settings import get_settings
+
+
+_RUN_PROMPT_CONTEXT_LOG_LOCK = Lock()
 
 
 def get_artifact_root() -> Path:
@@ -92,20 +97,32 @@ def append_run_prompt_context_event(run_id: str, event_type: str, payload: dict[
         "event_type": event_type,
         "payload": payload,
     }
-    if log_path.exists():
-        with log_path.open(encoding="utf-8") as log_file:
-            log_payload = json.load(log_file)
-    else:
-        log_payload = {
-            "run_id": run_id,
-            "events": [],
-        }
-    log_payload.setdefault("run_id", run_id)
-    log_payload.setdefault("events", [])
-    log_payload["events"].append(event_payload)
-    with log_path.open("w", encoding="utf-8") as log_file:
-        json.dump(log_payload, log_file, ensure_ascii=False, indent=2)
-        log_file.write("\n")
+    with _RUN_PROMPT_CONTEXT_LOG_LOCK:
+        if log_path.exists():
+            with log_path.open(encoding="utf-8") as log_file:
+                log_payload = json.load(log_file)
+        else:
+            log_payload = {
+                "run_id": run_id,
+                "events": [],
+            }
+        log_payload.setdefault("run_id", run_id)
+        log_payload.setdefault("events", [])
+        log_payload["events"].append(event_payload)
+
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=log_path.parent,
+            delete=False,
+            prefix=f"{log_path.stem}.",
+            suffix=".tmp",
+        ) as temp_file:
+            json.dump(log_payload, temp_file, ensure_ascii=False, indent=2)
+            temp_file.write("\n")
+            temp_path = Path(temp_file.name)
+        temp_path.replace(log_path)
     return log_path
 
 

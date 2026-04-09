@@ -12,8 +12,6 @@ from app.trainers.manifest import TrainerManifest
 
 
 LAYER_SECTION_NAMES = ("backbone", "neck", "head")
-LEGACY_TOP_LEVEL_SECTION_NAMES = ("model_recipe", "train_hyp", "dataset_recipe", "search_policy", "ranking_policy")
-LEGACY_RUNTIME_FIELD_NAMES = ("use_demo_mode", "participates_in_ranking")
 
 
 def parse_model_layer_payload(layer_payload: Any) -> dict[str, Any]:
@@ -41,8 +39,6 @@ def parse_model_layer_payload(layer_payload: Any) -> dict[str, Any]:
 def parse_model_recipe_payload(model_payload: dict[str, Any]) -> dict[str, Any]:
     """Normalize one model recipe payload before schema validation."""
     normalized_payload = deepcopy(model_payload)
-    if "architecture" in normalized_payload:
-        raise ValueError("Legacy model.architecture is no longer supported")
     for section_name in LAYER_SECTION_NAMES:
         section_layers = normalized_payload.get(section_name)
         if isinstance(section_layers, list):
@@ -56,23 +52,6 @@ def parse_trainer_manifest_payload(manifest_payload: dict[str, Any]) -> TrainerM
         raise ValueError("Trainer manifest payload must be a mapping")
 
     normalized_payload = deepcopy(manifest_payload)
-    legacy_sections = sorted(
-        field_name for field_name in LEGACY_TOP_LEVEL_SECTION_NAMES if field_name in normalized_payload
-    )
-    if legacy_sections:
-        legacy_section_text = ", ".join(legacy_sections)
-        raise ValueError(f"Legacy manifest sections are no longer supported: {legacy_section_text}")
-
-    legacy_runtime_fields = sorted(
-        field_name for field_name in LEGACY_RUNTIME_FIELD_NAMES if field_name in normalized_payload
-    )
-    if legacy_runtime_fields:
-        legacy_runtime_text = ", ".join(legacy_runtime_fields)
-        raise ValueError(
-            "Legacy top-level runtime fields are no longer supported. "
-            f"Move them under runtime: {legacy_runtime_text}"
-        )
-
     model_payload = normalized_payload.get("model")
     if isinstance(model_payload, dict):
         normalized_payload["model"] = parse_model_recipe_payload(model_payload)

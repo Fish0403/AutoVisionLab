@@ -50,7 +50,7 @@ def _render_user_prompt(blocks: list[PromptBlock]) -> str:
 def build_proposal_prompt_bundle(
     *,
     run_payload: dict[str, Any],
-    experiment_history: list[dict[str, Any]],
+    experiment_history: list[dict[str, Any]] | None = None,
     policy_payload: dict[str, Any],
     source_constraints: dict[str, Any],
     history_context: ProposalHistoryContext | None = None,
@@ -59,14 +59,17 @@ def build_proposal_prompt_bundle(
     stage_compact_threshold: int = DEFAULT_STAGE_COMPACT_THRESHOLD,
 ) -> PromptBundle:
     """Build one proposal prompt bundle from ordered run history."""
-    if not experiment_history:
-        raise ValueError("experiment_history must not be empty")
-    effective_history_context = history_context or build_proposal_history_context(
-        run_payload=run_payload,
-        experiment_history=experiment_history,
-        stage_history_keep=stage_history_keep,
-        stage_compact_threshold=stage_compact_threshold,
-    )
+    if history_context is None:
+        if not experiment_history:
+            raise ValueError("experiment_history must not be empty when history_context is missing")
+        effective_history_context = build_proposal_history_context(
+            run_payload=run_payload,
+            experiment_history=experiment_history,
+            stage_history_keep=stage_history_keep,
+            stage_compact_threshold=stage_compact_threshold,
+        )
+    else:
+        effective_history_context = history_context
     source_experiment_id = str(effective_history_context.source_experiment_payload.get("id"))
     base_experiment_id = str(effective_history_context.base_experiment_payload.get("id"))
     blocks: list[PromptBlock] = [

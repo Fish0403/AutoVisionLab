@@ -13,6 +13,7 @@ from uuid import uuid4
 from app.core.settings import get_settings
 from app.db.session import SessionLocal
 from app.llm.aihubmix_client import AIHubMixClient
+from app.prompts.compare_summary import build_compare_summary_prompt
 from app.schemas.experiment import ExperimentCreateRequest
 from app.schemas.parameter_space import ExperimentConfig, SearchPolicy, build_default_model_recipe
 from app.schemas.run import (
@@ -196,35 +197,6 @@ def _build_shared_baseline_snapshot(base_config: ExperimentConfig) -> dict[str, 
             "label_smoothing": params.label_smoothing,
         },
     }
-
-
-def _build_compare_summary_prompt(summary: ModelCompareSummary) -> tuple[str, str]:
-    """Build the system and user prompts for one compare-result summary."""
-    candidate_payload = [
-        {
-            "model_name": candidate.model_name,
-            "status": candidate.status,
-            "top1_acc": candidate.top1_acc,
-            "latency_ms": candidate.latency_ms,
-            "parameter_count_million": candidate.parameter_count_million,
-            "normalized_config_notes": candidate.normalized_config_notes,
-        }
-        for candidate in summary.candidate_results
-    ]
-    system_prompt = (
-        "You summarize model comparison results for a machine learning workspace. "
-        "Return strict JSON with one key: summary_text. "
-        "The summary_text must be concise, factual, and written in English. "
-        "Do not mention being an AI. Do not recommend next steps. "
-        "Mention the leading successful model when one exists, including accuracy and latency. "
-        "If all candidates failed, state that clearly."
-    )
-    user_prompt = (
-        "Summarize the following compare results for one workspace results panel.\n"
-        f"Shared baseline config:\n{json.dumps(summary.shared_baseline_config, ensure_ascii=True)}\n"
-        f"Candidate results:\n{json.dumps(candidate_payload, ensure_ascii=True)}\n"
-    )
-    return system_prompt, user_prompt
 
 
 def _generate_compare_ai_summary(summary: ModelCompareSummary) -> str | None:

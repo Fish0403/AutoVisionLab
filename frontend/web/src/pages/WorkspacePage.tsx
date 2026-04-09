@@ -2614,17 +2614,6 @@ const PROPOSAL_CHANGE_SHORT_VALUE_LABELS: Record<string, string> = {
   false: "off"
 };
 
-function describeProposalChangeSummary(proposal: ProposalSnapshot | null) {
-  if (!proposal) {
-    return null;
-  }
-  const changedFields = collectStructuredProposalChangeEntries(proposal).map((entry) => entry.path);
-  if (!changedFields.length) {
-    return null;
-  }
-  return changedFields.join(" / ");
-}
-
 function describeValidatedProposalChanges(proposal: ProposalSnapshot | null) {
   if (!proposal) {
     return null;

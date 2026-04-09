@@ -197,50 +197,6 @@ class TaskHistoryPersistenceTest(unittest.TestCase):
         self.assertEqual(task_response.data.status, "stopped")
         self.assertEqual(task_response.data.stop_reason, "Task interrupted by backend restart.")
 
-    def test_restart_cleanup_deletes_invalid_legacy_experiment_configs(self) -> None:
-        legacy_config = _build_experiment_config("mobilenet_v3_small@v1")
-        legacy_config.pop("model_recipe", None)
-        legacy_config.pop("train_hyp", None)
-        legacy_config.pop("dataset_recipe", None)
-
-        with SessionLocal() as db:
-            db.add(
-                RunModel(
-                    id="run_legacy_cleanup",
-                    name="legacy-cleanup",
-                    task_type="classification",
-                    dataset="cifar10",
-                    model_name="mobilenet_v3_small",
-                    status="active",
-                )
-            )
-            db.add(
-                ExperimentModel(
-                    id="exp_legacy_cleanup",
-                    run_id="run_legacy_cleanup",
-                    status="success",
-                    experiment_config=legacy_config,
-                    editable_parameter_space={
-                        "model_name": "mobilenet_v3_small",
-                        "version": "mobilenet_v3_small@v1",
-                        "editable_params": {},
-                    },
-                    proposal=None,
-                    result=None,
-                    reflection=None,
-                )
-            )
-            db.commit()
-
-        initialize_database()
-
-        with SessionLocal() as db:
-            self.assertIsNone(db.get(ExperimentModel, "exp_legacy_cleanup"))
-            run = db.get(RunModel, "run_legacy_cleanup")
-            self.assertIsNotNone(run)
-            self.assertIsNone(run.baseline_experiment_id)
-            self.assertIsNone(run.best_experiment_id)
-
     def test_model_compare_task_history_survives_memory_reset(self) -> None:
         parameter_space_response = read_parameter_space("mobilenet_v3_small")
         parameter_space = parameter_space_response.data
