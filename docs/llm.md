@@ -252,15 +252,15 @@ proposal prompt 内的 `result_snapshot` 固定使用以下结构：
 
 ### 目标
 
-当 `Auto Train` 因用户停止或任务结束进入收尾阶段时，系统会为 workspace results panel 生成一段简短英文摘要。
+当 `Auto Train` 因用户停止或任务结束进入收尾阶段时，系统会为 workspace results panel 生成一段简短中文摘要。
 
 系统提示词要求模型：
 
 - 只返回一个键 `summary_text`
-- 内容客观、英文、简短
+- 内容客观、中文、简短
 - 不要说自己是 AI
 - 不要给下一步建议
-- 固定覆盖四个方面：
+- 优先覆盖四个方面：
   - 停止原因和本次搜索范围
   - 最终领先 experiment 及核心指标
   - 本轮搜索里效果最好或最稳定的策略
@@ -269,7 +269,9 @@ proposal prompt 内的 `result_snapshot` 固定使用以下结构：
 说明：
 
 - 输出仍然保持单段文本，不扩展结构化字段
-- 详细 prompt 约束以代码实现为准
+- prompt 仍然复用 proposal 的阶段语义，例如 `base`、`source`、`current stage` 和 `past stages`
+- 但不会直接复用 proposal 的完整 block 列表；search summary 会单独组织适合总结任务的 block
+- 状态值、decision 和内部枚举可以继续保留英文，不要求在输入侧翻译
 - 当 `Auto Train` 的已完成轮数少于 `3` 时，后端不会请求这段 summary，避免在样本过少时生成噪声结论
 
 ## Compare Summary 通讯
@@ -281,7 +283,7 @@ proposal prompt 内的 `result_snapshot` 固定使用以下结构：
 系统提示词要求模型：
 
 - 只返回一个键 `summary_text`
-- 内容简短、客观、英文
+- 内容简短、客观、中文
 - 不要说自己是 AI
 - 不要给下一步建议
 - 如果有成功候选，要提到领先模型、accuracy 和 latency
@@ -307,7 +309,7 @@ proposal prompt 内的 `result_snapshot` 固定使用以下结构：
 
 ```json
 {
-  "summary_text": "MobileNetV3 Small is the leading successful model in this comparison, with the best observed accuracy among completed runs and competitive latency. Other candidates either trailed in accuracy or failed during evaluation."
+  "summary_text": "当前领先模型是 MobileNetV3 Small，在成功候选里表现出最好的准确率，同时保持了较有竞争力的延迟。其余候选要么准确率落后，要么在评估过程中失败。"
 }
 ```
 
@@ -315,7 +317,7 @@ proposal prompt 内的 `result_snapshot` 固定使用以下结构：
 
 ```json
 {
-  "summary_text": "All comparison candidates failed, so no successful leaderboard result is available for this workspace."
+  "summary_text": "本次 compare 的所有候选都失败了，因此当前没有可用的成功结果可供排序。"
 }
 ```
 

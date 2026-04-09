@@ -20,10 +20,10 @@ from app.schemas.parameter_space import (
     ExperimentParams,
     build_default_model_recipe,
 )
+from app.prompts.compare_summary import build_compare_summary_prompt
 from app.services.model_compare_service import (
     MODEL_COMPARE_TASKS,
     _build_compare_config,
-    _build_compare_summary_prompt,
     _try_attach_compare_ai_summary,
     delete_model_compare_task,
     list_model_compare_tasks,
@@ -177,9 +177,10 @@ class ModelCompareServiceTest(unittest.TestCase):
             ],
         )
 
-        system_prompt, user_prompt = _build_compare_summary_prompt(summary)
+        system_prompt, user_prompt = build_compare_summary_prompt(summary)
 
         self.assertIn("summary_text", system_prompt)
+        self.assertIn("简洁、客观、自然的中文", system_prompt)
         self.assertIn("\"top1_acc\": 0.85", user_prompt)
         self.assertIn("\"latency_ms\": 2.1", user_prompt)
 
@@ -199,11 +200,11 @@ class ModelCompareServiceTest(unittest.TestCase):
 
         with patch(
             "app.services.model_compare_service._generate_compare_ai_summary",
-            return_value="MobileNetV2 leads with 85.0% Top1 at 2.1 ms latency.",
+            return_value="当前领先模型是 MobileNetV2，top1_acc 为 0.85，latency_ms 为 2.1。",
         ):
             updated_summary = _try_attach_compare_ai_summary("cmp_test", summary)
 
-        self.assertEqual(updated_summary.ai_summary, "MobileNetV2 leads with 85.0% Top1 at 2.1 ms latency.")
+        self.assertEqual(updated_summary.ai_summary, "当前领先模型是 MobileNetV2，top1_acc 为 0.85，latency_ms 为 2.1。")
         self.assertIsNone(updated_summary.ai_summary_error)
 
     def test_try_attach_compare_ai_summary_records_error_when_provider_fails(self) -> None:

@@ -13,9 +13,12 @@ from uuid import uuid4
 
 import requests
 
+from app.context.context_mapper import build_base_prompt_payload, build_source_prompt_payload
+from app.context.history_context import build_proposal_history_context
 from app.core.settings import get_settings
 from app.db.session import SessionLocal
 from app.llm.aihubmix_client import AIHubMixClient, AIHubMixRequestError
+from app.prompts.search_summary import build_search_summary_system_prompt, build_search_summary_user_prompt
 from app.schemas.experiment import ExperimentCreateRequest
 from app.schemas.parameter_space import (
     ExperimentConfig,
@@ -366,26 +369,70 @@ def _build_auto_train_summary_prompt(
     stop_reason: str | None,
 ) -> tuple[str, str]:
     """Build the prompt pair for one stopped-search summary."""
-    system_prompt = (
-        "You summarize the outcome of an image classification search task for a machine learning workspace. "
-        "Return strict JSON with one key: summary_text. "
-        "The summary_text must be factual, written in English, and formatted as exactly four sentences. "
-        "Do not mention being an AI. Do not recommend next steps. "
-        "Sentence 1 must state why the search ended and the overall search scope. "
-        "Sentence 2 must identify the leading experiment, include its experiment id, and summarize its key metrics when available. "
-        "Sentence 3 must summarize the main strategy or strategies that produced the strongest gains or the most stable results. "
-        "Sentence 4 must summarize the strategy or strategies that were ineffective, unstable, or repeatedly unsuccessful. "
-        "If the search stopped by user request, state that neutrally. "
-        "If no experiment succeeded, state that clearly and still keep the four-sentence format. "
-        "If the history does not support a clear positive or negative trend, say that explicitly."
+    history_context = build_proposal_history_context(
+        run_payload=run_payload,
+        experiment_history=experiment_history,
     )
-    user_prompt = (
-        "Summarize the following search task for one workspace results panel.\n"
-        f"Run summary:\n{json.dumps(run_payload, ensure_ascii=True)}\n"
-        f"Task summary:\n{json.dumps(search_summary, ensure_ascii=True)}\n"
-        f"Experiment history:\n{json.dumps(experiment_history, ensure_ascii=True)}\n"
-        f"Stop reason:\n{json.dumps(stop_reason, ensure_ascii=True)}\n"
-    )
+    completed_rounds = search_summary.get("rounds")
+    current_proposal = search_summary.get("current_proposal")
+    task_payload = {
+        "run_id": run_payload.get("id"),
+        "run_name": run_payload.get("name"),
+        "dataset": run_payload.get("dataset"),
+        "model_name": run_payload.get("model_name"),
+        "best_experiment_id": run_payload.get("best_experiment_id"),
+        "experiment_count": run_payload.get("experiment_count"),
+        "completed_round_count": len(completed_rounds) if isinstance(completed_rounds, list) else 0,
+        "current_proposal_hypothesis": (
+            current_proposal.get("hypothesis")
+            if isinstance(current_proposal, dict)
+            else None
+        ),
+    }
+    system_prompt = build_search_summary_system_prompt()
+    user_prompt_blocks: list[tuple[str, object]] = [
+        ("搜索任务概览", task_payload),
+        ("停止原因", {"stop_reason": stop_reason}),
+        (
+            "Baseline 上下文",
+            build_base_prompt_payload(history_context.base_experiment_payload).model_dump(mode="python"),
+        ),
+    ]
+    source_experiment_id = str(history_context.source_experiment_payload.get("id"))
+    base_experiment_id = str(history_context.base_experiment_payload.get("id"))
+    if source_experiment_id != base_experiment_id:
+        user_prompt_blocks.append(
+            (
+                "当前 Source 上下文",
+                build_source_prompt_payload(
+                    base_experiment_payload=history_context.base_experiment_payload,
+                    source_experiment_payload=history_context.source_experiment_payload,
+                    is_best=source_experiment_id == str(run_payload.get("best_experiment_id")),
+                ).model_dump(mode="python"),
+            )
+        )
+    if history_context.recent_stage_history:
+        user_prompt_blocks.append(
+            (
+                "当前阶段历史",
+                {"items": [item.model_dump(mode="python") for item in history_context.recent_stage_history]},
+            )
+        )
+    if history_context.current_stage_compacted_summary is not None:
+        user_prompt_blocks.append(
+            (
+                "当前阶段压缩历史",
+                history_context.current_stage_compacted_summary.model_dump(mode="python"),
+            )
+        )
+    if history_context.past_stage_summaries:
+        user_prompt_blocks.append(
+            (
+                "历史阶段摘要",
+                {"stages": [stage.model_dump(mode="python") for stage in history_context.past_stage_summaries]},
+            )
+        )
+    user_prompt = build_search_summary_user_prompt(user_prompt_blocks)
     return system_prompt, user_prompt
 
 

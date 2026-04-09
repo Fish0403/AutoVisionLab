@@ -601,13 +601,19 @@ class AutoTrainServiceTest(unittest.TestCase):
         )
 
         self.assertIn("summary_text", system_prompt)
-        self.assertIn("exactly four sentences", system_prompt)
-        self.assertIn("Sentence 2 must identify the leading experiment", system_prompt)
-        self.assertIn("Sentence 3 must summarize the main strategy", system_prompt)
-        self.assertIn("Sentence 4 must summarize the strategy", system_prompt)
+        self.assertIn("summary_text 必须使用简洁、客观、自然的中文", system_prompt)
+        self.assertIn("这是一段结果摘要，不是下一步 proposal", system_prompt)
+        self.assertIn("best 更新次数或阶段数", system_prompt)
+        self.assertIn("暂未形成明确结论", system_prompt)
+        self.assertIn("搜索任务概览", user_prompt)
+        self.assertIn("停止原因", user_prompt)
+        self.assertIn("Baseline 上下文", user_prompt)
         self.assertIn("\"best_experiment_id\": \"exp_best\"", user_prompt)
         self.assertIn("\"top1_acc\": 0.81", user_prompt)
         self.assertIn("\"Stopped by user request.\"", user_prompt)
+        self.assertNotIn("输出结构", user_prompt)
+        self.assertNotIn("策略上下文", user_prompt)
+        self.assertNotIn("上一条完整 Proposal 的拒绝反馈", user_prompt)
 
     def test_try_attach_auto_train_ai_summary_updates_summary(self) -> None:
         search_summary = {
@@ -625,10 +631,10 @@ class AutoTrainServiceTest(unittest.TestCase):
         with patch(
             "app.services.auto_train_service._generate_auto_train_ai_summary",
             return_value=(
-                "Search stopped by user request after two completed experiments. "
-                "exp_1 remained the leading successful run with 81.0% top1 accuracy. "
-                "The baseline configuration was the only clearly successful strategy in this short run. "
-                "No separate follow-up strategy showed a clear improvement."
+                "本次搜索由用户手动停止，共完成两轮有效 follow-up。"
+                "exp_1 仍是当前领先实验，top1_acc 为 0.81。"
+                "基线方向是这次搜索里最稳定的有效方案。"
+                "其余 follow-up 暂未形成明确增益。"
             ),
         ):
             updated_summary = _try_attach_auto_train_ai_summary(
@@ -641,10 +647,10 @@ class AutoTrainServiceTest(unittest.TestCase):
         self.assertEqual(
             updated_summary["ai_summary"],
             (
-                "Search stopped by user request after two completed experiments. "
-                "exp_1 remained the leading successful run with 81.0% top1 accuracy. "
-                "The baseline configuration was the only clearly successful strategy in this short run. "
-                "No separate follow-up strategy showed a clear improvement."
+                "本次搜索由用户手动停止，共完成两轮有效 follow-up。"
+                "exp_1 仍是当前领先实验，top1_acc 为 0.81。"
+                "基线方向是这次搜索里最稳定的有效方案。"
+                "其余 follow-up 暂未形成明确增益。"
             ),
         )
         self.assertIsNone(updated_summary.get("ai_summary_error"))
