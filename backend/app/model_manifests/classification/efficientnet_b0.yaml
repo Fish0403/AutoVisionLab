@@ -1,0 +1,103 @@
+model_name: efficientnet_b0
+label: EfficientNet-B0
+task_type: classification
+model_family: efficientnet
+supports_compare: true
+supports_search: true
+is_default: false
+display_order: 40
+builder:
+  type: torchvision_classifier
+  torchvision_name: efficientnet_b0
+  backbone_component_name: efficientnet_b0_native
+  backbone_extractor: feature_sequence
+  native_head_attr: classifier
+  feature_dim: 1280
+  default_dropout: 0.2
+  uses_dropout_arg: true
+default_model_recipe:
+  version: model_recipe@v1
+  task_type: classification
+  model_family: efficientnet
+  base_model: efficientnet_b0
+  input_channels: 3
+  width_multiple: 1.0
+  components:
+    backbone:
+      name: efficientnet_b0_native
+      params: {}
+    neck:
+      name: avg_pool
+      params: {}
+    head:
+      name: native_classifier
+      params: {}
+  backbone_config:
+    stem_variant: standard
+    attention_module: none
+    last_channel_multiplier: 1.0
+  head_config:
+    pooling_type: avg
+    classifier_dropout: 0.2
+    classifier_type: linear
+  modules: {}
+  metadata:
+    notes: Default EfficientNet-B0 recipe using the torchvision backbone and classifier.
+parameter_space:
+  model_name: efficientnet_b0
+  version: efficientnet_b0@v1
+  editable_params:
+    optimizer:
+      type: enum
+      choices: [sgd, adam, adamw]
+    learning_rate:
+      type: number_range
+      min: 0.0001
+      max: 0.01
+    batch_size:
+      type: discrete_values
+      choices: [32, 64, 128, 256]
+    image_size:
+      type: number_range
+      min: 1
+      max: 10000
+    epochs:
+      type: discrete_values
+      choices: [10, 20, 30, 50]
+    weight_decay:
+      type: number_range
+      min: 0.0
+      max: 0.01
+    scheduler:
+      type: enum
+      choices: [none, step, cosine]
+    mixup_alpha:
+      type: number_range
+      min: 0.0
+      max: 1.0
+    cutmix_alpha:
+      type: number_range
+      min: 0.0
+      max: 1.0
+    random_erasing_prob:
+      type: number_range
+      min: 0.0
+      max: 0.5
+    loss_name:
+      type: enum
+      choices: [cross_entropy, cross_entropy_with_label_smoothing, focal_loss]
+    focal_gamma:
+      type: number_range
+      min: 0.5
+      max: 5.0
+    label_smoothing:
+      type: number_range
+      min: 0.0
+      max: 0.2
+    neck_name:
+      type: enum
+      choices: [avg_pool, gem_pool]
+    head_name:
+      type: enum
+      choices: [native_classifier, linear, dropout_linear]
+

@@ -113,6 +113,118 @@ export interface ParameterSpace {
   editable_params: Record<string, unknown>;
 }
 
+export interface SearchPolicy {
+  allow_basic_hparam_search: boolean;
+  allowed_basic_hparam_fields: string[];
+  allow_strategy_search: boolean;
+  allow_loss_search: boolean;
+  allow_augmentation_search: boolean;
+  allow_model_module_search: boolean;
+  require_manual_approval_for_high_impact_changes: boolean;
+}
+
+export interface RankingPolicy {
+  primary_metric: string;
+  primary_metric_mode: string;
+  min_primary_metric_improvement: number;
+  primary_metric_parity_epsilon: number;
+  tie_breaker_metric: string;
+  tie_breaker_mode: string;
+  min_tie_breaker_metric_improvement: number;
+  max_image_size: number | null;
+}
+
+export interface ModelRecipePayload {
+  version: string;
+  task_type: "classification";
+  model_family: string;
+  base_model: string;
+  nc?: number | null;
+  input_channels?: number;
+  width_multiple?: number;
+  components?: Record<string, unknown> | null;
+  backbone_config?: Record<string, unknown>;
+  backbone?: unknown[];
+  neck?: unknown[];
+  head_config?: Record<string, unknown>;
+  head?: unknown[];
+  modules: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface TrainHypPayload {
+  version: string;
+  task_type: "classification";
+  optimizer: string;
+  lr0: number;
+  weight_decay: number;
+  scheduler: string;
+  epochs: number;
+  batch_size: number;
+  image_size: number;
+  label_smoothing: number;
+  fl_gamma?: number;
+  augmentation: {
+    mixup: number;
+    cutmix: number;
+    random_erasing: number;
+    [key: string]: unknown;
+  };
+  loss: {
+    name: string;
+    [key: string]: unknown;
+  };
+  runtime?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface ModelSummary {
+  model_name: string;
+  label: string;
+  task_type: "classification";
+  model_family: string;
+  supports_compare: boolean;
+  supports_search: boolean;
+  is_default: boolean;
+  display_order: number;
+}
+
+export interface ModelDefaults {
+  summary: ModelSummary;
+  parameter_space: ParameterSpace;
+  default_model_recipe: ModelRecipePayload;
+  default_train_hyp: TrainHypPayload;
+  default_search_policy: SearchPolicy;
+  default_ranking_policy: RankingPolicy;
+}
+
+export interface ModelManifestValidationResult {
+  is_valid: boolean;
+  yaml_parse_ok: boolean;
+  schema_ok: boolean;
+  dry_run_build_ok: boolean;
+  dry_run_forward_ok: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+export interface ModelManifestDraftResponse {
+  query: string;
+  resolved_model_name: string;
+  ai_preview_text: string;
+  yaml_text: string;
+  target_path: string;
+  provider_warnings: string[];
+  validation: ModelManifestValidationResult;
+}
+
+export interface ModelManifestCommitResponse {
+  model_name: string;
+  manifest_path: string;
+  reloaded_model_count: number;
+}
+
 export interface AutoTrainTask {
   task_id: string;
   title?: string | null;

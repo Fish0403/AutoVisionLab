@@ -4,8 +4,11 @@ import { deleteJson, getJson, postJson } from "../../lib/api";
 import type {
   AutoTrainTask,
   DatasetSummary,
+  ModelDefaults,
+  ModelManifestCommitResponse,
+  ModelManifestDraftResponse,
+  ModelSummary,
   ModelCompareTask,
-  ParameterSpace,
   RunDetail,
   RunTrendPayload,
   TaskHistoryItem
@@ -18,6 +21,40 @@ export function useDatasets() {
     staleTime: 5 * 60 * 1000,
     gcTime: 30 * 60 * 1000,
     refetchOnMount: false,
+  });
+}
+
+export function useModels() {
+  return useQuery({
+    queryKey: ["models"],
+    queryFn: () => getJson<ModelSummary[]>("/models"),
+    staleTime: 5 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+    refetchOnMount: false,
+  });
+}
+
+export function useDraftModelManifest() {
+  return useMutation({
+    mutationFn: (payload: { query: string }) => postJson<ModelManifestDraftResponse>("/models/draft", payload)
+  });
+}
+
+export function useModelDefaults(modelName: string) {
+  return useQuery({
+    queryKey: ["model-defaults", modelName],
+    queryFn: () => getJson<ModelDefaults>(`/models/${modelName}/defaults`),
+    enabled: Boolean(modelName),
+    staleTime: 5 * 60 * 1000,
+    gcTime: 30 * 60 * 1000,
+    refetchOnMount: false,
+  });
+}
+
+export function useCommitModelManifest() {
+  return useMutation({
+    mutationFn: (payload: { yaml_text: string; expected_model_name?: string | null }) =>
+      postJson<ModelManifestCommitResponse>("/models/draft/commit", payload)
   });
 }
 
@@ -48,14 +85,6 @@ export function useRunTrend(runId: string | null) {
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,
     refetchInterval: 2000
-  });
-}
-
-export function useParameterSpace(modelName: string) {
-  return useQuery({
-    queryKey: ["parameter-space", modelName],
-    queryFn: () => getJson<ParameterSpace>(`/models/${modelName}/parameter-space`),
-    enabled: Boolean(modelName)
   });
 }
 

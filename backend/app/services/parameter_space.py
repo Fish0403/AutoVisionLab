@@ -1,16 +1,6 @@
 """Parameter space access and validation helpers."""
 
-from app.config_spaces.classification import (
-    EFFICIENTNET_B0_PARAMETER_SPACE,
-    EFFICIENTNET_B1_PARAMETER_SPACE,
-    GOOGLENET_PARAMETER_SPACE,
-    MOBILENET_V2_PARAMETER_SPACE,
-    MOBILENET_V3_LARGE_PARAMETER_SPACE,
-    MOBILENET_V3_SMALL_PARAMETER_SPACE,
-    RESNET18_PARAMETER_SPACE,
-    RESNET34_PARAMETER_SPACE,
-    RESNET50_PARAMETER_SPACE,
-)
+from app.model_catalog.registry import get_model_catalog_entry
 from app.schemas.ai import ProposalSchema
 from app.schemas.parameter_space import (
     DiscreteValuesParamDefinition,
@@ -19,19 +9,6 @@ from app.schemas.parameter_space import (
     NumberRangeParamDefinition,
     SearchPolicy,
 )
-
-
-PARAMETER_SPACES = {
-    "mobilenet_v2": MOBILENET_V2_PARAMETER_SPACE,
-    "mobilenet_v3_small": MOBILENET_V3_SMALL_PARAMETER_SPACE,
-    "mobilenet_v3_large": MOBILENET_V3_LARGE_PARAMETER_SPACE,
-    "efficientnet_b0": EFFICIENTNET_B0_PARAMETER_SPACE,
-    "efficientnet_b1": EFFICIENTNET_B1_PARAMETER_SPACE,
-    "googlenet": GOOGLENET_PARAMETER_SPACE,
-    "resnet18": RESNET18_PARAMETER_SPACE,
-    "resnet34": RESNET34_PARAMETER_SPACE,
-    "resnet50": RESNET50_PARAMETER_SPACE,
-}
 
 AI_BLOCKED_PROPOSAL_FIELDS: set[str] = set()
 BASIC_HPARAM_SEARCH_FIELDS = {
@@ -56,7 +33,10 @@ MODEL_MODULE_SEARCH_FIELDS = {
 
 def get_parameter_space(model_name: str) -> EditableParameterSpace | None:
     """Return the declared parameter space for a supported model."""
-    return PARAMETER_SPACES.get(model_name)
+    model_entry = get_model_catalog_entry(model_name)
+    if model_entry is None:
+        return None
+    return model_entry.parameter_space
 
 
 def get_allowed_ai_search_fields(
@@ -107,7 +87,7 @@ def explain_proposal_rejection(
     parameter_space: EditableParameterSpace | None = None,
 ) -> str | None:
     """Return a human-readable rejection reason, or None if the proposal is valid."""
-    effective_parameter_space = parameter_space or PARAMETER_SPACES.get(proposal.model_name)
+    effective_parameter_space = parameter_space or get_parameter_space(proposal.model_name)
     if effective_parameter_space is None:
         return f"parameter space is missing for model {proposal.model_name}"
 

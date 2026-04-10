@@ -117,6 +117,61 @@ class AIHubMixClientTest(unittest.TestCase):
             with self.assertRaisesRegex(AIHubMixRequestError, "request failed after retries"):
                 client.create_json_completion_with_metadata("system", "user")
 
+    def test_create_json_completion_with_metadata_attaches_raw_content_on_parse_error(self) -> None:
+        malformed_response = Mock()
+        malformed_response.ok = True
+        malformed_response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "<think>analysis</think>\nnot json at all"
+                    }
+                }
+            ],
+            "usage": {"total_tokens": 9},
+            "model": "test-model",
+        }
+
+        with (
+            patch("app.llm.aihubmix_client.get_settings", return_value=self._build_settings()),
+            patch("app.llm.aihubmix_client.requests.post", return_value=malformed_response),
+        ):
+            client = AIHubMixClient()
+            with self.assertRaises(AIHubMixRequestError) as raised_error:
+                client.create_json_completion_with_metadata("system", "user")
+
+        error = raised_error.exception
+        self.assertEqual(error.raw_content, "<think>analysis</think>\nnot json at all")
+        self.assertEqual(error.response_model, "test-model")
+        self.assertEqual(error.response_chars, len("<think>analysis</think>\nnot json at all"))
+        self.assertEqual(error.usage, {"total_tokens": 9})
+
+    def test_create_json_completion_with_metadata_accepts_one_extra_trailing_brace(self) -> None:
+        malformed_response = Mock()
+        malformed_response.ok = True
+        malformed_response.json.return_value = {
+            "choices": [
+                {
+                    "message": {
+                        "content": '<think>analysis</think>\n```json\n{"summary_text":"ok"}}\n```'
+                    }
+                }
+            ],
+            "usage": {"total_tokens": 11},
+            "model": "test-model",
+        }
+
+        with (
+            patch("app.llm.aihubmix_client.get_settings", return_value=self._build_settings()),
+            patch("app.llm.aihubmix_client.requests.post", return_value=malformed_response),
+        ):
+            client = AIHubMixClient()
+            payload, metadata = client.create_json_completion_with_metadata("system", "user")
+
+        self.assertEqual(payload, {"summary_text": "ok"})
+        self.assertEqual(metadata["response_model"], "test-model")
+        self.assertEqual(metadata["usage"], {"total_tokens": 11})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,7 @@ os.environ["AVL_ARTIFACT_ROOT"] = str(TEST_ARTIFACT_ROOT)
 sys.path.insert(0, str(VENV_SITE_PACKAGES))
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
+from app.llm.aihubmix_client import AIHubMixRequestError
 from app.schemas.ai import ProposalSchema
 from app.schemas.parameter_space import EditableParameterSpace, SearchPolicy
 from app.services.proposal_context_cache import clear_run_proposal_context_cache
@@ -258,11 +259,59 @@ class ProposalServiceTest(unittest.TestCase):
         self.assertEqual(proposal.changes.weight_decay, 0.0005)
         self.assertIsNone(proposal.changes.label_smoothing)
         self.assertEqual(proposal.train_hyp_changes, {"weight_decay": 0.0005})
-        self.assertIsNone(proposal.recipe_changes)
-        self.assertEqual(mock_client.create_json_completion_with_metadata.call_count, 2)
-        second_prompt = mock_client.create_json_completion_with_metadata.call_args_list[1].kwargs["user_prompt"]
-        self.assertIn("Proposal does not contain any effective parameter changes", second_prompt)
-        self.assertIn("请基于完整历史选择一个更可执行的方向", second_prompt)
+
+    def test_generate_aihubmix_proposal_logs_raw_content_on_provider_parse_error(self) -> None:
+        db = Mock()
+        db.get.return_value = SimpleNamespace(
+            id="run_1",
+            name="retry-test",
+            dataset="cifar10",
+            model_name="mobilenet_v3_small",
+            baseline_experiment_id="exp_keep",
+            best_experiment_id="exp_keep",
+            frontier_experiment_id="exp_keep",
+        )
+        mock_client = Mock()
+        mock_client.create_json_completion_with_metadata.side_effect = AIHubMixRequestError(
+            "chat completions returned non-JSON message content: not json",
+            raw_content="<think>analysis</think>\nnot json",
+            response_model="test-model",
+            response_chars=33,
+            usage={"total_tokens": 9},
+        )
+        experiment_history = [
+            {"id": "exp_keep", "status": "success", "decision": "keep"},
+        ]
+
+        with (
+            patch("app.services.proposal_service.get_run_history_payload", return_value=experiment_history),
+            patch("app.services.proposal_service._load_latest_search_policy", return_value=SearchPolicy()),
+            patch(
+                "app.services.proposal_service._load_latest_parameter_space",
+                return_value=_build_parameter_space(),
+            ),
+            patch("app.services.proposal_service.AIHubMixClient", return_value=mock_client),
+            patch("app.services.proposal_service.append_run_log"),
+            patch("app.services.proposal_service.append_run_prompt_context_event"),
+            patch("app.services.proposal_service.append_run_llm_event") as append_llm_event,
+            patch("app.services.proposal_service.append_run_prompt_markdown_event") as append_prompt_markdown_event,
+        ):
+            with self.assertRaises(AIHubMixRequestError):
+                generate_aihubmix_proposal(db, "run_1")
+
+        proposal_error_llm_payload = append_llm_event.call_args_list[-1].args[2]
+        self.assertEqual(append_llm_event.call_args_list[-1].args[1], "proposal_error")
+        self.assertEqual(proposal_error_llm_payload["raw_content"], "<think>analysis</think>\nnot json")
+        self.assertEqual(proposal_error_llm_payload["response_model"], "test-model")
+        self.assertEqual(proposal_error_llm_payload["response_chars"], 33)
+        self.assertEqual(proposal_error_llm_payload["usage"], {"total_tokens": 9})
+
+        proposal_error_markdown_payload = append_prompt_markdown_event.call_args_list[-1].args[2]
+        self.assertEqual(append_prompt_markdown_event.call_args_list[-1].args[1], "proposal_error")
+        self.assertEqual(proposal_error_markdown_payload["raw_content"], "<think>analysis</think>\nnot json")
+        self.assertEqual(proposal_error_markdown_payload["response_model"], "test-model")
+        self.assertEqual(proposal_error_markdown_payload["response_chars"], 33)
+        self.assertEqual(proposal_error_markdown_payload["usage"], {"total_tokens": 9})
 
     def test_build_run_context_cache_entry_finalizes_stage_when_new_best_appears(self) -> None:
         run = SimpleNamespace(

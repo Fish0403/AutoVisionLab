@@ -8,6 +8,7 @@ from typing import Callable
 import torch
 from torch import nn
 
+from app.model_catalog.registry import get_model_catalog_entry
 from app.schemas.parameter_space import ExperimentConfig
 from app.trainers.builder import build_model_from_config
 
@@ -58,22 +59,11 @@ class ClassificationModelAdapter:
     compute_loss: ComputeLossFn = _compute_default_loss
 
 
-CLASSIFICATION_MODEL_ADAPTERS: dict[str, ClassificationModelAdapter] = {
-    "mobilenet_v2": ClassificationModelAdapter(name="mobilenet_v2"),
-    "mobilenet_v3_small": ClassificationModelAdapter(name="mobilenet_v3_small"),
-    "mobilenet_v3_large": ClassificationModelAdapter(name="mobilenet_v3_large"),
-    "efficientnet_b0": ClassificationModelAdapter(name="efficientnet_b0"),
-    "efficientnet_b1": ClassificationModelAdapter(name="efficientnet_b1"),
-    "googlenet": ClassificationModelAdapter(name="googlenet", compute_loss=_compute_googlenet_loss),
-    "resnet18": ClassificationModelAdapter(name="resnet18"),
-    "resnet34": ClassificationModelAdapter(name="resnet34"),
-    "resnet50": ClassificationModelAdapter(name="resnet50"),
-}
-
-
 def get_classification_model_adapter(model_name: str) -> ClassificationModelAdapter:
     """Return the adapter registered for one supported classification model."""
-    try:
-        return CLASSIFICATION_MODEL_ADAPTERS[model_name]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported model_name: {model_name}") from exc
+    model_entry = get_model_catalog_entry(model_name)
+    if model_entry is None or model_entry.task_type != "classification":
+        raise ValueError(f"Unsupported model_name: {model_name}")
+    if model_entry.loss_adapter == "googlenet_aux":
+        return ClassificationModelAdapter(name=model_name, compute_loss=_compute_googlenet_loss)
+    return ClassificationModelAdapter(name=model_name)

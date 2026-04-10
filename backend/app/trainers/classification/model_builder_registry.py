@@ -3,22 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Callable
 
 import torch
+import torchvision.models as torchvision_models
 from torch import nn
-from torchvision.models import (
-    efficientnet_b0,
-    efficientnet_b1,
-    googlenet,
-    mobilenet_v2,
-    mobilenet_v3_large,
-    mobilenet_v3_small,
-    resnet18,
-    resnet34,
-    resnet50,
-)
 
+from app.model_catalog.registry import get_model_catalog_entry
+from app.model_catalog.schemas import ModelManifest, TorchvisionClassifierBuilderSpec
 from app.schemas.parameter_space import ModelRecipe, hydrate_model_recipe
 from app.trainers.classification.model_components.necks import build_classification_neck
 
@@ -53,19 +46,6 @@ class ClassificationModelBuilderAdapter:
     build_model: BuildModelFn
 
 
-@dataclass(frozen=True)
-class TorchvisionClassifierAdapter:
-    """Describe one standard torchvision classifier that can use the generic builder."""
-
-    name: str
-    backbone_component_name: str
-    build_native_model: Callable[[int, float], nn.Module]
-    build_backbone: Callable[[nn.Module], nn.Module]
-    build_native_head: Callable[[nn.Module], nn.Module]
-    feature_dim: int
-    default_dropout: float = 0.0
-
-
 def _build_native_linear_head(*, feature_dim: int, num_classes: int) -> nn.Module:
     """Build one standard native linear classifier head."""
     return nn.Linear(feature_dim, num_classes)
@@ -86,10 +66,18 @@ def _build_native_dropout_linear_head(
     )
 
 
+def _resolve_attr_path(target: object, attr_path: str) -> object:
+    """Resolve one dotted attribute path on one object."""
+    current = target
+    for attr_name in attr_path.split("."):
+        current = getattr(current, attr_name)
+    return current
+
+
 def _build_standard_head(
     *,
-    adapter: TorchvisionClassifierAdapter,
     native_model: nn.Module,
+    native_head_attr: str,
     head_name: str,
     feature_dim: int,
     num_classes: int,
@@ -97,7 +85,10 @@ def _build_standard_head(
 ) -> nn.Module:
     """Build one supported classifier head for the generic torchvision wrapper."""
     if head_name == "native_classifier":
-        return adapter.build_native_head(native_model)
+        native_head = _resolve_attr_path(native_model, native_head_attr)
+        if not isinstance(native_head, nn.Module):
+            raise ValueError(f"Resolved native head is not an nn.Module: {native_head_attr}")
+        return native_head
     if head_name == "linear":
         return _build_native_linear_head(feature_dim=feature_dim, num_classes=num_classes)
     if head_name == "dropout_linear":
@@ -106,85 +97,7 @@ def _build_standard_head(
             num_classes=num_classes,
             dropout_probability=dropout_probability,
         )
-    raise ValueError(f"Unsupported head component for {adapter.name}: {head_name}")
-
-
-def _validate_standard_torchvision_recipe(
-    recipe: ModelRecipe,
-    *,
-    adapter: TorchvisionClassifierAdapter,
-) -> None:
-    """Validate the minimal supported recipe subset for one standard torchvision classifier."""
-    if recipe.base_model != adapter.name:
-        raise ValueError(f"Unsupported base_model for {adapter.name} builder: {recipe.base_model}")
-    if recipe.task_type != "classification":
-        raise ValueError(f"Unsupported task_type for {adapter.name} builder: {recipe.task_type}")
-    if recipe.width_multiple != 1.0:
-        raise ValueError(f"{adapter.name} v1 builder does not support width_multiple changes")
-    if recipe.backbone_config.stem_variant != "standard":
-        raise ValueError(f"Unsupported stem_variant for {adapter.name}: {recipe.backbone_config.stem_variant}")
-    if recipe.backbone_config.attention_module != "none":
-        raise ValueError(f"Unsupported attention_module for {adapter.name}: {recipe.backbone_config.attention_module}")
-    if recipe.backbone_config.last_channel_multiplier != 1.0:
-        raise ValueError(f"{adapter.name} v1 builder does not support last_channel_multiplier changes")
-    if recipe.head_config.pooling_type not in {"avg", "gem"}:
-        raise ValueError(f"Unsupported pooling_type for {adapter.name}: {recipe.head_config.pooling_type}")
-    if recipe.head_config.classifier_type != "linear":
-        raise ValueError(f"Unsupported classifier_type for {adapter.name}: {recipe.head_config.classifier_type}")
-    if recipe.components is not None:
-        if recipe.components.backbone.name != adapter.backbone_component_name:
-            raise ValueError(
-                f"Unsupported backbone component for {adapter.name}: {recipe.components.backbone.name}"
-            )
-        if recipe.components.neck.name not in {"avg_pool", "gem_pool"}:
-            raise ValueError(f"Unsupported neck component for {adapter.name}: {recipe.components.neck.name}")
-        if recipe.components.head.name not in {"native_classifier", "linear", "dropout_linear"}:
-            raise ValueError(f"Unsupported head component for {adapter.name}: {recipe.components.head.name}")
-    if recipe.neck:
-        raise ValueError(f"{adapter.name} v1 builder does not support neck configuration")
-    if recipe.modules:
-        raise ValueError(f"Unsupported extra recipe modules for {adapter.name}: {sorted(recipe.modules.keys())}")
-
-
-def _build_standard_torchvision_model(
-    recipe: ModelRecipe,
-    num_classes: int,
-    *,
-    adapter: TorchvisionClassifierAdapter,
-) -> nn.Module:
-    """Build one standard torchvision classification model via the generic classifier wrapper."""
-    _validate_standard_torchvision_recipe(recipe, adapter=adapter)
-    output_classes = recipe.nc or num_classes
-    native_model = adapter.build_native_model(output_classes, adapter.default_dropout)
-    backbone = adapter.build_backbone(native_model)
-    neck_name = _resolve_neck_component_name(recipe)
-    head_name = _resolve_head_component_name(recipe)
-    neck = build_classification_neck(neck_name)
-    head = _build_standard_head(
-        adapter=adapter,
-        native_model=native_model,
-        head_name=head_name,
-        feature_dim=adapter.feature_dim,
-        num_classes=output_classes,
-        dropout_probability=recipe.head_config.classifier_dropout or adapter.default_dropout,
-    )
-    return GenericTorchvisionClassifier(backbone=backbone, neck=neck, head=head)
-
-
-def _build_standard_torchvision_builder(adapter: TorchvisionClassifierAdapter) -> ClassificationModelBuilderAdapter:
-    """Create one registry adapter for a standard torchvision classifier."""
-    return ClassificationModelBuilderAdapter(
-        name=adapter.name,
-        validate_recipe=lambda recipe, adapter=adapter: _validate_standard_torchvision_recipe(
-            recipe,
-            adapter=adapter,
-        ),
-        build_model=lambda recipe, num_classes, adapter=adapter: _build_standard_torchvision_model(
-            recipe,
-            num_classes,
-            adapter=adapter,
-        ),
-    )
+    raise ValueError(f"Unsupported head component: {head_name}")
 
 
 def _build_resnet_backbone(native_model: nn.Module) -> nn.Module:
@@ -201,124 +114,106 @@ def _build_resnet_backbone(native_model: nn.Module) -> nn.Module:
     )
 
 
-def _build_mobilenet_v2_backbone(native_model: nn.Module) -> nn.Module:
-    """Extract the feature backbone from one torchvision MobileNetV2 model."""
-    return native_model.features
+def _build_backbone_from_spec(native_model: nn.Module, spec: TorchvisionClassifierBuilderSpec) -> nn.Module:
+    """Extract one feature backbone using the declared manifest profile."""
+    if spec.backbone_extractor == "feature_sequence":
+        return getattr(native_model, "features")
+    if spec.backbone_extractor == "feature_sequence_with_avgpool":
+        return nn.Sequential(getattr(native_model, "features"), getattr(native_model, "avgpool"))
+    if spec.backbone_extractor == "resnet_stages":
+        return _build_resnet_backbone(native_model)
+    raise ValueError(f"Unsupported backbone_extractor: {spec.backbone_extractor}")
 
 
-def _build_mobilenet_v3_backbone(native_model: nn.Module) -> nn.Module:
-    """Extract the feature backbone from one torchvision MobileNetV3 model."""
-    return native_model.features
+def _build_torchvision_native_model(
+    spec: TorchvisionClassifierBuilderSpec,
+    *,
+    num_classes: int,
+) -> nn.Module:
+    """Build one torchvision native model from the declared manifest spec."""
+    try:
+        model_factory = getattr(torchvision_models, spec.torchvision_name)
+    except AttributeError as exc:
+        raise ValueError(f"Unsupported torchvision model: {spec.torchvision_name}") from exc
+
+    kwargs: dict[str, object] = {"num_classes": num_classes}
+    if spec.uses_dropout_arg:
+        kwargs["dropout"] = spec.default_dropout
+    return model_factory(**kwargs)
 
 
-def _build_efficientnet_backbone(native_model: nn.Module) -> nn.Module:
-    """Extract the feature backbone from one torchvision EfficientNet model."""
-    return native_model.features
-
-
-TORCHVISION_CLASSIFIER_ADAPTERS = {
-    "mobilenet_v2": TorchvisionClassifierAdapter(
-        name="mobilenet_v2",
-        backbone_component_name="mobilenet_v2_native",
-        build_native_model=lambda num_classes, dropout: mobilenet_v2(
-            num_classes=num_classes,
-            dropout=dropout,
-        ),
-        build_backbone=_build_mobilenet_v2_backbone,
-        build_native_head=lambda native_model: native_model.classifier,
-        feature_dim=1280,
-        default_dropout=0.2,
-    ),
-    "mobilenet_v3_small": TorchvisionClassifierAdapter(
-        name="mobilenet_v3_small",
-        backbone_component_name="mobilenet_v3_small_native",
-        build_native_model=lambda num_classes, dropout: mobilenet_v3_small(
-            num_classes=num_classes,
-            dropout=dropout,
-        ),
-        build_backbone=_build_mobilenet_v3_backbone,
-        build_native_head=lambda native_model: native_model.classifier,
-        feature_dim=576,
-        default_dropout=0.2,
-    ),
-    "mobilenet_v3_large": TorchvisionClassifierAdapter(
-        name="mobilenet_v3_large",
-        backbone_component_name="mobilenet_v3_large_native",
-        build_native_model=lambda num_classes, dropout: mobilenet_v3_large(
-            num_classes=num_classes,
-            dropout=dropout,
-        ),
-        build_backbone=_build_mobilenet_v3_backbone,
-        build_native_head=lambda native_model: native_model.classifier,
-        feature_dim=960,
-        default_dropout=0.2,
-    ),
-    "efficientnet_b0": TorchvisionClassifierAdapter(
-        name="efficientnet_b0",
-        backbone_component_name="efficientnet_b0_native",
-        build_native_model=lambda num_classes, dropout: efficientnet_b0(
-            num_classes=num_classes,
-            dropout=dropout,
-        ),
-        build_backbone=_build_efficientnet_backbone,
-        build_native_head=lambda native_model: native_model.classifier,
-        feature_dim=1280,
-        default_dropout=0.2,
-    ),
-    "efficientnet_b1": TorchvisionClassifierAdapter(
-        name="efficientnet_b1",
-        backbone_component_name="efficientnet_b1_native",
-        build_native_model=lambda num_classes, dropout: efficientnet_b1(
-            num_classes=num_classes,
-            dropout=dropout,
-        ),
-        build_backbone=_build_efficientnet_backbone,
-        build_native_head=lambda native_model: native_model.classifier,
-        feature_dim=1280,
-        default_dropout=0.2,
-    ),
-    "resnet18": TorchvisionClassifierAdapter(
-        name="resnet18",
-        backbone_component_name="resnet18_native",
-        build_native_model=lambda num_classes, _dropout: resnet18(num_classes=num_classes),
-        build_backbone=_build_resnet_backbone,
-        build_native_head=lambda native_model: native_model.fc,
-        feature_dim=512,
-        default_dropout=0.0,
-    ),
-    "resnet34": TorchvisionClassifierAdapter(
-        name="resnet34",
-        backbone_component_name="resnet34_native",
-        build_native_model=lambda num_classes, _dropout: resnet34(num_classes=num_classes),
-        build_backbone=_build_resnet_backbone,
-        build_native_head=lambda native_model: native_model.fc,
-        feature_dim=512,
-        default_dropout=0.0,
-    ),
-    "resnet50": TorchvisionClassifierAdapter(
-        name="resnet50",
-        backbone_component_name="resnet50_native",
-        build_native_model=lambda num_classes, _dropout: resnet50(num_classes=num_classes),
-        build_backbone=_build_resnet_backbone,
-        build_native_head=lambda native_model: native_model.fc,
-        feature_dim=2048,
-        default_dropout=0.0,
-    ),
-}
-
-
-def _resolve_head_component_name(recipe: ModelRecipe) -> str:
-    """Return the active head component name, defaulting to the native classifier."""
+def _resolve_head_component_name(recipe: ModelRecipe, *, default_head_name: str = "native_classifier") -> str:
+    """Return the active head component name."""
     if recipe.components is None:
-        return "native_classifier"
+        return default_head_name
     return recipe.components.head.name
 
 
-def _resolve_neck_component_name(recipe: ModelRecipe) -> str:
-    """Return the active neck component name, defaulting to average pooling."""
+def _resolve_neck_component_name(recipe: ModelRecipe, *, default_neck_name: str = "avg_pool") -> str:
+    """Return the active neck component name."""
     if recipe.components is None:
-        return "avg_pool"
+        return default_neck_name
     return recipe.components.neck.name
+
+
+def _validate_torchvision_recipe(recipe: ModelRecipe, *, spec: TorchvisionClassifierBuilderSpec) -> None:
+    """Validate the supported recipe subset for one manifest-declared torchvision model."""
+    if recipe.task_type != "classification":
+        raise ValueError(f"Unsupported task_type for {recipe.base_model} builder: {recipe.task_type}")
+    if recipe.width_multiple != 1.0:
+        raise ValueError(f"{recipe.base_model} v1 builder does not support width_multiple changes")
+    if recipe.backbone_config.stem_variant != "standard":
+        raise ValueError(f"Unsupported stem_variant for {recipe.base_model}: {recipe.backbone_config.stem_variant}")
+    if recipe.backbone_config.attention_module != "none":
+        raise ValueError(
+            f"Unsupported attention_module for {recipe.base_model}: {recipe.backbone_config.attention_module}"
+        )
+    if recipe.backbone_config.last_channel_multiplier != 1.0:
+        raise ValueError(f"{recipe.base_model} v1 builder does not support last_channel_multiplier changes")
+    if recipe.head_config.pooling_type not in {"avg", "gem"}:
+        raise ValueError(f"Unsupported pooling_type for {recipe.base_model}: {recipe.head_config.pooling_type}")
+    if recipe.head_config.classifier_type != "linear":
+        raise ValueError(f"Unsupported classifier_type for {recipe.base_model}: {recipe.head_config.classifier_type}")
+    if recipe.components is not None:
+        if recipe.components.backbone.name != spec.backbone_component_name:
+            raise ValueError(
+                f"Unsupported backbone component for {recipe.base_model}: {recipe.components.backbone.name}"
+            )
+        if recipe.components.neck.name not in set(spec.supported_neck_names):
+            raise ValueError(f"Unsupported neck component for {recipe.base_model}: {recipe.components.neck.name}")
+        if recipe.components.head.name not in set(spec.supported_head_names):
+            raise ValueError(f"Unsupported head component for {recipe.base_model}: {recipe.components.head.name}")
+    if recipe.neck:
+        raise ValueError(f"{recipe.base_model} v1 builder does not support neck configuration")
+    if recipe.backbone or recipe.head:
+        raise ValueError(f"{recipe.base_model} v1 builder does not support custom architecture layers")
+    if recipe.modules:
+        raise ValueError(f"Unsupported extra recipe modules for {recipe.base_model}: {sorted(recipe.modules.keys())}")
+
+
+def _build_torchvision_model(
+    recipe: ModelRecipe,
+    num_classes: int,
+    *,
+    spec: TorchvisionClassifierBuilderSpec,
+) -> nn.Module:
+    """Build one standard torchvision classification model via the generic wrapper."""
+    _validate_torchvision_recipe(recipe, spec=spec)
+    output_classes = recipe.nc or num_classes
+    native_model = _build_torchvision_native_model(spec, num_classes=output_classes)
+    backbone = _build_backbone_from_spec(native_model, spec)
+    neck_name = _resolve_neck_component_name(recipe, default_neck_name=spec.default_neck_name)
+    head_name = _resolve_head_component_name(recipe, default_head_name=spec.default_head_name)
+    neck = build_classification_neck(neck_name)
+    head = _build_standard_head(
+        native_model=native_model,
+        native_head_attr=spec.native_head_attr,
+        head_name=head_name,
+        feature_dim=spec.feature_dim,
+        num_classes=output_classes,
+        dropout_probability=recipe.head_config.classifier_dropout or spec.default_dropout,
+    )
+    return GenericTorchvisionClassifier(backbone=backbone, neck=neck, head=head)
 
 
 def _validate_googlenet_recipe(recipe: ModelRecipe) -> None:
@@ -358,34 +253,47 @@ def _validate_googlenet_recipe(recipe: ModelRecipe) -> None:
 def _build_googlenet_from_recipe(recipe: ModelRecipe, num_classes: int) -> nn.Module:
     """Build one GoogLeNet model from the supported recipe subset."""
     _validate_googlenet_recipe(recipe)
-    return googlenet(
+    return torchvision_models.googlenet(
         num_classes=recipe.nc or num_classes,
         aux_logits=bool(recipe.modules.get("aux_logits", False)),
         dropout=recipe.head_config.classifier_dropout,
     )
 
 
-CLASSIFICATION_MODEL_BUILDERS = {
-    "googlenet": ClassificationModelBuilderAdapter(
-        name="googlenet",
-        validate_recipe=_validate_googlenet_recipe,
-        build_model=_build_googlenet_from_recipe,
-    ),
-}
-CLASSIFICATION_MODEL_BUILDERS.update(
-    {
-        model_name: _build_standard_torchvision_builder(adapter)
-        for model_name, adapter in TORCHVISION_CLASSIFIER_ADAPTERS.items()
-    }
-)
+@lru_cache(maxsize=None)
+def _build_torchvision_builder(model_name: str) -> ClassificationModelBuilderAdapter:
+    """Build one runtime builder adapter from the catalog entry."""
+    model_entry = get_model_catalog_entry(model_name)
+    if model_entry is None or model_entry.task_type != "classification":
+        raise ValueError(f"Unsupported model recipe base_model: {model_name}")
+    if model_entry.builder.type != "torchvision_classifier":
+        raise ValueError(f"Model {model_name} is not declared as a torchvision classifier")
+    spec = model_entry.builder
+    return ClassificationModelBuilderAdapter(
+        name=model_name,
+        validate_recipe=lambda recipe, spec=spec: _validate_torchvision_recipe(recipe, spec=spec),
+        build_model=lambda recipe, num_classes, spec=spec: _build_torchvision_model(
+            recipe,
+            num_classes,
+            spec=spec,
+        ),
+    )
 
 
 def get_classification_model_builder(recipe: ModelRecipe) -> ClassificationModelBuilderAdapter:
     """Return the builder adapter registered for one model recipe."""
-    try:
-        return CLASSIFICATION_MODEL_BUILDERS[recipe.base_model]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported model recipe base_model: {recipe.base_model}") from exc
+    model_entry = get_model_catalog_entry(recipe.base_model)
+    if model_entry is None or model_entry.task_type != "classification":
+        raise ValueError(f"Unsupported model recipe base_model: {recipe.base_model}")
+    if model_entry.builder.type == "googlenet_classifier":
+        return ClassificationModelBuilderAdapter(
+            name=recipe.base_model,
+            validate_recipe=_validate_googlenet_recipe,
+            build_model=_build_googlenet_from_recipe,
+        )
+    if model_entry.builder.type == "torchvision_classifier":
+        return _build_torchvision_builder(recipe.base_model)
+    raise ValueError(f"Unsupported builder type for model recipe base_model: {recipe.base_model}")
 
 
 def validate_classification_model_recipe(recipe: ModelRecipe) -> None:
@@ -399,3 +307,26 @@ def build_classification_model_from_recipe(recipe: ModelRecipe, *, num_classes: 
     hydrated_recipe = hydrate_model_recipe(recipe)
     validate_classification_model_recipe(hydrated_recipe)
     return get_classification_model_builder(hydrated_recipe).build_model(hydrated_recipe, num_classes)
+
+
+def validate_classification_model_manifest(manifest: ModelManifest) -> None:
+    """Validate one not-yet-registered manifest against the current builder rules."""
+    hydrated_recipe = hydrate_model_recipe(manifest.default_model_recipe)
+    if manifest.builder.type == "googlenet_classifier":
+        _validate_googlenet_recipe(hydrated_recipe)
+        return
+    if manifest.builder.type == "torchvision_classifier":
+        _validate_torchvision_recipe(hydrated_recipe, spec=manifest.builder)
+        return
+    raise ValueError(f"Unsupported builder type for model manifest: {manifest.builder.type}")
+
+
+def build_classification_model_from_manifest(manifest: ModelManifest, *, num_classes: int = 10) -> nn.Module:
+    """Build one classification model directly from one manifest draft."""
+    hydrated_recipe = hydrate_model_recipe(manifest.default_model_recipe)
+    validate_classification_model_manifest(manifest)
+    if manifest.builder.type == "googlenet_classifier":
+        return _build_googlenet_from_recipe(hydrated_recipe, num_classes)
+    if manifest.builder.type == "torchvision_classifier":
+        return _build_torchvision_model(hydrated_recipe, num_classes, spec=manifest.builder)
+    raise ValueError(f"Unsupported builder type for model manifest: {manifest.builder.type}")

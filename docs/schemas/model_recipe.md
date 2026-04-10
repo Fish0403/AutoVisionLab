@@ -70,6 +70,15 @@
 
 ## 默认模板
 
-当前仓库提供的内置模型模板文件示例：
+当前分类模型的默认 recipe 不再只从单个内置模板文件读取，而是优先来自模型 manifest：
 
-- [backend/app/trainers/recipes/classification/mobilenet_v3_small.yaml](../../backend/app/trainers/recipes/classification/mobilenet_v3_small.yaml)
+- [backend/app/model_manifests/classification/](../../backend/app/model_manifests/classification/)
+
+每个 manifest 同时声明：
+
+- 模型展示元数据
+- builder 类型
+- 默认 `model_recipe`
+- `parameter_space`
+
+现存的内置模板文件仍可作为历史参考，但 runtime 默认入口已转到 manifest catalog。

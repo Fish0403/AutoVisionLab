@@ -8,9 +8,12 @@ import {
   useActiveAutoTrainTask,
   useActiveModelCompareTask,
   useAutoTrainTask,
+  useCommitModelManifest,
   useDatasets,
+  useDraftModelManifest,
+  useModelDefaults,
+  useModels,
   useModelCompareTask,
-  useParameterSpace,
   useRenameTaskTitle,
   useRunDetail,
   useRunTrend,
@@ -20,21 +23,25 @@ import {
   useStopModelCompare
 } from "../features/api/hooks";
 import {
+  buildModelLookup,
   buildExperimentConfig,
   buildRunName,
   buildTaskTitle,
-  COMPARE_CANDIDATE_MODELS,
   defaultFormValues,
+  getCompareCandidateModels,
   getDatasetBaselineImageSize,
-  getModelFamily,
+  getDefaultModelName,
+  getModelLabel,
   getPreferredDatasetName,
-  MODEL_LABELS,
+  getSearchModelNames,
   type SupportedModelName,
   type TrainingFormValues
 } from "../features/training/config";
 import { readLocalStorage, writeLocalStorage } from "../lib/storage";
 import type {
   AutoTrainTask,
+  ModelManifestDraftResponse,
+  ModelSummary,
   ModelCompareCandidateResult,
   ModelCompareTask,
   RunTrendPayload,
@@ -42,15 +49,6 @@ import type {
 
 const SELECTED_TASK_ID_STORAGE_KEY = "autovisionlab:selected-task-id";
 const SELECTED_TASK_TYPE_STORAGE_KEY = "autovisionlab:selected-task-type";
-const COMPARE_ANCHOR_MODEL: SupportedModelName = "mobilenet_v3_small";
-const DEFAULT_COMPARE_MODEL_COUNT = 3;
-const MODEL_FAMILY_ORDER = ["mobilenet", "efficientnet", "resnet", "googlenet"] as const;
-const MODEL_FAMILY_LABELS: Record<(typeof MODEL_FAMILY_ORDER)[number], string> = {
-  mobilenet: "MobileNet",
-  efficientnet: "EfficientNet",
-  resnet: "ResNet",
-  googlenet: "GoogLeNet"
-};
 const DEMO_TOGGLE_TOOLTIP = "Use a smaller deterministic subset for quicker local testing.";
 const EPOCH_SEARCH_TOOLTIP = "Allow Auto Train to adjust epochs as part of the search.";
 const SEARCH_TREND_METRICS = [
@@ -71,6 +69,15 @@ type CompareSearchCandidate = {
   latencyMs?: number | null;
   parameterCountMillion?: number | null;
 };
+type ModelBrowserProps = {
+  availableModels: SupportedModelName[];
+  modelLookup: Record<string, ModelSummary>;
+  selectionMode: "single" | "multi";
+  selectedModel?: SupportedModelName | null;
+  selectedModels?: SupportedModelName[];
+  onSelectModel?: (modelName: SupportedModelName) => void;
+  onToggleModel?: (modelName: SupportedModelName) => void;
+};
 
 export function WorkspacePage() {
   const queryClient = useQueryClient();
@@ -81,10 +88,17 @@ export function WorkspacePage() {
   const requestedNewTask = searchParams.get("new") === "1";
 
   const datasetsQuery = useDatasets();
+  const modelsQuery = useModels();
   const activeAutoTrainQuery = useActiveAutoTrainTask();
   const activeModelCompareQuery = useActiveModelCompareTask();
 
   const datasets = datasetsQuery.data ?? [];
+  const models = modelsQuery.data ?? [];
+  const modelLookup = useMemo(() => buildModelLookup(models), [models]);
+  const defaultModelName = getDefaultModelName(models);
+  const compareCandidateModels = useMemo(() => getCompareCandidateModels(models), [models]);
+  const availableSearchModels = useMemo(() => getSearchModelNames(models), [models]);
+  const compareAnchorModelName = compareCandidateModels[0] ?? availableSearchModels[0] ?? defaultModelName;
   const defaultDataset = getPreferredDatasetName(datasets, "neu");
   const areDatasetsReady = !datasetsQuery.isPending && !datasetsQuery.isError && datasets.length > 0;
 
@@ -97,23 +111,20 @@ export function WorkspacePage() {
   const [mode, setMode] = useState<WorkspaceMode>(() => (requestedTaskType === "model_compare" ? "compare" : "search"));
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [isSearchLaunchPending, setIsSearchLaunchPending] = useState(false);
-  const [showAllCompareModels, setShowAllCompareModels] = useState(false);
   const [draftTaskTitle, setDraftTaskTitle] = useState("Untitled task");
-  const [formValues, setFormValues] = useState<TrainingFormValues>(() => defaultFormValues(defaultDataset));
+  const [formValues, setFormValues] = useState<TrainingFormValues>(() =>
+    defaultFormValues(defaultDataset, {
+      defaultModelName,
+      compareCandidateModels
+    })
+  );
   const [selectedCompareCandidate, setSelectedCompareCandidate] = useState<CompareSearchCandidate | null>(null);
   const selectedDatasetOption = datasets.find((dataset) => dataset.name === formValues.dataset) ?? null;
   const selectedDatasetOptionLabel = selectedDatasetOption?.name ?? formValues.dataset;
   const hasPersistedTaskContext = Boolean(requestedTaskId || selectedTaskId);
   const isDatasetSelectorReady = areDatasetsReady || hasPersistedTaskContext;
-  const selectedModelFamily = getModelFamily(formValues.modelName);
-  const availableSearchModels = MODEL_FAMILY_ORDER.flatMap((familyName) =>
-    (Object.keys(MODEL_LABELS) as SupportedModelName[]).filter((modelName) => getModelFamily(modelName) === familyName)
-  );
-  const visibleSearchModels = availableSearchModels.filter((modelName) => getModelFamily(modelName) === selectedModelFamily);
-  const visibleCompareModels = showAllCompareModels
-    ? COMPARE_CANDIDATE_MODELS
-    : COMPARE_CANDIDATE_MODELS.slice(0, DEFAULT_COMPARE_MODEL_COUNT);
-  const areAllCompareModelsSelected = formValues.compareCandidateModels.length === COMPARE_CANDIDATE_MODELS.length;
+  const areAllCompareModelsSelected =
+    compareCandidateModels.length > 0 && formValues.compareCandidateModels.length === compareCandidateModels.length;
 
   const autoTrainTaskQuery = useAutoTrainTask(selectedTaskType === "auto_train" ? selectedTaskId : null);
   const modelCompareTaskQuery = useModelCompareTask(selectedTaskType === "model_compare" ? selectedTaskId : null);
@@ -146,7 +157,12 @@ export function WorkspacePage() {
       setIsSearchLaunchPending(false);
       setDraftTaskTitle("Untitled task");
       setMode("compare");
-      setFormValues(defaultFormValues(defaultDataset));
+      setFormValues(
+        defaultFormValues(defaultDataset, {
+          defaultModelName,
+          compareCandidateModels
+        })
+      );
       writeLocalStorage(SELECTED_TASK_ID_STORAGE_KEY, null);
       writeLocalStorage(SELECTED_TASK_TYPE_STORAGE_KEY, null);
       return;
@@ -160,7 +176,7 @@ export function WorkspacePage() {
       setMode(requestedTaskType === "model_compare" ? "compare" : "search");
       setSelectedCompareCandidate(null);
     }
-  }, [defaultDataset, requestedNewTask, requestedTaskId, requestedTaskType]);
+  }, [compareCandidateModels, defaultDataset, defaultModelName, requestedNewTask, requestedTaskId, requestedTaskType]);
 
   useEffect(() => {
     writeLocalStorage(SELECTED_TASK_ID_STORAGE_KEY, selectedTaskId);
@@ -197,17 +213,45 @@ export function WorkspacePage() {
   }, [datasets, defaultDataset]);
 
   useEffect(() => {
+    if (!models.length) {
+      return;
+    }
+    setFormValues((previous) => {
+      const nextModelName = availableSearchModels.includes(previous.modelName) ? previous.modelName : defaultModelName;
+      const retainedCompareCandidates = previous.compareCandidateModels.filter((modelName) =>
+        compareCandidateModels.includes(modelName)
+      );
+      return {
+        ...previous,
+        modelName: nextModelName,
+        compareCandidateModels: retainedCompareCandidates.length
+          ? retainedCompareCandidates
+          : [...compareCandidateModels]
+      };
+    });
+  }, [availableSearchModels, compareCandidateModels, defaultModelName, models.length]);
+
+  useEffect(() => {
     if (!selectedTaskId || !currentAutoTask) {
       return;
     }
     setSelectedCompareCandidate(null);
-    setDraftTaskTitle(currentAutoTask.title ?? buildTaskTitle("search", currentAutoTask.dataset ?? defaultDataset, (currentAutoTask.model_name as SupportedModelName | undefined) ?? "mobilenet_v3_small"));
+    const nextModelName = currentAutoTask.model_name ?? defaultModelName;
+    setDraftTaskTitle(
+      currentAutoTask.title ??
+        buildTaskTitle(
+          "search",
+          currentAutoTask.dataset ?? defaultDataset,
+          nextModelName,
+          getModelLabel(nextModelName, modelLookup)
+        )
+    );
     setFormValues((previous) => ({
       ...previous,
       dataset: currentAutoTask.dataset ?? previous.dataset,
-      modelName: (currentAutoTask.model_name as SupportedModelName | undefined) ?? previous.modelName
+      modelName: nextModelName ?? previous.modelName
     }));
-  }, [currentAutoTask, defaultDataset, selectedTaskId]);
+  }, [currentAutoTask, defaultDataset, defaultModelName, modelLookup, selectedTaskId]);
 
   useEffect(() => {
     if (!selectedTaskId || !currentCompareTask) {
@@ -217,14 +261,14 @@ export function WorkspacePage() {
     setFormValues((previous) => ({
       ...previous,
       dataset: currentCompareTask.dataset ?? previous.dataset,
-      compareCandidateModels: normalizeCandidateModels(currentCompareTask.candidate_models)
+      compareCandidateModels: normalizeCandidateModels(currentCompareTask.candidate_models, compareCandidateModels)
     }));
-  }, [currentCompareTask, defaultDataset, selectedTaskId]);
+  }, [compareCandidateModels, currentCompareTask, defaultDataset, selectedTaskId]);
 
   const isSearchDraftFromCompare = Boolean(mode === "search" && selectedTaskType === "model_compare" && !currentAutoTask);
   const controlMode: WorkspaceMode = mode;
-  const parameterSpaceModelName = controlMode === "compare" ? COMPARE_ANCHOR_MODEL : formValues.modelName;
-  const parameterSpaceQuery = useParameterSpace(parameterSpaceModelName);
+  const modelDefaultsModelName = controlMode === "compare" ? compareAnchorModelName : formValues.modelName;
+  const modelDefaultsQuery = useModelDefaults(modelDefaultsModelName);
   const renameTaskTitleMutation = useRenameTaskTitle();
   const startAutoTrainMutation = useStartAutoTrain();
   const startModelCompareMutation = useStartModelCompare();
@@ -256,7 +300,15 @@ export function WorkspacePage() {
   const currentTaskTitle =
     (mode === "compare" ? currentCompareTask?.title : displayAutoTask?.title) ??
     (mode === "search" && isSearchLaunchPending ? draftTaskTitle : null) ??
-    (isDetachedSearchDraft ? buildSearchTaskTitle(formValues.dataset, formValues.modelName) : null) ??
+    (
+      isDetachedSearchDraft
+        ? buildSearchTaskTitle(
+            formValues.dataset,
+            formValues.modelName,
+            getModelLabel(formValues.modelName, modelLookup)
+          )
+        : null
+    ) ??
     (selectedTaskId || selectedCompareCandidate ? draftTaskTitle : "Untitled task");
   const currentTaskStatus =
     (mode === "compare" ? compareDisplayStatus : displayAutoTask?.status) ??
@@ -273,7 +325,7 @@ export function WorkspacePage() {
     startAutoTrainMutation.isPending || startModelCompareMutation.isPending || (controlMode === "compare" ? isCompareRunning : isSearchRunning);
   const controlErrorMessage =
     datasetsQuery.error?.message ??
-    parameterSpaceQuery.error?.message ??
+    modelDefaultsQuery.error?.message ??
     startAutoTrainMutation.error?.message ??
     startModelCompareMutation.error?.message ??
     stopAutoTrainMutation.error?.message ??
@@ -305,8 +357,8 @@ export function WorkspacePage() {
   };
 
   const handleRun = async () => {
-    const parameterSpace = parameterSpaceQuery.data;
-    if (!parameterSpace) {
+    const modelDefaults = modelDefaultsQuery.data;
+    if (!modelDefaults) {
       return;
     }
 
@@ -322,7 +374,7 @@ export function WorkspacePage() {
         title: generatedTitle,
         dataset: formValues.dataset,
         candidate_models: formValues.compareCandidateModels,
-        config: buildExperimentConfig(formValues, baselineImageSize, parameterSpace.version, COMPARE_ANCHOR_MODEL)
+        config: buildExperimentConfig(formValues, baselineImageSize, modelDefaults)
       });
       await queryClient.invalidateQueries({ queryKey: ["task-history"] });
       selectTask(response.task_id, "model_compare");
@@ -330,7 +382,13 @@ export function WorkspacePage() {
     }
 
     const generatedTitle =
-      displayAutoTask?.task_id && !isDetachedSearchDraft ? currentTaskTitle : buildSearchTaskTitle(formValues.dataset, formValues.modelName);
+      displayAutoTask?.task_id && !isDetachedSearchDraft
+        ? currentTaskTitle
+        : buildSearchTaskTitle(
+            formValues.dataset,
+            formValues.modelName,
+            getModelLabel(formValues.modelName, modelLookup)
+          );
     setDraftTaskTitle(generatedTitle);
     const isSearchFromCompareContext = Boolean(selectedTaskType === "model_compare" && !displayAutoTask);
     const shouldStartFreshSearchRun = Boolean(isSearchFromCompareContext || isDetachedSearchDraft);
@@ -346,10 +404,10 @@ export function WorkspacePage() {
         source_task_id: isSearchFromCompareContext ? selectedTaskId : null,
         source_task_title: isSearchFromCompareContext ? currentCompareTask?.title ?? null : null,
         source_model_name: isSearchFromCompareContext ? selectedCompareCandidate?.modelName ?? formValues.modelName : null,
-        config: buildExperimentConfig(formValues, baselineImageSize, parameterSpace.version, undefined, {
+        config: buildExperimentConfig(formValues, baselineImageSize, modelDefaults, {
           allowEpochSearch: formValues.allowEpochSearch
         }),
-        parameter_space: parameterSpace
+        parameter_space: modelDefaults.parameter_space
       });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["task-history"] }),
@@ -409,7 +467,9 @@ export function WorkspacePage() {
     setMode("search");
     setIsEditingTitle(false);
     setIsSearchLaunchPending(false);
-    setDraftTaskTitle(buildTaskTitle("search", candidate.dataset, candidate.modelName));
+    setDraftTaskTitle(
+      buildTaskTitle("search", candidate.dataset, candidate.modelName, getModelLabel(candidate.modelName, modelLookup))
+    );
     setFormValues((previous) => ({
       ...previous,
       dataset: candidate.dataset,
@@ -645,45 +705,18 @@ export function WorkspacePage() {
                         )}
                       </div>
                     </div>
-                    <div className="model-select-grid">
-                      <select
-                        aria-label="Model family"
-                        value={selectedModelFamily}
-                        onChange={(event) => {
-                          const nextFamily = event.target.value as (typeof MODEL_FAMILY_ORDER)[number];
-                          const nextModelName = availableSearchModels.find((modelName) => getModelFamily(modelName) === nextFamily);
-                          if (!nextModelName) {
-                            return;
-                          }
-                          setFormValues((previous) => ({
-                            ...previous,
-                            modelName: nextModelName
-                          }));
-                        }}
-                      >
-                        {MODEL_FAMILY_ORDER.map((familyName) => (
-                          <option key={familyName} value={familyName}>
-                            {MODEL_FAMILY_LABELS[familyName]}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        aria-label="Model"
-                        value={formValues.modelName}
-                        onChange={(event) =>
-                          setFormValues((previous) => ({
-                            ...previous,
-                            modelName: event.target.value as SupportedModelName
-                          }))
-                        }
-                      >
-                        {visibleSearchModels.map((modelName) => (
-                          <option key={modelName} value={modelName}>
-                            {MODEL_LABELS[modelName]}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                    <ModelBrowser
+                      availableModels={availableSearchModels}
+                      modelLookup={modelLookup}
+                      onSelectModel={(modelName) =>
+                        setFormValues((previous) => ({
+                          ...previous,
+                          modelName
+                        }))
+                      }
+                      selectionMode="single"
+                      selectedModel={formValues.modelName}
+                    />
                   </div>
                 ) : (
                   <FormField
@@ -707,45 +740,18 @@ export function WorkspacePage() {
                       </span>
                     }
                   >
-                    <div className="model-select-grid">
-                      <select
-                        aria-label="Model family"
-                        value={selectedModelFamily}
-                        onChange={(event) => {
-                          const nextFamily = event.target.value as (typeof MODEL_FAMILY_ORDER)[number];
-                          const nextModelName = availableSearchModels.find((modelName) => getModelFamily(modelName) === nextFamily);
-                          if (!nextModelName) {
-                            return;
-                          }
-                          setFormValues((previous) => ({
-                            ...previous,
-                            modelName: nextModelName
-                          }));
-                        }}
-                      >
-                        {MODEL_FAMILY_ORDER.map((familyName) => (
-                          <option key={familyName} value={familyName}>
-                            {MODEL_FAMILY_LABELS[familyName]}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        aria-label="Model"
-                        value={formValues.modelName}
-                        onChange={(event) =>
-                          setFormValues((previous) => ({
-                            ...previous,
-                            modelName: event.target.value as SupportedModelName
-                          }))
-                        }
-                      >
-                        {visibleSearchModels.map((modelName) => (
-                          <option key={modelName} value={modelName}>
-                            {MODEL_LABELS[modelName]}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                    <ModelBrowser
+                      availableModels={availableSearchModels}
+                      modelLookup={modelLookup}
+                      onSelectModel={(modelName) =>
+                        setFormValues((previous) => ({
+                          ...previous,
+                          modelName
+                        }))
+                      }
+                      selectionMode="single"
+                      selectedModel={formValues.modelName}
+                    />
                   </FormField>
                 )}
               </>
@@ -760,46 +766,43 @@ export function WorkspacePage() {
                       onClick={() =>
                         setFormValues((previous) => ({
                           ...previous,
-                          compareCandidateModels: areAllCompareModelsSelected ? [] : [...COMPARE_CANDIDATE_MODELS]
+                          compareCandidateModels: [...compareCandidateModels]
                         }))
                       }
+                      disabled={areAllCompareModelsSelected}
                       type="button"
                     >
-                      {areAllCompareModelsSelected ? "Reset" : "All"}
+                      All
                     </button>
-                    {COMPARE_CANDIDATE_MODELS.length > DEFAULT_COMPARE_MODEL_COUNT ? (
-                      <button
-                        className="text-button mode-options-link"
-                        onClick={() => setShowAllCompareModels((previous) => !previous)}
-                        type="button"
-                      >
-                        {showAllCompareModels ? "Less" : "More"}
-                      </button>
-                    ) : null}
+                    <button
+                      className="text-button mode-options-link"
+                      onClick={() =>
+                        setFormValues((previous) => ({
+                          ...previous,
+                          compareCandidateModels: []
+                        }))
+                      }
+                      disabled={formValues.compareCandidateModels.length === 0}
+                      type="button"
+                    >
+                      Clear
+                    </button>
                   </div>
                 </div>
-                <div className="option-stack">
-                  {visibleCompareModels.map((modelName) => {
-                    const isChecked = formValues.compareCandidateModels.includes(modelName);
-                    return (
-                      <label className="option-row" key={modelName}>
-                        <input
-                          checked={isChecked}
-                          onChange={(event) => {
-                            setFormValues((previous) => ({
-                              ...previous,
-                              compareCandidateModels: event.target.checked
-                                ? [...previous.compareCandidateModels, modelName]
-                                : previous.compareCandidateModels.filter((candidateModel) => candidateModel !== modelName)
-                            }));
-                          }}
-                          type="checkbox"
-                        />
-                        <span>{MODEL_LABELS[modelName]}</span>
-                      </label>
-                    );
-                  })}
-                </div>
+                <ModelBrowser
+                  availableModels={compareCandidateModels}
+                  modelLookup={modelLookup}
+                  onToggleModel={(modelName) =>
+                    setFormValues((previous) => ({
+                      ...previous,
+                      compareCandidateModels: previous.compareCandidateModels.includes(modelName)
+                        ? previous.compareCandidateModels.filter((candidateModel) => candidateModel !== modelName)
+                        : [...previous.compareCandidateModels, modelName]
+                    }))
+                  }
+                  selectionMode="multi"
+                  selectedModels={formValues.compareCandidateModels}
+                />
               </div>
             ) : null}
           </div>
@@ -810,7 +813,7 @@ export function WorkspacePage() {
               disabled={
                 isPrimaryActionBusy ||
                 !areDatasetsReady ||
-                !parameterSpaceQuery.data ||
+                !modelDefaultsQuery.data ||
                 (controlMode === "compare" && formValues.compareCandidateModels.length === 0)
               }
               onClick={() => void handleRun()}
@@ -876,6 +879,7 @@ export function WorkspacePage() {
               <CompareScatterChart
                 candidates={successfulCandidates}
                 dataset={compareTask?.dataset ?? formValues.dataset}
+                getModelLabelText={(modelName) => getModelLabel(modelName, modelLookup)}
                 onSelectCandidate={(candidate) => prepareSearchFromCompareCandidate(candidate)}
                 selectedCandidateModelName={selectedCompareCandidate?.modelName ?? null}
               />
@@ -902,6 +906,266 @@ export function WorkspacePage() {
           )}
         </section>
       </section>
+    </div>
+  );
+}
+
+function ModelBrowser({
+  availableModels,
+  modelLookup,
+  selectionMode,
+  selectedModel,
+  selectedModels,
+  onSelectModel,
+  onToggleModel
+}: ModelBrowserProps) {
+  const queryClient = useQueryClient();
+  const draftManifestMutation = useDraftModelManifest();
+  const commitManifestMutation = useCommitModelManifest();
+  const [searchQuery, setSearchQuery] = useState("");
+  const [draftPreview, setDraftPreview] = useState<ModelManifestDraftResponse | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const normalizedSearchQuery = normalizeSearchToken(searchQuery);
+  const effectiveSelectedModels = selectionMode === "multi" ? selectedModels ?? [] : selectedModel ? [selectedModel] : [];
+  const selectedModelSet = useMemo(() => new Set(effectiveSelectedModels), [effectiveSelectedModels]);
+
+  useEffect(() => {
+    setDraftPreview(null);
+    draftManifestMutation.reset();
+    commitManifestMutation.reset();
+  }, [normalizedSearchQuery]);
+
+  useEffect(() => {
+    if (!draftPreview) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setDraftPreview(null);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [draftPreview]);
+
+  const filteredModels = useMemo(() => {
+    if (!normalizedSearchQuery) {
+      return availableModels;
+    }
+    return availableModels.filter((modelName) => doesModelMatchSearchQuery(modelName, normalizedSearchQuery, modelLookup));
+  }, [availableModels, modelLookup, normalizedSearchQuery]);
+
+  const hasVisibleModels = filteredModels.length > 0;
+  const showEmptyState = !hasVisibleModels;
+  const handleSelectFromSearchResults = (modelName: SupportedModelName) => {
+    if (selectionMode === "multi") {
+      onToggleModel?.(modelName);
+    } else {
+      onSelectModel?.(modelName);
+    }
+    setSearchQuery("");
+    setDraftPreview(null);
+    searchInputRef.current?.focus();
+  };
+  const handleDraftManifest = async () => {
+    const trimmedQuery = searchQuery.trim();
+    if (!trimmedQuery) {
+      return;
+    }
+    const nextDraftPreview = await draftManifestMutation.mutateAsync({ query: trimmedQuery });
+    setDraftPreview(nextDraftPreview);
+  };
+  const handleCommitDraft = async () => {
+    if (!draftPreview || !draftPreview.validation.is_valid) {
+      return;
+    }
+    const commitResponse = await commitManifestMutation.mutateAsync({
+      yaml_text: draftPreview.yaml_text,
+      expected_model_name: draftPreview.resolved_model_name,
+    });
+    await queryClient.invalidateQueries({ queryKey: ["models"] });
+    if (!selectedModelSet.has(commitResponse.model_name)) {
+      if (selectionMode === "multi") {
+        onToggleModel?.(commitResponse.model_name);
+      } else {
+        onSelectModel?.(commitResponse.model_name);
+      }
+    }
+    setDraftPreview(null);
+    setSearchQuery("");
+    searchInputRef.current?.focus();
+  };
+  const hasDraftValidationErrors = Boolean(draftPreview && draftPreview.validation.errors.length > 0);
+  const searchInputLabel = selectionMode === "multi" ? "Search compare models" : "Search models";
+
+  return (
+    <div className="model-browser">
+      <div className="model-browser-search-row">
+        <input
+          aria-label={searchInputLabel}
+          className="model-browser-search-input"
+          ref={searchInputRef}
+          onChange={(event) => setSearchQuery(event.target.value)}
+          placeholder="Search models"
+          type="search"
+          value={searchQuery}
+        />
+      </div>
+
+      {selectionMode === "multi" && selectedModels?.length ? (
+        <div className="model-browser-chip-list">
+          {selectedModels.map((modelName) => (
+            <button
+              className="model-browser-chip"
+              key={modelName}
+              onClick={() => onToggleModel?.(modelName)}
+              type="button"
+            >
+              <span>{getModelLabel(modelName, modelLookup)}</span>
+              <span className="model-browser-chip-remove" aria-hidden="true">
+                ×
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {selectionMode === "single" && selectedModel ? (
+        <div className="model-browser-selected-row">
+          <span className="model-browser-selected-label">Selected</span>
+          <span className="model-browser-chip model-browser-chip-static">{getModelLabel(selectedModel, modelLookup)}</span>
+        </div>
+      ) : null}
+
+      {showEmptyState ? (
+        <div className="model-browser-empty-state">
+          <strong>{normalizedSearchQuery ? "No matching models" : "No available models"}</strong>
+          <p>
+            {normalizedSearchQuery
+              ? "Try another keyword, or ask AI to draft a manifest for the model you want."
+              : "No searchable models are available yet. Ask AI to draft a manifest for a new model."}
+          </p>
+          <button
+            className="secondary-button model-browser-ai-button"
+            disabled={draftManifestMutation.isPending}
+            onClick={() => void handleDraftManifest()}
+            type="button"
+          >
+            {draftManifestMutation.isPending ? "Generating Draft..." : "Ask AI To Draft Config"}
+          </button>
+          {draftManifestMutation.error ? (
+            <p className="model-browser-ai-note model-browser-ai-note-error">{draftManifestMutation.error.message}</p>
+          ) : null}
+        </div>
+      ) : (
+        <div className="model-browser-results">
+          {filteredModels.map((modelName) => {
+            const isSelected = selectedModelSet.has(modelName);
+            return (
+              <button
+                aria-pressed={isSelected}
+                className={`model-option-card${isSelected ? " model-option-card-selected" : ""}`}
+                key={modelName}
+                onClick={() => handleSelectFromSearchResults(modelName)}
+                type="button"
+              >
+                <span className="model-option-card-label">{getModelLabel(modelName, modelLookup)}</span>
+                {isSelected ? <span className="model-option-card-check" aria-hidden="true">✓</span> : null}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {draftPreview ? (
+        <div
+          className="model-browser-draft-modal-backdrop"
+          onClick={() => setDraftPreview(null)}
+        >
+          <div
+            aria-labelledby="model-browser-draft-title"
+            aria-modal="true"
+            className="details-panel model-browser-draft-modal"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+          >
+            <div className="model-browser-draft-header">
+              <div className="model-browser-draft-copy">
+                <strong id="model-browser-draft-title">{draftPreview.resolved_model_name}</strong>
+                {draftPreview.query !== draftPreview.resolved_model_name ? (
+                  <span>
+                    Resolved from <code>{draftPreview.query}</code>
+                  </span>
+                ) : (
+                  <span>{draftPreview.target_path}</span>
+                )}
+              </div>
+              <div
+                className={`status-pill ${
+                  draftPreview.validation.is_valid ? "status-success" : "status-warning"
+                }`}
+              >
+                {draftPreview.validation.is_valid ? "Validated" : "Needs Review"}
+              </div>
+            </div>
+
+            {draftPreview.provider_warnings.length ? (
+              <div className="model-browser-draft-list">
+                {draftPreview.provider_warnings.map((warning) => (
+                  <p className="model-browser-ai-note" key={warning}>
+                    {warning}
+                  </p>
+                ))}
+              </div>
+            ) : null}
+
+            {draftPreview.validation.errors.length ? (
+              <div className="model-browser-draft-list">
+                {draftPreview.validation.errors.map((error) => (
+                  <p className="model-browser-ai-note model-browser-ai-note-error" key={error}>
+                    {error}
+                  </p>
+                ))}
+              </div>
+            ) : null}
+
+            {draftPreview.validation.warnings.length ? (
+              <div className="model-browser-draft-list">
+                {draftPreview.validation.warnings.map((warning) => (
+                  <p className="model-browser-ai-note" key={warning}>
+                    {warning}
+                  </p>
+                ))}
+              </div>
+            ) : null}
+
+            <pre className="model-browser-draft-preview">{draftPreview.ai_preview_text}</pre>
+
+            <div className="model-browser-draft-actions">
+              <button
+                className="primary-button"
+                disabled={commitManifestMutation.isPending || hasDraftValidationErrors}
+                onClick={() => void handleCommitDraft()}
+                type="button"
+              >
+                {commitManifestMutation.isPending ? "Saving..." : "Add Manifest"}
+              </button>
+              <button
+                className="text-button"
+                onClick={() => setDraftPreview(null)}
+                type="button"
+              >
+                Close
+              </button>
+            </div>
+            {commitManifestMutation.error ? (
+              <p className="model-browser-ai-note model-browser-ai-note-error">{commitManifestMutation.error.message}</p>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1128,11 +1392,13 @@ function WarningNoticeIcon() {
 function CompareScatterChart({
   candidates,
   dataset,
+  getModelLabelText,
   onSelectCandidate,
   selectedCandidateModelName
 }: {
   candidates: ModelCompareCandidateResult[];
   dataset: string;
+  getModelLabelText: (modelName: string) => string;
   onSelectCandidate: (candidate: CompareSearchCandidate) => void;
   selectedCandidateModelName: string | null;
 }) {
@@ -1170,7 +1436,7 @@ function CompareScatterChart({
     const accuracy = candidate.top1_acc ?? 0;
     const x = padding + ((latency - minLatency) / latencyRange) * plotWidth;
     const y = height - padding - ((accuracy - minAccuracy) / accuracyRange) * plotHeight;
-    const label = MODEL_LABELS[candidate.model_name as SupportedModelName] ?? candidate.model_name;
+    const label = getModelLabelText(candidate.model_name);
     return {
       candidate,
       label,
@@ -1281,7 +1547,7 @@ function CompareScatterChart({
                   r={5}
                 />
                 <text className="chart-tooltip-title" x={26} y={22}>
-                  {MODEL_LABELS[activePoint.candidate.model_name as SupportedModelName] ?? activePoint.candidate.model_name}
+                  {getModelLabelText(activePoint.candidate.model_name)}
                 </text>
                 <text className="chart-tooltip-line" x={14} y={42}>
                   {`Top1 ${formatAccuracy(activePoint.candidate.top1_acc)}`}
@@ -2030,6 +2296,7 @@ type SummarySnapshot = {
   decision?: string | null;
   decision_reason?: string | null;
   metrics?: Record<string, number>;
+  resource?: Record<string, number>;
   summary?: string;
 };
 
@@ -2321,7 +2588,7 @@ function buildCompareSearchCandidate(
     return null;
   }
   return {
-    modelName: candidate.model_name as SupportedModelName,
+    modelName: candidate.model_name,
     runId: candidate.run_id,
     dataset,
     top1Acc: candidate.top1_acc,
@@ -2330,8 +2597,8 @@ function buildCompareSearchCandidate(
   };
 }
 
-function buildSearchTaskTitle(dataset: string, modelName: SupportedModelName) {
-  return `Search - ${MODEL_LABELS[modelName] ?? modelName} - ${dataset}`;
+function buildSearchTaskTitle(dataset: string, modelName: SupportedModelName, modelLabel?: string) {
+  return `Search - ${modelLabel ?? modelName} - ${dataset}`;
 }
 
 function buildSearchMetaInlineText(task: AutoTrainTask | null, elapsedSeconds: number) {
@@ -2698,11 +2965,30 @@ function formatCompactProposalValue(value: unknown) {
   return String(value);
 }
 
-function normalizeCandidateModels(candidateModels: string[] | undefined): SupportedModelName[] {
+function normalizeCandidateModels(
+  candidateModels: string[] | undefined,
+  availableCandidateModels: string[]
+): SupportedModelName[] {
   if (!candidateModels?.length) {
-    return [...COMPARE_CANDIDATE_MODELS];
+    return [...availableCandidateModels];
   }
-  return candidateModels.filter((modelName): modelName is SupportedModelName => modelName in MODEL_LABELS);
+  return candidateModels.filter((modelName): modelName is SupportedModelName =>
+    availableCandidateModels.includes(modelName)
+  );
+}
+
+function doesModelMatchSearchQuery(
+  modelName: SupportedModelName,
+  normalizedSearchQuery: string,
+  modelLookup: Record<string, ModelSummary>
+) {
+  const normalizedModelName = normalizeSearchToken(modelName);
+  const normalizedModelLabel = normalizeSearchToken(getModelLabel(modelName, modelLookup));
+  return normalizedModelName.includes(normalizedSearchQuery) || normalizedModelLabel.includes(normalizedSearchQuery);
+}
+
+function normalizeSearchToken(value: string) {
+  return value.trim().toLowerCase().replace(/[\s_-]+/g, "");
 }
 
 function formatStatusLabel(status: string) {
@@ -2876,28 +3162,14 @@ function buildMetricDomain(values: number[], kind: "accuracy" | "loss" | "latenc
 }
 
 function getComparePointColor(modelName: string) {
-  switch (modelName) {
-    case "mobilenet_v2":
-      return "#ff8a00";
-    case "mobilenet_v3_small":
-      return "#2b59ff";
-    case "mobilenet_v3_large":
-      return "#6a5cff";
-    case "efficientnet_b0":
-      return "#0f8b8d";
-    case "efficientnet_b1":
-      return "#1b9aaa";
-    case "googlenet":
-      return "#11a36a";
-    case "resnet18":
-      return "#d9485f";
-    case "resnet34":
-      return "#c83f57";
-    case "resnet50":
-      return "#b5314e";
-    default:
-      return "#5b6475";
+  let hash = 0;
+  for (let index = 0; index < modelName.length; index += 1) {
+    hash = (hash * 31 + modelName.charCodeAt(index)) >>> 0;
   }
+  const hue = hash % 360;
+  const saturation = 62 + (hash % 10);
+  const lightness = 44 + (hash % 12);
+  return `hsl(${hue} ${saturation}% ${lightness}%)`;
 }
 
 function formatAccuracy(value: number | null | undefined) {

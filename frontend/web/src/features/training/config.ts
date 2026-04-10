@@ -1,56 +1,12 @@
-import type { DatasetSummary } from "../../types/domain";
+import type { DatasetSummary, ModelDefaults, ModelSummary, SearchPolicy } from "../../types/domain";
 
 const KNOWN_DATASET_IMAGE_OPTIONS: Record<string, number[]> = {
   neu: [200, 224, 256]
 };
 
-export type SupportedModelName =
-  | "mobilenet_v2"
-  | "mobilenet_v3_small"
-  | "mobilenet_v3_large"
-  | "efficientnet_b0"
-  | "efficientnet_b1"
-  | "googlenet"
-  | "resnet18"
-  | "resnet34"
-  | "resnet50";
+const DEFAULT_MODEL_NAME = "mobilenet_v3_small";
 
-export const MODEL_LABELS: Record<SupportedModelName, string> = {
-  mobilenet_v2: "MobileNetV2",
-  mobilenet_v3_small: "MobileNetV3 Small",
-  mobilenet_v3_large: "MobileNetV3 Large",
-  efficientnet_b0: "EfficientNet-B0",
-  efficientnet_b1: "EfficientNet-B1",
-  googlenet: "GoogLeNet",
-  resnet18: "ResNet18",
-  resnet34: "ResNet34",
-  resnet50: "ResNet50"
-};
-
-export const COMPARE_CANDIDATE_MODELS: SupportedModelName[] = [
-  "mobilenet_v2",
-  "mobilenet_v3_small",
-  "mobilenet_v3_large",
-  "efficientnet_b0",
-  "efficientnet_b1",
-  "googlenet",
-  "resnet18",
-  "resnet34",
-  "resnet50"
-];
-
-export function getModelFamily(modelName: SupportedModelName): string {
-  if (modelName.startsWith("mobilenet")) {
-    return "mobilenet";
-  }
-  if (modelName.startsWith("efficientnet")) {
-    return "efficientnet";
-  }
-  if (modelName === "googlenet") {
-    return "googlenet";
-  }
-  return "resnet";
-}
+export type SupportedModelName = string;
 
 export interface TrainingFormValues {
   dataset: string;
@@ -68,11 +24,50 @@ export interface TrainingFormValues {
   labelSmoothing: number;
 }
 
-export function defaultFormValues(dataset: string): TrainingFormValues {
+function formatModelLabel(modelName: string): string {
+  return modelName
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+export function buildModelLookup(models: ModelSummary[]): Record<string, ModelSummary> {
+  return Object.fromEntries(models.map((model) => [model.model_name, model]));
+}
+
+export function getDefaultModelName(models: ModelSummary[]): string {
+  const defaultModel = models.find((model) => model.is_default && model.supports_search);
+  if (defaultModel) {
+    return defaultModel.model_name;
+  }
+  const firstSearchModel = models.find((model) => model.supports_search);
+  return firstSearchModel?.model_name ?? DEFAULT_MODEL_NAME;
+}
+
+export function getCompareCandidateModels(models: ModelSummary[]): string[] {
+  return models.filter((model) => model.supports_compare).map((model) => model.model_name);
+}
+
+export function getSearchModelNames(models: ModelSummary[]): string[] {
+  return models.filter((model) => model.supports_search).map((model) => model.model_name);
+}
+
+export function getModelLabel(modelName: string, modelLookup?: Record<string, ModelSummary>): string {
+  return modelLookup?.[modelName]?.label ?? formatModelLabel(modelName);
+}
+
+export function defaultFormValues(
+  dataset: string,
+  options?: {
+    defaultModelName?: string;
+    compareCandidateModels?: string[];
+  }
+): TrainingFormValues {
   return {
     dataset,
-    modelName: "mobilenet_v3_small",
-    compareCandidateModels: [...COMPARE_CANDIDATE_MODELS],
+    modelName: options?.defaultModelName ?? DEFAULT_MODEL_NAME,
+    compareCandidateModels: [...(options?.compareCandidateModels ?? [])],
     useDemoMode: true,
     allowEpochSearch: false,
     optimizer: "adamw",
@@ -94,12 +89,13 @@ export function buildRunName(dataset: string, modelName: SupportedModelName): st
 export function buildTaskTitle(
   mode: "compare" | "search",
   dataset: string,
-  modelName: SupportedModelName = "mobilenet_v3_small"
+  modelName: SupportedModelName = DEFAULT_MODEL_NAME,
+  modelLabel?: string
 ): string {
   if (mode === "compare") {
     return `Compare Models on ${dataset.toUpperCase()}`;
   }
-  return `Optimize ${MODEL_LABELS[modelName]} on ${dataset.toUpperCase()}`;
+  return `Optimize ${modelLabel ?? formatModelLabel(modelName)} on ${dataset.toUpperCase()}`;
 }
 
 export function getPreferredDatasetName(datasets: DatasetSummary[], fallbackDataset = "neu"): string {
@@ -131,89 +127,62 @@ export function getDatasetBaselineImageSize(datasets: DatasetSummary[], datasetN
   return getDatasetImageOptions(datasets, datasetName)[0] ?? 64;
 }
 
-export function buildSearchPolicy(allowEpochSearch = false) {
-  return {
-    allow_basic_hparam_search: true,
-    allowed_basic_hparam_fields: [
-      "optimizer",
-      "learning_rate",
-      "batch_size",
-      "weight_decay",
-      "scheduler",
-      "label_smoothing",
-      "image_size",
-      ...(allowEpochSearch ? ["epochs"] : [])
-    ],
-    allow_strategy_search: false,
-    allow_loss_search: true,
-    allow_augmentation_search: true,
-    allow_model_module_search: true,
-    require_manual_approval_for_high_impact_changes: true
-  };
+function cloneJson<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
-export function buildRankingPolicy() {
-  return {
-    primary_metric: "top1_acc",
-    primary_metric_mode: "max",
-    min_primary_metric_improvement: 0.001,
-    primary_metric_parity_epsilon: 0.0005,
-    tie_breaker_metric: "latency_ms",
-    tie_breaker_mode: "min",
-    min_tie_breaker_metric_improvement: 0.5,
-    max_image_size: null
-  };
+function buildSearchPolicyFromDefaults(baseSearchPolicy: SearchPolicy, allowEpochSearch = false): SearchPolicy {
+  const nextSearchPolicy = cloneJson(baseSearchPolicy);
+  const allowedFields = new Set(nextSearchPolicy.allowed_basic_hparam_fields);
+  if (allowEpochSearch) {
+    allowedFields.add("epochs");
+  } else {
+    allowedFields.delete("epochs");
+  }
+  nextSearchPolicy.allow_basic_hparam_search = allowedFields.size > 0;
+  nextSearchPolicy.allowed_basic_hparam_fields = [...allowedFields];
+  return nextSearchPolicy;
 }
 
 export function buildExperimentConfig(
   values: TrainingFormValues,
   imageSize: number,
-  parameterSpaceVersion: string,
-  modelName?: SupportedModelName,
+  modelDefaults: ModelDefaults,
   options?: {
     allowEpochSearch?: boolean;
   }
 ) {
-  const effectiveModelName = modelName ?? values.modelName;
-  const modelFamily = getModelFamily(effectiveModelName);
+  const modelRecipe = cloneJson(modelDefaults.default_model_recipe);
+  const trainHyp = cloneJson(modelDefaults.default_train_hyp);
+  const searchPolicy = buildSearchPolicyFromDefaults(
+    modelDefaults.default_search_policy,
+    Boolean(options?.allowEpochSearch)
+  );
+  const rankingPolicy = cloneJson(modelDefaults.default_ranking_policy);
+  const effectiveModelName = modelDefaults.summary.model_name;
+  const modelFamily = modelDefaults.summary.model_family;
+
+  trainHyp.optimizer = values.optimizer;
+  trainHyp.lr0 = values.learningRate;
+  trainHyp.weight_decay = values.weightDecay;
+  trainHyp.scheduler = values.scheduler;
+  trainHyp.epochs = values.epochs;
+  trainHyp.batch_size = values.batchSize;
+  trainHyp.image_size = imageSize;
+  trainHyp.label_smoothing = values.labelSmoothing;
+
   return {
     task_type: "classification",
     dataset: values.dataset,
     model_family: modelFamily,
     model_name: effectiveModelName,
-    parameter_space_version: parameterSpaceVersion,
+    parameter_space_version: modelDefaults.parameter_space.version,
     use_demo_mode: values.useDemoMode,
     participates_in_ranking: true,
-    search_policy: buildSearchPolicy(Boolean(options?.allowEpochSearch)),
-    ranking_policy: buildRankingPolicy(),
-    model_recipe: {
-      version: "model_recipe@v1",
-      task_type: "classification",
-      model_family: modelFamily,
-      base_model: effectiveModelName,
-      modules: effectiveModelName === "googlenet" ? { aux_logits: false } : {}
-    },
-    train_hyp: {
-      version: "train_hyp@v1",
-      task_type: "classification",
-      optimizer: values.optimizer,
-      lr0: values.learningRate,
-      weight_decay: values.weightDecay,
-      scheduler: values.scheduler,
-      epochs: values.epochs,
-      batch_size: values.batchSize,
-      image_size: imageSize,
-      label_smoothing: values.labelSmoothing,
-      augmentation: {
-        policy: values.augmentationPolicy,
-        mixup: 0,
-        cutmix: 0,
-        random_erasing: 0
-      },
-      loss: {
-        name: "cross_entropy_with_label_smoothing"
-      }
-    },
+    search_policy: searchPolicy,
+    ranking_policy: rankingPolicy,
+    model_recipe: modelRecipe,
+    train_hyp: trainHyp,
     dataset_recipe: {
       version: "dataset_recipe@v1",
       task_type: "classification",

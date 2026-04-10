@@ -15,6 +15,21 @@ from app.core.settings import get_settings
 class AIHubMixRequestError(RuntimeError):
     """Raised when AIHubMix returns a request error."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        raw_content: str | None = None,
+        response_model: str | None = None,
+        response_chars: int | None = None,
+        usage: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.raw_content = raw_content
+        self.response_model = response_model
+        self.response_chars = response_chars
+        self.usage = usage
+
 
 AIHUBMIX_RETRY_DELAYS_SECONDS = (1, 3)
 AIHUBMIX_RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
@@ -56,20 +71,49 @@ def _iter_json_candidates(content: str) -> list[str]:
     return candidates
 
 
-def _parse_json_message_content(content: str) -> dict[str, Any]:
+def _parse_json_candidate(candidate: str) -> dict[str, Any]:
+    """Parse one candidate string into a JSON object with narrow trailing-brace tolerance."""
+    try:
+        parsed_candidate = json.loads(candidate)
+    except json.JSONDecodeError as error:
+        if error.msg != "Extra data":
+            raise
+        parsed_candidate, parsed_end_index = json.JSONDecoder().raw_decode(candidate)
+        trailing_text = candidate[parsed_end_index:].strip()
+        if (
+            isinstance(parsed_candidate, dict)
+            and trailing_text
+            and re.fullmatch(r"}+", trailing_text) is not None
+        ):
+            return parsed_candidate
+        raise
+    if not isinstance(parsed_candidate, dict):
+        raise json.JSONDecodeError("Top-level JSON value is not an object", candidate, 0)
+    return parsed_candidate
+
+
+def _parse_json_message_content(
+    content: str,
+    *,
+    response_model: str | None = None,
+    usage: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Parse one provider message into JSON while tolerating common wrapper text."""
     last_error: json.JSONDecodeError | None = None
     for candidate in _iter_json_candidates(content):
         try:
-            parsed_candidate = json.loads(candidate)
+            parsed_candidate = _parse_json_candidate(candidate)
         except json.JSONDecodeError as error:
             last_error = error
             continue
-        if isinstance(parsed_candidate, dict):
-            return parsed_candidate
+        return parsed_candidate
     raise AIHubMixRequestError(
         "chat completions returned non-JSON message content: "
-        f"{_build_error_excerpt(content)}"
+        f"{_build_error_excerpt(content)}",
+        raw_content=content,
+        response_model=response_model,
+        response_chars=len(content),
+        usage=usage,
     ) from last_error
 
 
@@ -148,6 +192,9 @@ class AIHubMixClient:
                 f"{_build_error_excerpt(response.text)}"
             ) from error
 
+        usage = payload.get("usage")
+        response_model = payload.get("model")
+
         try:
             content = payload["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as error:
@@ -156,13 +203,23 @@ class AIHubMixClient:
             ) from error
 
         if not isinstance(content, str) or not content.strip():
-            raise AIHubMixRequestError("chat completions returned an empty message content")
-        parsed_content = _parse_json_message_content(content)
+            raise AIHubMixRequestError(
+                "chat completions returned an empty message content",
+                raw_content=content if isinstance(content, str) else None,
+                response_model=response_model,
+                response_chars=len(content) if isinstance(content, str) else None,
+                usage=usage if isinstance(usage, dict) else None,
+            )
+        parsed_content = _parse_json_message_content(
+            content,
+            response_model=response_model,
+            usage=usage if isinstance(usage, dict) else None,
+        )
         return (
             parsed_content,
             {
-                "usage": payload.get("usage"),
-                "response_model": payload.get("model"),
+                "usage": usage,
+                "response_model": response_model,
                 "response_chars": len(content),
                 "raw_content": content,
             },

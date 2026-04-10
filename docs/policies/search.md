@@ -110,4 +110,6 @@
 
 - [backend/app/services/auto_train_service.py](../../backend/app/services/auto_train_service.py)
 - [backend/app/services/proposal_service.py](../../backend/app/services/proposal_service.py)
-- [backend/app/config_spaces/classification.py](../../backend/app/config_spaces/classification.py)
+- [backend/app/services/parameter_space.py](../../backend/app/services/parameter_space.py)
+- [backend/app/model_catalog/registry.py](../../backend/app/model_catalog/registry.py)
+- [backend/app/model_manifests/classification/](../../backend/app/model_manifests/classification/)

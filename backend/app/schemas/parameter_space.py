@@ -333,18 +333,8 @@ class ExperimentConfig(BaseModel):
 
     task_type: Literal["classification"]
     dataset: str
-    model_family: Literal["mobilenet", "efficientnet", "googlenet", "resnet"]
-    model_name: Literal[
-        "mobilenet_v2",
-        "mobilenet_v3_small",
-        "mobilenet_v3_large",
-        "efficientnet_b0",
-        "efficientnet_b1",
-        "googlenet",
-        "resnet18",
-        "resnet34",
-        "resnet50",
-    ]
+    model_family: str
+    model_name: str
     parameter_space_version: str
     use_demo_mode: bool = False
     participates_in_ranking: bool = True
@@ -356,8 +346,11 @@ class ExperimentConfig(BaseModel):
     dataset_recipe: DatasetRecipe
 
     def use_aux_logits(self) -> bool:
-        """Return whether GoogLeNet auxiliary heads should be enabled."""
-        if self.model_name != "googlenet":
+        """Return whether the active model should enable auxiliary logits."""
+        from app.model_catalog.registry import get_model_catalog_entry
+
+        model_entry = get_model_catalog_entry(self.model_name)
+        if model_entry is None or model_entry.loss_adapter != "googlenet_aux":
             return False
         return bool(self.model_recipe.modules.get("aux_logits", False))
 
@@ -370,6 +363,14 @@ class ExperimentConfig(BaseModel):
     @model_validator(mode="after")
     def validate_and_hydrate_structured_config(self) -> "ExperimentConfig":
         """Validate cross-field consistency for the structured experiment config."""
+        from app.model_catalog.registry import get_model_catalog_entry
+
+        model_entry = get_model_catalog_entry(self.model_name)
+        if model_entry is None:
+            raise ValueError(f"Unsupported model_name: {self.model_name}")
+        if model_entry.task_type != self.task_type:
+            raise ValueError("model_name task_type must match ExperimentConfig.task_type")
+
         self.model_recipe = hydrate_model_recipe(self.model_recipe)
 
         if self.model_recipe.task_type != self.task_type:
@@ -382,6 +383,8 @@ class ExperimentConfig(BaseModel):
             raise ValueError("model_recipe.base_model must match ExperimentConfig.model_name")
         if self.model_recipe.model_family != self.model_family:
             raise ValueError("model_recipe.model_family must match ExperimentConfig.model_family")
+        if self.model_family != model_entry.model_family:
+            raise ValueError("ExperimentConfig.model_family must match the registered model family")
         if self.dataset_recipe.dataset_name != self.dataset:
             raise ValueError("dataset_recipe.dataset_name must match ExperimentConfig.dataset")
 
@@ -520,10 +523,11 @@ def _normalize_model_recipe_components_payload(model_recipe_payload: dict[str, A
 
 def build_default_model_recipe(*, model_name: str, task_type: str, model_family: str) -> ModelRecipe:
     """Build one default model recipe, using a built-in template when available."""
-    from app.trainers.templates import has_builtin_model_recipe, load_builtin_model_recipe_payload
+    from app.model_catalog.registry import get_model_catalog_entry
 
-    if has_builtin_model_recipe(model_name):
-        recipe_payload = load_builtin_model_recipe_payload(model_name)
+    model_entry = get_model_catalog_entry(model_name)
+    if model_entry is not None:
+        recipe_payload = model_entry.default_model_recipe.model_dump(mode="python", by_alias=True)
         recipe_payload["task_type"] = task_type
         recipe_payload["model_family"] = model_family
         recipe_payload["base_model"] = model_name
@@ -543,11 +547,12 @@ def build_default_model_recipe(*, model_name: str, task_type: str, model_family:
 
 def hydrate_model_recipe(model_recipe: ModelRecipe) -> ModelRecipe:
     """Fill one partial model recipe with the built-in architecture template when available."""
-    from app.trainers.templates import has_builtin_model_recipe, load_builtin_model_recipe_payload
+    from app.model_catalog.registry import get_model_catalog_entry
 
-    if not has_builtin_model_recipe(model_recipe.base_model):
+    model_entry = get_model_catalog_entry(model_recipe.base_model)
+    if model_entry is None:
         return model_recipe
-    builtin_payload = load_builtin_model_recipe_payload(model_recipe.base_model)
+    builtin_payload = model_entry.default_model_recipe.model_dump(mode="python", by_alias=True)
     merged_payload = _merge_partial_payload(
         builtin_payload,
         model_recipe.model_dump(exclude_none=True, exclude_unset=True),
@@ -570,7 +575,7 @@ def build_default_model_recipe_components(base_model: str, *, pooling_type: str 
             "neck": {"name": neck_name, "params": {}},
             "head": {"name": "native_classifier", "params": {}},
         }
-    if base_model in {"efficientnet_b0", "efficientnet_b1"}:
+    if base_model == "efficientnet_b0":
         neck_name = "gem_pool" if pooling_type == "gem" else "avg_pool"
         return {
             "backbone": {"name": f"{base_model}_native", "params": {}},
@@ -583,7 +588,7 @@ def build_default_model_recipe_components(base_model: str, *, pooling_type: str 
             "neck": {"name": "avg_pool", "params": {}},
             "head": {"name": "native_classifier", "params": {}},
         }
-    if base_model in {"resnet18", "resnet34", "resnet50"}:
+    if base_model in {"resnet18", "resnet34"}:
         return {
             "backbone": {"name": f"{base_model}_native", "params": {}},
             "neck": {"name": "avg_pool", "params": {}},

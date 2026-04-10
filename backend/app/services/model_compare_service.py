@@ -13,6 +13,7 @@ from uuid import uuid4
 from app.core.settings import get_settings
 from app.db.session import SessionLocal
 from app.llm.aihubmix_client import AIHubMixClient
+from app.model_catalog.registry import get_model_catalog_entry, list_compare_candidate_model_names
 from app.prompts.compare_summary import build_compare_summary_prompt
 from app.schemas.experiment import ExperimentCreateRequest
 from app.schemas.parameter_space import ExperimentConfig, SearchPolicy, build_default_model_recipe
@@ -40,13 +41,6 @@ from app.services.training_runner import start_experiment_training, stop_experim
 MODEL_COMPARE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="autovisionlab-model-compare")
 MODEL_COMPARE_TASKS: dict[str, dict] = {}
 MODEL_COMPARE_LOCK = Lock()
-DEFAULT_COMPARE_CANDIDATE_MODELS = (
-    "mobilenet_v2",
-    "mobilenet_v3_small",
-    "mobilenet_v3_large",
-    "efficientnet_b0",
-    "googlenet",
-)
 
 
 class ModelCompareStoppedError(RuntimeError):
@@ -151,19 +145,6 @@ def _ensure_no_active_compare_task() -> None:
         raise ValueError("Auto train is already running")
 
 
-def _infer_model_family(model_name: str) -> str:
-    """Infer one model family from its base model name."""
-    if model_name.startswith("mobilenet"):
-        return "mobilenet"
-    if model_name.startswith("efficientnet"):
-        return "efficientnet"
-    if model_name == "googlenet":
-        return "googlenet"
-    if model_name.startswith("resnet"):
-        return "resnet"
-    raise ValueError(f"Unsupported model family for compare task: {model_name}")
-
-
 def _build_shared_search_policy() -> SearchPolicy:
     """Return one disabled search policy for fair baseline comparison."""
     return SearchPolicy(
@@ -205,7 +186,7 @@ def _generate_compare_ai_summary(summary: ModelCompareSummary) -> str | None:
         return None
     if not any(candidate.status == "success" for candidate in summary.candidate_results):
         return None
-    system_prompt, user_prompt = _build_compare_summary_prompt(summary)
+    system_prompt, user_prompt = build_compare_summary_prompt(summary)
     client = AIHubMixClient()
     response_payload = client.create_json_completion(system_prompt, user_prompt)
     summary_text = response_payload.get("summary_text")
@@ -242,14 +223,17 @@ def _build_compare_config(
     if parameter_space is None:
         raise ValueError(f"Parameter space not found for compare model {model_name}")
 
-    compare_model_family = _infer_model_family(model_name)
+    model_entry = get_model_catalog_entry(model_name)
+    if model_entry is None:
+        raise ValueError(f"Registered model not found for compare model {model_name}")
+    compare_model_family = model_entry.model_family
     compare_model_recipe = build_default_model_recipe(
         model_name=model_name,
         task_type=base_config.task_type,
         model_family=compare_model_family,
     )
     notes: list[str] = []
-    if model_name == "googlenet":
+    if "aux_logits" in compare_model_recipe.modules:
         if base_config.use_aux_logits():
             notes.append("Forced aux_logits=False for fair cross-model comparison.")
         compare_model_recipe.modules["aux_logits"] = False
@@ -302,7 +286,7 @@ def _wait_for_experiment_terminal(task_id: str, experiment_id: str, *, started_a
 def _run_model_compare_task(task_id: str, request: ModelCompareStartRequest) -> None:
     """Run one cross-model baseline comparison in the background."""
     started_at_monotonic = time.monotonic()
-    candidate_models = list(request.candidate_models or DEFAULT_COMPARE_CANDIDATE_MODELS)
+    candidate_models = list(request.candidate_models or list_compare_candidate_model_names())
     base_config = request.config
     summary = ModelCompareSummary(
         shared_baseline_config=_build_shared_baseline_snapshot(base_config),
@@ -499,7 +483,7 @@ def start_model_compare_task(request: ModelCompareStartRequest) -> ModelCompareT
     if request.dataset != request.config.dataset:
         raise ValueError("Model compare dataset must match config.dataset")
     task_id = f"cmp_{uuid4().hex[:8]}"
-    candidate_models = list(request.candidate_models or DEFAULT_COMPARE_CANDIDATE_MODELS)
+    candidate_models = list(request.candidate_models or list_compare_candidate_model_names())
     if not candidate_models:
         raise ValueError("Model compare requires at least one candidate model")
     initial_summary = ModelCompareSummary(

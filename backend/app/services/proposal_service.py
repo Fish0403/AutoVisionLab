@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.context.history_context import build_proposal_history_context
 from app.context.prompt_builder import build_proposal_prompt_bundle
 from app.context.proposal_policy import build_policy_prompt_payload
-from app.llm.aihubmix_client import AIHubMixClient
+from app.llm.aihubmix_client import AIHubMixClient, AIHubMixRequestError
 from app.models.experiment import ExperimentModel
 from app.models.run import RunModel
 from app.prompts.context_blocks import build_epoch_policy_instruction, build_retry_note
@@ -500,6 +500,10 @@ def generate_aihubmix_proposal(
                 user_prompt=prompt_bundle.user_prompt,
             )
         except Exception as error:
+            raw_content = error.raw_content if isinstance(error, AIHubMixRequestError) else None
+            response_model = error.response_model if isinstance(error, AIHubMixRequestError) else None
+            response_chars = error.response_chars if isinstance(error, AIHubMixRequestError) else None
+            usage = error.usage if isinstance(error, AIHubMixRequestError) else None
             append_run_log(
                 run_id,
                 format_run_log_message(
@@ -517,6 +521,10 @@ def generate_aihubmix_proposal(
                 {
                     "attempt": attempt_index + 1,
                     "prompt_tokens_estimate": prompt_bundle.prompt_tokens_estimate,
+                    "usage": usage,
+                    "response_model": response_model,
+                    "response_chars": response_chars,
+                    "raw_content": raw_content,
                     "error": str(error),
                 },
             )
@@ -526,6 +534,10 @@ def generate_aihubmix_proposal(
                 {
                     "attempt": attempt_index + 1,
                     "prompt_tokens_estimate": prompt_bundle.prompt_tokens_estimate,
+                    "usage": usage,
+                    "response_model": response_model,
+                    "response_chars": response_chars,
+                    "raw_content": raw_content,
                     "error": str(error),
                 },
             )

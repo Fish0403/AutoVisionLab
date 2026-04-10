@@ -23,6 +23,8 @@ class GeMPooling2d(nn.Module):
 
 def build_classification_neck(neck_name: str) -> nn.Module:
     """Build one supported classification neck module."""
+    if neck_name == "identity":
+        return nn.Identity()
     if neck_name == "avg_pool":
         return nn.AdaptiveAvgPool2d(1)
     if neck_name == "gem_pool":

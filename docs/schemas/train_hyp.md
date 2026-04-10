@@ -66,6 +66,7 @@
 
 - `optimizer`
 - `lr0`
+- `epochs`
 - `weight_decay`
 - `scheduler`
 - `batch_size`
@@ -76,6 +77,10 @@
 - `augmentation.random_erasing`
 - `loss.name`
 - `fl_gamma`
+
+说明：
+
+- `epochs` 当前已进入后端基础搜索字段集合，但是否实际对 AI 开放，仍取决于当前 run 的 `search_policy.allowed_basic_hparam_fields`
 
 ## 当前值范围
 

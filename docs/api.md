@@ -52,8 +52,8 @@
 | 字段 | 值 |
 | --- | --- |
 | `task_type` | `classification` |
-| `model_name` | `mobilenet_v2`、`mobilenet_v3_small`、`mobilenet_v3_large`、`efficientnet_b0`、`efficientnet_b1`、`googlenet`、`resnet18`、`resnet34`、`resnet50` |
-| `model_family` | `mobilenet`、`googlenet`、`resnet` |
+| `model_name` | 由 `GET /models` 动态返回 |
+| `model_family` | 由 `GET /models` 动态返回 |
 | `run.status` | `draft`、`active`、`paused`、`completed`、`failed` |
 | `experiment.status` | `draft`、`queued`、`running`、`success`、`failed`、`discarded` |
 | `experiment.decision` | `keep`、`discard`、`crash`、`timeout` |
@@ -67,6 +67,8 @@
 | `LocalDatasetSummary` | 本地数据集发现结果 | `GET /datasets` |
 | `ExperimentConfig` | 实验配置对象 | `schemas/` |
 | `EditableParameterSpace` | 模型参数白名单 | `schemas/` |
+| `ModelDefaults` | 模型默认配置模板 | `GET /models/{model_name}/defaults` |
+| `ModelManifestDraftResponse` | AI 生成的 manifest 草稿预览 | `POST /models/draft` |
 | `ProposalSchema` | AI proposal | `schemas/` |
 | `ResultSchema` | 训练结果 | `schemas/` |
 
@@ -76,6 +78,16 @@
 | --- | --- | --- | --- |
 | `GET` | `/datasets` | 扫描本地数据目录并返回数据集可训练状态 | `LocalDatasetSummary[]` |
 
+## 模型
+
+| 方法 | 路径 | 用途 | 响应 |
+| --- | --- | --- | --- |
+| `GET` | `/models` | 返回当前后端已注册的模型清单 | `ModelSummary[]` |
+| `POST` | `/models/draft` | 让 AI 生成一个模型 manifest 草稿预览，不直接落盘 | `ModelManifestDraftResponse` |
+| `POST` | `/models/draft/commit` | 提交并落盘一个已确认的 manifest 草稿 | `ModelManifestCommitResponse` |
+| `GET` | `/models/{model_name}/defaults` | 返回指定模型的默认配置模板，包括 `summary`、`parameter_space`、`default_model_recipe`、`default_train_hyp`、`default_search_policy` 和 `default_ranking_policy` | `ModelDefaults` |
+| `GET` | `/models/{model_name}/parameter-space` | 返回指定模型的可编辑参数白名单 | `EditableParameterSpace` |
+
 ## Runs
 
 | 方法 | 路径 | 用途 | 备注 |
@@ -84,6 +96,7 @@
 | `POST` | `/runs` | 创建 run | 请求体包含 `base_config` |
 | `GET` | `/runs/{run_id}` | 获取 run 详情 |  |
 | `GET` | `/runs/{run_id}/metrics` | 获取 run 指标趋势 | 查询参数 `metric_name`，默认 `top1_acc` |
+| `GET` | `/runs/{run_id}/trend` | 获取 run 多指标趋势快照 | 返回 `RunTrendResponse` |
 | `GET` | `/runs/{run_id}/summary` | 获取 run 摘要 |  |
 | `POST` | `/runs/{run_id}/proposal` | 为 run 生成 proposal | 依赖当前历史和白名单 |
 | `POST` | `/runs/proposal/test` | 测试 proposal provider 连通性 |  |
@@ -128,12 +141,6 @@
 - `parameter_space` 是本次实验的白名单快照
 - `result` 保存指标、资源、参数和产物路径
 
-## Models
-
-| 方法 | 路径 | 用途 |
-| --- | --- | --- |
-| `GET` | `/models/{model_name}/parameter-space` | 获取模型 parameter space |
-
 ## 响应对象
 
 ### `LocalDatasetSummary`
@@ -150,8 +157,37 @@
 - `test_manifest_exists`
 - `is_ready_for_training`
 - `original_image_size`
+- `image_width`
+- `image_height`
 - `image_size_options`
+- `train_sample_count`
+- `val_sample_count`
+- `test_sample_count`
+- `class_names`
 - `message`
+
+### `ModelDefaults`
+
+模型默认配置模板，主要字段：
+
+- `summary`
+- `parameter_space`
+- `default_model_recipe`
+- `default_train_hyp`
+- `default_search_policy`
+- `default_ranking_policy`
+
+### `ModelManifestDraftResponse`
+
+模型 manifest 草稿预览，主要字段：
+
+- `query`
+- `resolved_model_name`
+- `ai_preview_text`
+- `yaml_text`
+- `target_path`
+- `provider_warnings`
+- `validation`
 
 ### `ProposalSchema`
 

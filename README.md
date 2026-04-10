@@ -71,10 +71,10 @@
 
    1. 从东北大学官方页面下载 `NEU-CLS`：[NEU surface defect database](http://faculty.neu.edu.cn/songkechen/zh_CN/zdylm/263270/list/)
    2. 将解压后的 `NEU-CLS` 放到 `data/raw/NEU-CLS/`
-   3. 使用 `data/prepare_neucls_split.py` 生成 `train.txt`、`val.txt` 和 `test.txt`
+   3. 使用 `data/prepare_classification_split.py` 生成 `train.txt`、`val.txt` 和 `test.txt`
 
       ```bash
-      python3 data/prepare_neucls_split.py --source-root data/raw/NEU-CLS --dataset-name NEU --val-ratio 0.2 --test-ratio 0.1 --seed 42 --force
+      python3 data/prepare_classification_split.py --source-dir data/raw/NEU-CLS --dataset-name NEU --val-ratio 0.2 --test-ratio 0.1 --seed 42 --force
       ```
 
    Demo Mode 可用于本地快速验证。开启后，如果数据集大于限制，会使用更小的确定性子集。

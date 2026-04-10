@@ -6,6 +6,7 @@
 
 - `Auto Train` 的 proposal 生成
 - `Compare Models` 的 compare result summary 生成
+- 模型 manifest draft 生成
 - AIHubMix 连接测试
 
 当前实现使用的是 OpenAI-compatible chat completions 接口，具体封装在 [`backend/app/llm/aihubmix_client.py`](../backend/app/llm/aihubmix_client.py)。
@@ -321,6 +322,71 @@ proposal prompt 内的 `result_snapshot` 固定使用以下结构：
 }
 ```
 
+## Model Manifest Draft 通讯
+
+### 目标
+
+`POST /models/draft` 会把用户输入的模型名或模糊查询交给 LLM，先生成一份最小 manifest 草稿，再由后端扩展成完整 YAML 预览并做校验。
+
+系统提示词要求模型：
+
+- 只返回 JSON
+- 顶层只能包含 `resolved_model_name`、`draft_spec`、`warnings`
+- `draft_spec` 只能包含最小草稿字段，不直接生成完整 YAML
+- `builder.type` 只能使用 `torchvision_classifier` 或 `googlenet_classifier`
+- `recipe_profile` 只能使用 `torchvision_classifier_v1` 或 `googlenet_classifier_v1`
+- `parameter_space_profile` 只能使用 `classification_standard_v1`、`classification_memory_safe_v1`、`googlenet_aux_v1`
+- 优先纠正拼写并对齐当前可用的 torchvision 分类模型名
+
+### 传给模型的数据
+
+当前 draft prompt 会提供：
+
+- 用户原始输入 `query`
+- 一组按相似度排序的 torchvision 候选模型名
+- 当前仓库里的少量 manifest 示例
+
+也就是说，模型返回的是“最小意图草稿”，后端再负责：
+
+- 补全默认 `model_recipe`
+- 补全 `parameter_space`
+- 生成最终 YAML 预览
+- 做 schema 校验、dry-run build 和 dry-run forward 校验
+
+### 示例输出
+
+```json
+{
+  "resolved_model_name": "resnet50",
+  "draft_spec": {
+    "model_name": "resnet50",
+    "label": "ResNet 50",
+    "model_family": "resnet",
+    "builder": {
+      "type": "torchvision_classifier",
+      "torchvision_name": "resnet50",
+      "backbone_component_name": "resnet_backbone",
+      "backbone_extractor": "resnet_stages",
+      "native_head_attr": "fc",
+      "feature_dim": 2048,
+      "default_dropout": 0.0,
+      "uses_dropout_arg": false,
+      "supported_neck_names": ["avg_pool", "gem_pool"],
+      "supported_head_names": ["native_classifier", "linear", "dropout_linear"],
+      "default_neck_name": "avg_pool",
+      "default_head_name": "native_classifier"
+    },
+    "recipe_profile": "torchvision_classifier_v1",
+    "parameter_space_profile": "classification_standard_v1",
+    "supports_compare": true,
+    "supports_search": true,
+    "is_default": false,
+    "display_order": 120
+  },
+  "warnings": []
+}
+```
+
 ## 日志落盘
 
 与 LLM 交互相关的运行级日志会写到：
@@ -353,7 +419,7 @@ proposal prompt 内的 `result_snapshot` 固定使用以下结构：
 如果请求失败，日志会写入：
 
 ```json
-{"timestamp":"2026-04-02T08:00:05Z","event_type":"proposal_error","payload":{"attempt":1,"prompt_tokens_estimate":2140,"error":"chat completions failed with status=502 body=..."}}
+{"timestamp":"2026-04-02T08:00:05Z","event_type":"proposal_error","payload":{"attempt":1,"prompt_tokens_estimate":2140,"usage":{"prompt_tokens":2140,"completion_tokens":312,"total_tokens":2452},"response_model":"minimax/minimax-m2.5","response_chars":612,"raw_content":"<think>...</think>\nnot-json-or-invalid-json-response","error":"chat completions returned non-JSON message content: <think>..."}}
 ```
 
 ### `prompt_context` 日志示例
@@ -434,10 +500,13 @@ proposal prompt 内的 `result_snapshot` 固定使用以下结构：
 
 - `proposal` 生成失败时，任务会继续按重试策略重新尝试
 - `compare summary` 生成失败时，只会丢弃 AI summary，不影响 compare 结果本身
+- `model manifest draft` 生成失败时，只影响当前草稿接口，不会修改本地 manifest 文件
 
 ## 相关代码
 
 - [`backend/app/llm/aihubmix_client.py`](../backend/app/llm/aihubmix_client.py)
 - [`backend/app/services/proposal_service.py`](../backend/app/services/proposal_service.py)
 - [`backend/app/services/model_compare_service.py`](../backend/app/services/model_compare_service.py)
+- [`backend/app/services/model_manifest_draft_service.py`](../backend/app/services/model_manifest_draft_service.py)
+- [`backend/app/prompts/model_manifest_draft.py`](../backend/app/prompts/model_manifest_draft.py)
 - [`backend/app/services/run_logging.py`](../backend/app/services/run_logging.py)
